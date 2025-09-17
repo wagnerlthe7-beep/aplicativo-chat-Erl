@@ -1,0 +1,14 @@
+{
+  "recommendations": [
+    "pgourlain.erlang",
+    "ms-vscode.cpptools",
+    "dbaeumer.vscode-eslint",
+    "esbenp.prettier-vscode",
+    "dsznajder.es7-react-js-snippets",
+    "infeng.vscode-react-typescript",
+    "mathiasfrohlich.Kotlin",
+    "vscjava.vscode-java-pack",
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-mysql"
+  ]
+}
