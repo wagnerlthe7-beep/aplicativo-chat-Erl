@@ -1,0 +1,484 @@
+*BACKUP do "chat_list_page.dart"
+import 'package:flutter/material.dart';
+
+class ChatListPage extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Conversas')),
+      body: Center(child: Text('Aqui vai a lista de conversas')),
+    );
+  }
+}
+
+
+*BACKUP do "firebase_handler.erl"  ----- 3.10.2025
+%%%-------------------------------------------------------------------
+%%% Handler HTTP para /auth/firebase usando cowboy_handler
+%%%-------------------------------------------------------------------
+
+-module(firebase_handler).
+-behaviour(cowboy_handler).
+
+-export([init/2]).
+
+-include_lib("kernel/include/logger.hrl").
+
+init(Req0, State) ->
+    Method = cowboy_req:method(Req0),
+    io:format("🔥 Método recebido: ~p~n", [Method]),
+
+    case Method of
+        <<"POST">> ->
+            {ok, Body, Req1} = cowboy_req:read_body(Req0),
+            io:format("📥 Body recebido: ~p~n", [Body]),
+
+            %% decodifica JSON recebido
+            case catch jsx:decode(Body, [return_maps]) of
+                #{<<"idToken">> := IdToken} ->
+                    io:format("🟢 Recebi idToken: ~p~n", [IdToken]),
+
+                    %% 1) verifica token Firebase
+                    case auth_util:verify_firebase_token(IdToken) of
+                        {ok, Claims} ->
+                            Phone = maps:get(<<"phoneNumber">>, Claims, undefined),
+                            FirebaseUid = maps:get(<<"localId">>, Claims, undefined),
+
+                            case Phone of
+                                undefined ->
+                                    reply_json(Req1, 400, #{error => "no_phone_in_token"});
+                                _ ->
+                                    %% 2) Cria ou pega usuário
+                                    case auth_util:get_or_create_user(Phone, FirebaseUid) of
+                                        {ok, UserMap} ->
+                                            %% 3) Cria token de sessão
+                                            case auth_util:create_session_token(UserMap) of
+                                                {ok, Token} ->
+                                                    Response = #{
+                                                        token => Token,
+                                                        user  => user_map_to_list(UserMap)
+                                                    },
+                                                    reply_json(Req1, 200, Response);
+                                                {error, Reason} ->
+                                                    reply_json(Req1, 500, #{error => Reason})
+                                            end;
+                                        {error, Reason} ->
+                                            reply_json(Req1, 500, #{error => Reason})
+                                    end
+                            end;
+                        {error, Reason} ->
+                            reply_json(Req1, 401, #{error => Reason})
+                    end;
+
+                _ ->
+                    reply_json(Req1, 400, #{error => "invalid_payload"})
+            end;
+
+        _Other ->
+            reply_json(Req0, 405, #{error => "method_not_allowed"})
+    end,
+    State.
+
+%%%-------------------------------------------------------------------
+%%% Helpers
+%%%-------------------------------------------------------------------
+
+reply_json(Req, Status, Map) when is_map(Map) ->
+    Body = jsx:encode(Map),
+    {ok, Req2} = cowboy_req:reply(Status, #{<<"content-type">> => <<"application/json">>}, Body, Req),
+    Req2.
+
+user_map_to_list(UserMap) when is_map(UserMap) ->
+    lists:map(fun({K,V}) -> {binaryize(K), V} end, maps:to_list(UserMap)).
+
+binaryize(Key) when is_atom(Key) -> list_to_binary(atom_to_list(Key));
+binaryize(Key) when is_binary(Key) -> Key.
+
+
+
+
+
+
+
+*BACKUP do auth_util.erl
+
+%% -------------------------------------------------------------------
+%% auth_util.erl
+%% Funções de validação Firebase, Postgres e criação de token de sessão
+%% -------------------------------------------------------------------
+
+-module(auth_util).
+-export([verify_firebase_token/1, get_or_create_user/2, create_session_token/1]).
+
+-include_lib("kernel/include/logger.hrl").
+
+%% Defaults
+-define(DEFAULT_DB_HOST, "localhost").
+-define(DEFAULT_DB_PORT, 5432).
+-define(DEFAULT_DB_NAME, "chat_app_db").
+-define(DEFAULT_DB_USER, "postgres").
+
+%% -------------------------------------------------------------------
+%% 1) Verifica idToken usando Firebase REST API (accounts:lookup)
+%% -------------------------------------------------------------------
+verify_firebase_token(IdToken) when is_binary(IdToken); is_list(IdToken) ->
+    ApiKey0 = os:getenv("FIREBASE_API_KEY"),
+    ApiKey = case ApiKey0 of
+                 false -> undefined;
+                 V -> V
+             end,
+    case ApiKey of
+        undefined -> {error, "no_firebase_api_key_env"};
+        _ ->
+            application:ensure_all_started(inets),
+            application:ensure_all_started(ssl),
+            Url = "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=" ++ ApiKey,
+            BodyMap = [{<<"idToken">>, IdToken}],
+            BodyJson = jsx:encode(BodyMap),
+            Headers = [{"Content-Type", "application/json"}],
+            Request = {Url, Headers, "application/json", BodyJson},
+            case httpc:request(post, Request, [], []) of
+                {ok, {{_, 200, _}, _RespHeaders, RespBody}} ->
+                    case jsx:decode(RespBody, [return_maps]) of
+                        {ok, Map} ->
+                            Users = maps:get(<<"users">>, Map, undefined),
+                            case Users of
+                                undefined -> {error, "no_users_in_response"};
+                                [First|_] when is_map(First) -> {ok, First};
+                                _ -> {error, "unexpected_users_format"}
+                            end;
+                        _ -> {error, invalid_json_response}
+                    end;
+                {ok, {{_, Code, _Reason}, _RespHeaders, RespBody}} ->
+                    {error, {firebase_api_error, Code, RespBody}};
+                {error, Reason} ->
+                    {error, {http_error, Reason}}
+            end
+    end.
+
+%% -------------------------------------------------------------------
+%% 2) Verifica/cria user no Postgres
+%% -------------------------------------------------------------------
+get_or_create_user(Phone, FirebaseUid) ->
+    %% ler env com case seguro
+    Host0 = os:getenv("DB_HOST"),
+    Host = case Host0 of false -> ?DEFAULT_DB_HOST; H -> H end,
+
+    Port0 = os:getenv("DB_PORT"),
+    Port = case Port0 of
+               false -> ?DEFAULT_DB_PORT;
+               V when is_list(V) ->
+                   (catch list_to_integer(V)) orelse ?DEFAULT_DB_PORT;
+               V when is_integer(V) -> V
+           end,
+
+    DbName0 = os:getenv("DB_NAME"),
+    DbName = case DbName0 of false -> ?DEFAULT_DB_NAME; N -> N end,
+
+    DbUser0 = os:getenv("DB_USER"),
+    DbUser = case DbUser0 of false -> ?DEFAULT_DB_USER; U -> U end,
+
+    DbPass0 = os:getenv("DB_PASS"),
+    DbPass = case DbPass0 of false -> ""; P -> P end,
+
+    %% Conectar
+    case epgsql:connect(Host, DbUser, DbPass, [{database, DbName}, {port, Port}]) of
+        {ok, Conn} ->
+            SelectSql = "SELECT id, name, phone, is_active, profile_picture FROM users WHERE phone = $1",
+            case epgsql:squery(Conn, SelectSql, [Phone]) of
+                {ok, Rows} when Rows =/= [] ->
+                    Row = hd(Rows),
+                    case Row of
+                        {Id, Name, PhoneDb, IsActive, ProfilePicture} ->
+                            _ = maybe_update_firebase_uid(Conn, Id, FirebaseUid),
+                            _ = epgsql:squery(Conn, "UPDATE users SET last_login = now() WHERE id = $1", [Id]),
+                            UserMap = #{id => Id, name => Name, phone => PhoneDb, is_active => IsActive, profile_picture => ProfilePicture},
+                            {ok, UserMap};
+                        _ -> {error, unexpected_row_format}
+                    end;
+                {ok, []} ->
+                    DefaultName = "Usuário",
+                    InsertSql = "INSERT INTO users (name, phone, is_active, created_at, firebase_uid) VALUES ($1, $2, true, now(), $3) RETURNING id, name, phone, is_active",
+                    case epgsql:squery(Conn, InsertSql, [DefaultName, Phone, FirebaseUid]) of
+                        {ok, InsertRows} when InsertRows =/= [] ->
+                            InsertRow = hd(InsertRows),
+                            case InsertRow of
+                                {Id, Name, PhoneDb, IsActive} ->
+                                    UserMap = #{id => Id, name => Name, phone => PhoneDb, is_active => IsActive},
+                                    {ok, UserMap};
+                                _ -> {error, unexpected_insert_format}
+                            end;
+                        {error, Err} -> {error, {db_insert_error, Err}};
+                        _ -> {error, insert_failed}
+                    end;
+                {error, Err} -> {error, {db_select_error, Err}}
+            end;
+        {error, Err} -> {error, {db_connect_error, Err}}
+    end.
+
+%% Atualiza firebase_uid se necessário
+maybe_update_firebase_uid(_Conn, _Id, undefined) -> ok;
+maybe_update_firebase_uid(Conn, Id, FirebaseUid) ->
+    case is_list(FirebaseUid) orelse is_binary(FirebaseUid) of
+        true ->
+            catch epgsql:squery(Conn,
+                "UPDATE users SET firebase_uid = $1 WHERE id = $2 AND (firebase_uid IS NULL OR firebase_uid = '')",
+                [FirebaseUid, Id]),
+            ok;
+        false -> ok
+    end.
+
+%% -------------------------------------------------------------------
+%% 3) Criar JWT HS256 (simples)
+%% -------------------------------------------------------------------
+create_session_token(UserMap) when is_map(UserMap) ->
+    case os:getenv("SESSION_SECRET") of
+        false -> {error, "no_session_secret_env"};
+        SecretStr ->
+            SecretBin = list_to_binary(SecretStr),
+            Header = [{<<"alg">>, <<"HS256">>}, {<<"typ">>, <<"JWT">>}],
+            Iat = erlang:system_time(second),
+            Exp = Iat + 3600,
+            Claims = [
+                {<<"user_id">>, maps:get(id, UserMap)},
+                {<<"phone">>, maps:get(phone, UserMap)},
+                {<<"iat">>, Iat},
+                {<<"exp">>, Exp}
+            ],
+            HJson = jsx:encode(Header),
+            PJson = jsx:encode(Claims),
+            HBase = base64url(list_to_binary(HJson)),
+            PBase = base64url(list_to_binary(PJson)),
+            SigningInput = <<HBase/binary, $., PBase/binary>>,
+            SigRaw = crypto:mac(hmac, sha256, SecretBin, SigningInput),
+            SigBase = base64url(SigRaw),
+            TokenBin = <<HBase/binary, $., PBase/binary, $., SigBase/binary>>,
+            {ok, binary_to_list(TokenBin)}
+    end.
+
+%% -------------------------------------------------------------------
+%% Base64url helper
+%% -------------------------------------------------------------------
+base64url(Bin) when is_binary(Bin) ->
+    Enc = base64:encode(Bin),
+    Enc1 = binary:replace(Enc, <<"+">>, <<"-">>, [global]),
+    Enc2 = binary:replace(Enc1, <<"/">>, <<"_">>, [global]),
+    re:replace(Enc2, "=+$", "", [global, {return, binary}]);
+base64url(Str) when is_list(Str) -> base64url(list_to_binary(Str)).
+
+
+
+
+*BACKUP do otp_page.dart:
+import 'package:flutter/material.dart';
+import 'auth_service.dart';
+
+class OtpPage extends StatefulWidget {
+  @override
+  _OtpPageState createState() => _OtpPageState();
+}
+
+class _OtpPageState extends State<OtpPage> {
+  final _codeController = TextEditingController();
+  bool _loading = false;
+  String? verificationId;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    verificationId ??= ModalRoute.of(context)!.settings.arguments as String?;
+  }
+
+  void _submitCode() async {
+    final code = _codeController.text.trim();
+    if (code.isEmpty || verificationId == null) return;
+    setState(() => _loading = true);
+
+    final success = await AuthService.signInWithSmsCode(
+      verificationId: verificationId!,
+      smsCode: code,
+    );
+    setState(() => _loading = false);
+    if (success) {
+      Navigator.pushReplacementNamed(context, '/chatList');
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Código inválido')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Código SMS')),
+      body: Padding(
+        padding: EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Text('Digite o código que recebeu por SMS:'),
+            TextField(
+              controller: _codeController,
+              keyboardType: TextInputType.number,
+            ),
+            SizedBox(height: 20),
+            _loading
+                ? CircularProgressIndicator()
+                : ElevatedButton(
+                    onPressed: _submitCode,
+                    child: Text('Confirmar'),
+                  ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+
+
+*BACKUP do auth_service
+
+import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+
+class AuthService {
+  static final _auth = FirebaseAuth.instance;
+  static final _storage = FlutterSecureStorage();
+  // Põe aqui a URL do teu backend Erlang que irá aceitar o token Firebase
+  static const String backendUrl = 'http://10.0.2.2:4000';
+
+  // inicia verificação (envia SMS)
+  static Future<void> verifyPhoneNumber({
+    required String phoneNumber,
+    required void Function(String verificationId, int? resendToken) codeSent,
+    required void Function(UserCredential userCredential) autoRetrieved,
+    required void Function(FirebaseAuthException e) verificationFailed,
+  }) async {
+    await _auth.verifyPhoneNumber(
+      phoneNumber: phoneNumber,
+      timeout: const Duration(seconds: 60),
+      verificationCompleted: (PhoneAuthCredential credential) async {
+        // assinatura automática (Android)
+        final userCredential = await _auth.signInWithCredential(credential);
+        await _afterFirebaseSignIn(userCredential);
+        autoRetrieved(userCredential);
+      },
+      verificationFailed: verificationFailed,
+      codeSent: (String verificationId, int? resendToken) {
+        codeSent(verificationId, resendToken);
+      },
+      codeAutoRetrievalTimeout: (String verificationId) {},
+    );
+  }
+
+  // login usando o código manualmente
+  static Future<bool> signInWithSmsCode({
+    required String verificationId,
+    required String smsCode,
+  }) async {
+    try {
+      final credential = PhoneAuthProvider.credential(
+        verificationId: verificationId,
+        smsCode: smsCode,
+      );
+      final userCredential = await _auth.signInWithCredential(credential);
+      await _afterFirebaseSignIn(userCredential);
+      return true;
+    } catch (e) {
+      print('Erro signInWithSmsCode: $e');
+      return false;
+    }
+  }
+
+  // troca o ID token Firebase com teu backend -> backend cria/retorna sessão própria
+  static Future<void> _afterFirebaseSignIn(
+    UserCredential userCredential,
+  ) async {
+    final user = userCredential.user;
+    if (user == null) return;
+    final idToken = await user.getIdToken();
+
+    // chama teu backend: por exemplo POST /auth/firebase {idToken}
+    final url = Uri.parse('$backendUrl/auth/firebase');
+    final res = await http.post(
+      url,
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'idToken': idToken, 'phone': user.phoneNumber}),
+    );
+
+    if (res.statusCode == 200) {
+      final body = jsonDecode(res.body);
+      final apiToken = body['token']; // supomos que teu backend retorna token
+      // salva token de sessão em storage seguro
+      await _storage.write(key: 'api_token', value: apiToken);
+      // podes salvar mais dados se quiseres
+    } else {
+      // lidar com erro (backend pode criar o user)
+      throw Exception('Backend auth falhou: ${res.statusCode} ${res.body}');
+    }
+  }
+}
+
+
+
+
+
+
+
+
+*BACKUP DO METODO "verify_firebase_token" ---03.10.2025
+verify_firebase_token(IdToken) when is_binary(IdToken); is_list(IdToken) ->
+    ApiKey0 = os:getenv("FIREBASE_API_KEY"),
+    ApiKey = case ApiKey0 of
+                 false -> undefined;
+                 V -> V
+             end,
+    case ApiKey of
+        undefined -> {error, "no_firebase_api_key_env"};
+        _ ->
+            application:ensure_all_started(inets),
+            application:ensure_all_started(ssl),
+            Url = "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=" ++ ApiKey,
+
+            %% 🔹 garante que o token seja binário
+            IdTokenBin = case IdToken of
+                             I when is_list(I) -> list_to_binary(I);
+                             I when is_binary(I) -> I
+                         end,
+
+            BodyMap = #{<<"idToken">> => IdTokenBin},
+            BodyJson = jsx:encode(BodyMap),
+            Headers = [{"Content-Type", "application/json"}],
+            Request = {Url, Headers, "application/json", BodyJson},
+
+            case httpc:request(post, Request, [], []) of
+                {ok, {{_, 200, _}, _RespHeaders, RespBody}} ->
+                    io:format("🔍 RespBody bruto do Firebase: ~p~n", [RespBody]),
+                    RespBodyBin = case RespBody of
+                            B when is_binary(B) -> B;
+                            L when is_list(L)   -> list_to_binary(L)
+                        end,
+                    Dec = catch jsx:decode(RespBodyBin, [return_maps]),
+                    case Dec of
+                        Map when is_map(Map) ->
+                            Users = maps:get(<<"users">>, Map, undefined),
+                            case Users of
+                                undefined -> {error, "no_users_in_response"};
+                                [First|_] when is_map(First) -> {ok, First};
+                                _ -> {error, "unexpected_users_format"}
+                            end;
+                        _ ->
+                            {error, {invalid_json_response, RespBody}}
+                    end;
+
+                {ok, {{_, Code, _Reason}, _RespHeaders, RespBody}} ->
+                    {error, {firebase_api_error, Code, RespBody}};
+
+                {error, Reason} ->
+                    {error, {http_error, Reason}}
+            end
+    end.

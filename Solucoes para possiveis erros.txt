@@ -1,0 +1,262 @@
+* No **`rebar.config`**, quando usas `{tag, "4.7.0"}` ou `{branch, "master"}`, o rebar3 pode **não atualizar o código já baixado** (fica em `_build/default/lib/epgsql`).
+* Por isso, mesmo depois de `rebar3 update`, ele continuava a compilar a versão antiga do `epgsql` → aquela que não suportava o método de autenticação do teu PostgreSQL (`scram-sha-256`).
+* Ao trocar para uma referência explícita de commit (`ref,"28e9f84c..."`), tu **forçaste o rebar3 a clonar novamente** e usar exatamente aquela versão.
+
+Resultado: o `epgsql` atualizado já entende o protocolo de autenticação do teu servidor → e finalmente funcionou ✅.
+
+---
+
+📌 Dica para o futuro:
+Se quiser sempre pegar a última versão, podes usar:
+
+```erlang
+{epgsql, {git, "https://github.com/epgsql/epgsql.git", {branch, "master"}}}
+```
+
+e depois forçar limpeza:
+
+```bash
+rebar3 clean --all
+rm -rf _build/default/lib/epgsql
+rebar3 get-deps
+rebar3 compilef
+```
+
+Assim, ele baixa de novo.
+
+
+
+
+
+widget_test.dart: // This is a basic Flutter widget test.
+//
+// To perform an interaction with a widget in your test, use the WidgetTester
+// utility in the flutter_test package. For example, you can send tap and scroll
+// gestures. You can also use WidgetTester to find child widgets in the widget
+// tree, read text, and verify that the values of widget properties are correct.
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:client_flutter/main.dart';
+
+void main() {
+  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
+    // Build our app and trigger a frame.
+    await tester.pumpWidget(const MyApp());
+
+    // Verify that our counter starts at 0.
+    expect(find.text('0'), findsOneWidget);
+    expect(find.text('1'), findsNothing);
+
+    // Tap the '+' icon and trigger a frame.
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pump();
+
+    // Verify that our counter has incremented.
+    expect(find.text('0'), findsNothing);
+    expect(find.text('1'), findsOneWidget);
+  });
+}
+
+
+erro: Exception has occurred.
+PlatformException (PlatformException(java.lang.Exception: Failed to load FirebaseOptions from resource. Check that you have defined values.xml correctly., Exception, Cause: null, Stacktrace: java.lang.Exception: Failed to load FirebaseOptions from resource. Check that you have defined values.xml correctly.
+	at io.flutter.plugins.firebase.core.FlutterFirebaseCorePlugin.lambda$optionsFromResource$5(FlutterFirebaseCorePlugin.java:222)
+	at io.flutter.plugins.firebase.core.FlutterFirebaseCorePlugin.$r8$lambda$UKjIMRLnh50mCq5Rg7c5X1_2d5w(Unknown Source:0)
+	at io.flutter.plugins.firebase.core.FlutterFirebaseCorePlugin$$ExternalSyntheticLambda3.run(D8$$SyntheticClass:0)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1154)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:652)
+	at java.lang.Thread.run(Thread.java:1563)
+, null))
+
+
+
+
+PASSO IMPORTANTE: 
+
+Exatamente! ✅
+
+Com o que tens agora:
+
+1. **Firebase**:
+
+   * O `idToken` enviado pelo Flutter é recebido pelo backend (`firebase_handler.erl`).
+   * `auth_util:verify_firebase_token/1` valida o token via Firebase REST API (`accounts:lookup`) e retorna os claims.
+
+2. **Auth do backend**:
+
+   * `get_or_create_user/2` garante que o usuário exista no PostgreSQL (cria se necessário).
+   * `create_session_token/1` gera um JWT próprio do backend, que é usado pelo Flutter nas próximas requisições.
+
+3. **Flutter**:
+
+   * Recebe JSON `{ token: ..., user: ... }` e guarda o `token` no `FlutterSecureStorage`.
+   * A tela de chat agora abre direto se há token, e podes forçar voltar às telas de login apagando o token.
+
+Então sim, **o fluxo Firebase → Backend → Flutter está correto** e funcionando.
+
+O próximo passo natural é **evoluir o backend** para lidar com casos mais avançados, por exemplo:
+
+* Expiração de tokens do backend
+* Validação de `idToken` expirado do Firebase
+* Renovação automática de tokens no Flutter
+* Controle de sessão do usuário (logout em múltiplos dispositivos)
+
+Se quiseres, posso te mostrar **como evoluir o `firebase_handler` e o `auth_util`** para suportar essas funcionalidades de sessão e segurança. Quer que façamos isso?
+
+
+
+
+O QUE EU QUERO AGORA:  
+Perfeito! Então vamos organizar o que você precisa para ter um **fluxo real, funcional e completo**, sem mock, mas ainda controlado para testes.
+
+---
+
+## 1️⃣ Estrutura que temos
+
+* **`firebase_handler.erl`** → Recebe requisição do Flutter com `idToken` do Firebase.
+* **`auth_util.erl`** → Valida token com Firebase, cria/atualiza usuário no Postgres, cria token de sessão do backend.
+
+O fluxo desejado é:
+
+```
+Flutter (idToken do Firebase)
+        |
+        v
+Backend (firebase_handler → auth_util)
+        |
+        v
+Postgres (criação/atualização do usuário)
+        |
+        v
+Backend retorna token de sessão + info do usuário
+        |
+        v
+Flutter abre lista de chats
+```
+
+---
+
+## 2️⃣ Diferença entre o mock e o real
+
+* **Mock:**
+
+  * Simula usuário e token (`token_do_backend_123`).
+  * Sempre retorna 200 OK.
+  * Não faz validação real do Firebase nem interage com Postgres.
+* **Real:**
+
+  * `verify_firebase_token/1` chama o Firebase REST API (`accounts:lookup`).
+  * Cria ou atualiza usuário na base de dados.
+  * Cria token de sessão real do backend (JWT).
+  * Retorna JSON que o Flutter espera (`token` + `user`).
+
+**Problema que você enfrentou:**
+O handler real estava retornando **204 No Content** porque provavelmente algo falhou no fluxo `auth_util`, e o Cowboy REST **não enviou o body corretamente**. Por isso o Flutter reclama.
+
+---
+
+## 3️⃣ Como garantir que funcione
+
+1. **Testes unitários via Erlang shell antes do Flutter:**
+
+```erlang
+inets:start().
+httpc:request(post, 
+  {"http://localhost:4000/auth/firebase", [], "application/json", <<"{\"idToken\":\"SEU_IDTOKEN\"}">>}, 
+  [], []).
+```
+
+* Se retornar 200 + JSON, backend OK.
+* Se retornar 204 ou 500, algo no `auth_util` falhou.
+
+2. **`firebase_handler.erl` completo deve:**
+
+* Ler o JSON recebido (`idToken`).
+* Chamar `auth_util:verify_firebase_token(IdToken)` → retorna `{ok, Claims}`.
+* Chamar `auth_util:get_or_create_user(Phone, FirebaseUid)` → retorna `{ok, UserMap}`.
+* Chamar `auth_util:create_session_token(UserMap)` → retorna `{ok, Token}`.
+* Retornar `200 OK` com JSON `{token, user}`.
+
+> **Dica:** Para evitar 204, você deve **sempre construir e retornar o JSON**. O Cowboy REST pode devolver 204 se você não fizer `cowboy_req:reply(200, …)` corretamente.
+
+---
+
+## 4️⃣ Próximo passo sugerido
+
+* Revisar `auth_util.erl` para garantir que:
+
+  1. `verify_firebase_token/1` retorna `{ok, Claims}` real.
+  2. `get_or_create_user/2` nunca retorna `error` silencioso (use `io:format/2` para debug).
+  3. `create_session_token/1` gera JWT válido e **não lança exceção**.
+
+* Atualizar `firebase_handler.erl` para capturar todos os erros e **sempre retornar 400/500 + JSON** ao Flutter, nunca deixar vazio.
+
+---
+
+Se você quiser, posso te enviar agora **uma versão revisada de `firebase_handler.erl` real**, pronta para o fluxo Firebase → Backend → Flutter, com tratamento de erros completo e logs para debug, para que você consiga testar direto pelo shell ou pelo Flutter.
+
+Quer que eu faça isso agora?
+
+
+
+curl -v -X POST http://localhost:4000/auth/firebase   -H "Content-Type: application/json"   -d "{\"idToken\":\"eyJhbGciOiJSUzI1NiIsImtpZCI6ImU4MWYwNTJhZWYwNDBhOTdjMzlkMjY1MzgxZGU2Y2I0MzRiYzM1ZjMiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vY2hhdGFwcC0yNDMwNyIsImF1ZCI6ImNoYXRhcHAtMjQzMDciLCJhdXRoX3RpbWUiOjE3NTk3MzU5MTYsInVzZXJfaWQiOiJ3RTh3Qkt0NWhvTUl6bUFNek5qWGdidE8zMzUyIiwic3ViIjoid0U4d0JLdDVob01Jem1BTXpOalhnYnRPMzM1MiIsImlhdCI6MTc1OTczNTkxNiwiZXhwIjoxNzU5NzM5NTE2LCJwaG9uZV9udW1iZXIiOiIrMTAwMDAwMDAwMDEiLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7InBob25lIjpbIisxMDAwMDAwMDAwMSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBob25lIn19.MpTxpt1C4mR4kr70sL1zHLlBt3-HgB46TQSXbx3-65iWmultjipZ4Sb9-PneXAAZY4NJBcHCgb595A8oIHVfOIZa9gknk5NqMxYcswL1s9IwsLZf_KS_5Oayup18duT_xqCk5UUr9_Ihl1Six0L9BC34O1HteJ8PwtIzJu3I1Ud9SPNKDb0YcK6G1q-4S4duCn8ykZiWTmacDgEQAhhKVzIT2655KrvdhQl5cqq3S6iVGVd9bJJaPoLSumq0Ko7BLRt-yZ9FcL6ykv3h0DdbfMWUCRNw8qkQgXljv37jK6ntknp21xVytwgdGXvMuGgtQ2BiYOZY2nDaPsTjPP7UyA\"}"
+
+Atualmente (com base no código que colaste), **estás a gerar o JWT manualmente usando HS256** com `crypto:mac/4`. Ou seja:
+
+✅ **O algoritmo efetivo hoje é HS256 (HMAC-SHA256)**
+O token é construído “na mão”, sem usar nenhuma biblioteca especializada.
+
+### 📌 Como sei disso?
+
+No teu `auth_util:create_session_token/1`, tens este trecho:
+
+```erlang
+Header = [{<<"alg">>, <<"HS256">>}, {<<"typ">>, <<"JWT">>}],
+...
+SigRaw = crypto:mac(hmac, sha256, SecretBin, SigningInput),
+SigBase = base64url(SigRaw),
+TokenBin = <<HBase/binary, $., PBase/binary, $., SigBase/binary>>,
+{ok, binary_to_list(TokenBin)}
+```
+
+Isto significa:
+
+* Estás a criar o JWT com o algoritmo `"alg": "HS256"`.
+* A assinatura é feita com `crypto:mac(hmac, sha256, ...)` → ou seja, **HS256**.
+* A secret key vem da env var: `SESSION_SECRET`.
+* Não estás a usar nenhuma biblioteca JWT como `jose` ou `joken`.
+
+---
+
+## ✅ Resumo rápido
+
+| Aspecto             | Situação atual ✅                                |
+| ------------------- | ----------------------------------------------- |
+| Algoritmo usado     | **HS256 (HMAC-SHA256)**                         |
+| Implementação       | Manual (sem biblioteca externa)                 |
+| Segurança           | Funciona, mas depende de implementações manuais |
+| Recomendação futura | Migrar para `jose` (mais robusto e seguro)      |
+
+---
+
+## 🔥 O que posso fazer agora?
+
+Se quiseres avançar com o plano que propus (migrar para biblioteca segura), posso:
+
+1️⃣ Adicionar a dependência `jose` ao `rebar.config`
+2️⃣ Atualizar a função `create_session_token/1` para usar a lib
+3️⃣ Simplificar o código com encoding + claims automáticos
+4️⃣ Garantir compatibilidade com Flutter + futuro refresh token
+
+É só dizer: **queres que eu converta já o token para usar `jose`?**
+
+
+olha, eu fiz esse pequeno debuga aqui: case epgsql:connect(Host, DbUser, DbPass, [{database, DbName}, {port, Port}]) of
+            {ok, Conn} ->
+                io:format("🔹 Conectou: ~p ~p~n", [Phone, FirebaseUid]),
+                select_or_insert_user(Conn, Phone, FirebaseUid);
+            {error, Err} ->
+                {error, {db_connect_error, Err}}
+        end                 no log, a mensagem conectou apareceu. o que isso signifca????

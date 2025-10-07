@@ -5,10 +5,17 @@
     {mod, {chat_app_app, []}},
     {applications, [
         kernel,
-        stdlib
+        stdlib,
+        crypto,
+        inets,
+        ssl,
+        cowboy,
+        ranch,
+        epgsql
     ]},
     {env, []},
-    {modules, []},
+    {modules, [server, auth_util, firebase_handler, chat_app_app]},
     {licenses, ["Apache-2.0"]},
     {links, []}
- ]}.
+]}.
+

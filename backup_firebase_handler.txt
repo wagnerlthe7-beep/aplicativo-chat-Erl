@@ -1,0 +1,142 @@
+%%%-------------------------------------------------------------------
+%%% Handler HTTP para /auth/firebase usando cowboy_handler
+%%%-------------------------------------------------------------------
+
+-module(firebase_handler).
+-behaviour(cowboy_handler).
+
+-export([init/2]).
+
+-include_lib("kernel/include/logger.hrl").
+
+init(Req0, State) ->
+    Method = cowboy_req:method(Req0),
+    io:format("🔥 Método recebido: ~p~n", [Method]),
+
+    case Method of
+        <<"POST">> ->
+            {ok, Body, Req1} = cowboy_req:read_body(Req0),
+            io:format("📥 Body recebido: ~p~n", [Body]),
+
+            case catch jsx:decode(Body, [return_maps]) of
+                #{<<"idToken">> := IdToken} ->
+                    io:format("🟢 Recebi idToken: ~p~n", [IdToken]),
+
+                    case auth_util:verify_firebase_token(IdToken) of
+                        {ok, Claims} ->
+                            %% linha a seguir apenas para debug
+                            io:format("✅ Claims recebidos de verify_firebase_token: ~p~n", [Claims]),
+                            %% terminou a linha acima de debug
+
+                            Phone = maps:get(<<"phoneNumber">>, Claims, undefined),
+                            FirebaseUid = maps:get(<<"localId">>, Claims, undefined),
+
+                            %% linha a seguir apenas para debug
+                            io:format("📌 Phone extraído: ~p, FirebaseUid extraído: ~p~n", [Phone, FirebaseUid]),
+                            %% terminou a linha acima de debug
+                            
+                            case Phone of
+                                undefined ->
+                                    ReqF = reply_json(Req1, 400, #{error => "no_phone_in_token"}),
+                                    {ok, ReqF, State};
+                                _ ->
+                                    case auth_util:get_or_create_user(Phone, FirebaseUid) of
+                                        {ok, UserMap} ->
+                                            case auth_util:create_session_token(UserMap) of
+                                                {ok, Token} ->
+                                                    UserJson = maps:from_list(user_map_to_list(UserMap)),
+                                                    Response = #{
+                                                        token => Token,
+                                                        user  => UserJson
+                                                    },
+                                                    ReqF = reply_json(Req1, 200, Response),
+                                                    {ok, ReqF, State};
+
+                                                {error, Reason} ->
+                                                    ReqF = reply_json(Req1, 500, #{error => Reason}),
+                                                    {ok, ReqF, State}
+                                            end;
+
+                                        {error, Reason} ->
+                                            ReqF = reply_json(Req1, 500, #{error => Reason}),
+                                            {ok, ReqF, State}
+                                    end
+
+                            end;
+
+                        {error, Reason} ->
+                            ReqF = reply_json(Req1, 401, #{error => Reason}),
+                            {ok, ReqF, State}
+                    end;
+
+                _ ->
+                    ReqF = reply_json(Req1, 400, #{error => "invalid_payload"}),
+                    {ok, ReqF, State}
+            end;
+
+        _Other ->
+            ReqF = reply_json(Req0, 405, #{error => "method_not_allowed"}),
+            {ok, ReqF, State}
+    end.
+
+%%%-------------------------------------------------------------------
+%%% Helpers
+%%%-------------------------------------------------------------------
+
+reply_json(Req, Status, Map) when is_map(Map) ->
+    %% Remove valores não codificáveis:
+    SafeMap = sanitize_map(Map),
+
+    BodySafe =
+        case catch jsx:encode(SafeMap) of
+            {'EXIT', _} ->
+                %% fallback em caso de crash
+                jsx:encode(#{
+                    error => <<"encode_failed">>,
+                    original_response => <<"removed">>
+                });
+            Bin -> Bin
+        end,
+
+    ReplyRes = cowboy_req:reply(
+        Status,
+        #{<<"content-type">> => <<"application/json">>},
+        BodySafe,
+        Req
+    ),
+    case ReplyRes of
+        {ok, Req2} -> Req2;
+        Req2 -> Req2
+    end.
+
+%% Remove tuplas, pids, funs, exceptions, etc. de forma recursiva
+sanitize_map(Value) when is_map(Value) ->
+    maps:from_list(
+        lists:map(
+            fun({K,V}) -> {K, sanitize_value(V)} end,
+            maps:to_list(Value)
+        )
+    );
+sanitize_map(Value) -> sanitize_value(Value).
+
+sanitize_value(V) when is_map(V) ->
+    sanitize_map(V);
+sanitize_value(V) when is_list(V) ->
+    %% Garante que não venha tuplas/funs na lista
+    [sanitize_value(X) || X <- V];
+sanitize_value(V) when is_tuple(V) ->
+    %% transforma tupla em string pra não quebrar
+    list_to_binary(io_lib:format("~p", [V]));
+sanitize_value(V) when is_integer(V); is_float(V); is_boolean(V); is_binary(V) ->
+    V;
+sanitize_value(undefined) ->
+    <<"undefined">>;
+sanitize_value(Other) ->
+    %% qualquer coisa não suportada vira string
+    list_to_binary(io_lib:format("~p", [Other])).
+
+user_map_to_list(UserMap) when is_map(UserMap) ->
+    lists:map(fun({K,V}) -> {binaryize(K), V} end, maps:to_list(UserMap)).
+
+binaryize(Key) when is_atom(Key) -> list_to_binary(atom_to_list(Key));
+binaryize(Key) when is_binary(Key) -> Key.

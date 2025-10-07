@@ -3,3 +3,5 @@
 
 start() ->
     io:format("Chat server iniciado!~n").
+
+
