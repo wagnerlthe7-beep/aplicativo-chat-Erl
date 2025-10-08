@@ -1,23 +1,39 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:uuid/uuid.dart';
 
 class AuthService {
   static final _auth = FirebaseAuth.instance;
   static final _storage = FlutterSecureStorage();
-  // Põe aqui a URL do teu backend Erlang que irá aceitar o token Firebase
+  static final _uuid = Uuid();
+
+  // URL do backend Erlang
   static const String backendUrl = 'http://10.0.2.2:4000';
 
-  // ✅ PARA IMPRIMIR ID TOKEN
+  /// -----------------------------
+  /// 1) Device UUID (uma vez por instalação)
+  /// -----------------------------
+  static Future<String> getOrCreateDeviceId() async {
+    var id = await _storage.read(key: 'device_uuid');
+    if (id == null) {
+      id = _uuid.v4();
+      await _storage.write(key: 'device_uuid', value: id);
+    }
+    return id;
+  }
+
+  /// -----------------------------
+  /// 2) Print do Firebase ID Token
+  /// -----------------------------
   static Future<void> printFirebaseIdToken() async {
     final User? user = FirebaseAuth.instance.currentUser;
-
     if (user != null) {
       try {
         final idTokenResult = await user.getIdTokenResult();
         final String? idToken = idTokenResult.token;
-
         if (idToken != null) {
           print('✅ Firebase ID Token: $idToken');
         } else {
@@ -31,7 +47,9 @@ class AuthService {
     }
   }
 
-  // inicia verificação (envia SMS)
+  /// -----------------------------
+  /// 3) Firebase Phone Auth - enviar SMS
+  /// -----------------------------
   static Future<void> verifyPhoneNumber({
     required String phoneNumber,
     required void Function(String verificationId, int? resendToken) codeSent,
@@ -42,20 +60,19 @@ class AuthService {
       phoneNumber: phoneNumber,
       timeout: const Duration(seconds: 60),
       verificationCompleted: (PhoneAuthCredential credential) async {
-        // assinatura automática (Android)
         final userCredential = await _auth.signInWithCredential(credential);
-        await _afterFirebaseSignIn(userCredential);
+        await afterFirebaseSignInBackend(userCredential: userCredential);
         autoRetrieved(userCredential);
       },
       verificationFailed: verificationFailed,
-      codeSent: (String verificationId, int? resendToken) {
-        codeSent(verificationId, resendToken);
-      },
+      codeSent: codeSent,
       codeAutoRetrievalTimeout: (String verificationId) {},
     );
   }
 
-  // login usando o código manualmente
+  /// -----------------------------
+  /// 4) Firebase SMS code login
+  /// -----------------------------
   static Future<bool> signInWithSmsCode({
     required String verificationId,
     required String smsCode,
@@ -66,39 +83,106 @@ class AuthService {
         smsCode: smsCode,
       );
       final userCredential = await _auth.signInWithCredential(credential);
-      await _afterFirebaseSignIn(userCredential);
+      await afterFirebaseSignInBackend(userCredential: userCredential);
       return true;
     } catch (e) {
-      print('Erro signInWithSmsCode: $e');
+      print('❌ Erro signInWithSmsCode: $e');
       return false;
     }
   }
 
-  // troca o ID token Firebase com teu backend -> backend cria/retorna sessão própria
-  static Future<void> _afterFirebaseSignIn(
-    UserCredential userCredential,
-  ) async {
-    final user = userCredential.user;
-    if (user == null) return;
-    final idToken = await user.getIdToken();
+  /// -----------------------------
+  /// 5) Trocar ID token Firebase por sessão do backend
+  /// -----------------------------
+  static Future<void> afterFirebaseSignInBackend({
+    UserCredential? userCredential,
+  }) async {
+    final user = userCredential?.user ?? _auth.currentUser;
+    if (user == null) {
+      print('❌ Nenhum usuário Firebase encontrado');
+      throw Exception('Usuário Firebase não encontrado');
+    }
 
-    // chama teu backend: por exemplo POST /auth/firebase {idToken}
-    final url = Uri.parse('$backendUrl/auth/firebase');
+    try {
+      final idToken = await user.getIdToken();
+      final deviceId = await getOrCreateDeviceId();
+      final deviceInfo =
+          '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+
+      print('🔄 Enviando dados para backend: device=$deviceId, phone=${user.phoneNumber}');
+
+      final url = Uri.parse('$backendUrl/auth/firebase');
+      final res = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'idToken': idToken,
+          'phone': user.phoneNumber,
+          'device_uuid': deviceId,
+          'device_info': deviceInfo,
+        }),
+      );
+
+      print('📡 Backend response: ${res.statusCode}');
+
+      if (res.statusCode == 200) {
+        final body = jsonDecode(res.body);
+        // Backend retorna access_token + refresh_token
+        await _storage.write(key: 'access_token', value: body['access_token']);
+        await _storage.write(key: 'refresh_token', value: body['refresh_token']);
+        print('✅ Tokens salvos com sucesso');
+      } else {
+        print('❌ Backend auth falhou: ${res.statusCode} ${res.body}');
+        throw Exception('Backend auth falhou: ${res.statusCode} ${res.body}');
+      }
+    } catch (e) {
+      print('❌ Erro em afterFirebaseSignInBackend: $e');
+      rethrow;
+    }
+  }
+
+  /// -----------------------------
+  /// 6) Refresh de tokens
+  /// -----------------------------
+  static Future<bool> tryRefresh() async {
+    final refresh = await _storage.read(key: 'refresh_token');
+    if (refresh == null) return false;
+
+    final deviceId = await getOrCreateDeviceId();
+    final url = Uri.parse('$backendUrl/auth/refresh');
     final res = await http.post(
       url,
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'idToken': idToken, 'phone': user.phoneNumber}),
+      body: jsonEncode({'refresh_token': refresh, 'device_info': deviceId}),
     );
 
     if (res.statusCode == 200) {
       final body = jsonDecode(res.body);
-      final apiToken = body['token']; // supomos que teu backend retorna token
-      // salva token de sessão em storage seguro
-      await _storage.write(key: 'api_token', value: apiToken);
-      // podes salvar mais dados se quiseres
+      await _storage.write(key: 'access_token', value: body['access_token']);
+      await _storage.write(key: 'refresh_token', value: body['refresh_token']);
+      return true;
     } else {
-      // lidar com erro (backend pode criar o user)
-      throw Exception('Backend auth falhou: ${res.statusCode} ${res.body}');
+      await _storage.delete(key: 'access_token');
+      await _storage.delete(key: 'refresh_token');
+      return false;
     }
+  }
+
+  /// -----------------------------
+  /// 7) Logout - revogar sessão atual
+  /// -----------------------------
+  static Future<void> logout() async {
+    final refresh = await _storage.read(key: 'refresh_token');
+    if (refresh != null) {
+      final url = Uri.parse('$backendUrl/auth/logout');
+      await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'refresh_token': refresh}),
+      );
+    }
+    // Limpa storage
+    await _storage.delete(key: 'access_token');
+    await _storage.delete(key: 'refresh_token');
   }
 }

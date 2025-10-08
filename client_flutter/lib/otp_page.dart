@@ -20,22 +20,26 @@ class _OtpPageState extends State<OtpPage> {
   void _submitCode() async {
     final code = _codeController.text.trim();
     if (code.isEmpty || verificationId == null) return;
+
     setState(() => _loading = true);
 
+    // Login no Firebase usando o código SMS
     final success = await AuthService.signInWithSmsCode(
       verificationId: verificationId!,
       smsCode: code,
     );
-    setState(() => _loading = false);
-    // Imprime o token no console do Flutter
-    await AuthService.printFirebaseIdToken();
+
     if (success) {
+      // AuthService.signInWithSmsCode já chama afterFirebaseSignInBackend automaticamente
+      // Então só navega para a próxima tela
       Navigator.pushReplacementNamed(context, '/chatList');
     } else {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Código inválido')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Código inválido')),
+      );
     }
+
+    setState(() => _loading = false);
   }
 
   @override

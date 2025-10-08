@@ -20,7 +20,9 @@ start(_StartType, _StartArgs) ->
     %% Dispatcher com rotas
     Dispatch = cowboy_router:compile([
         {'_', [
-            {"/auth/firebase", firebase_handler, []}
+            {"/auth/firebase", firebase_handler, []},
+            {"/auth/refresh", refresh_handler, []},
+            {"/auth/logout", logout_handler, []}
             %% Adicione outras rotas aqui, ex: {["/chat"], [], chat_handler, []}
         ]}
     ]),
