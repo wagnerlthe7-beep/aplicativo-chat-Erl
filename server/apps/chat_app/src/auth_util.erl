@@ -196,7 +196,7 @@ revoke_session_by_token(RefreshPlain) ->
     end).
 
 %% -------------------------------------------------------------------
-%% 5) JWT Decoder
+%% 5) JWT Decoder (Simplified)
 %% -------------------------------------------------------------------
 decode_jwt(Token) when is_binary(Token); is_list(Token) ->
     try
@@ -206,23 +206,28 @@ decode_jwt(Token) when is_binary(Token); is_list(Token) ->
         end,
         
         %% Split JWT into parts
-        [_HeaderB64, PayloadB64, _SignatureB64] = binary:split(TokenBin, <<".">>, [global]),
-        
-        %% Decode payload (we don't verify signature for now)
-        Payload = base64url_decode(PayloadB64),
-        case jsx:decode(Payload, [return_maps]) of
-            Claims when is_map(Claims) ->
-                %% Check expiration
-                Exp = maps:get(<<"exp">>, Claims, 0),
-                Now = erlang:system_time(second),
-                case Exp > Now of
-                    true -> {ok, Claims};
-                    false -> {error, token_expired}
+        Parts = binary:split(TokenBin, <<".">>, [global]),
+        case Parts of
+            [_, PayloadB64, _] ->
+                %% Decode base64url (same as used in creation)
+                Payload = base64url_decode(PayloadB64),
+                case jsx:decode(Payload, [return_maps]) of
+                    Claims when is_map(Claims) ->
+                        %% Check expiration
+                        Exp = maps:get(<<"exp">>, Claims, 0),
+                        Now = erlang:system_time(second),
+                        case Exp > Now of
+                            true -> {ok, Claims};
+                            false -> {error, token_expired}
+                        end;
+                    _ -> {error, invalid_payload}
                 end;
-            _ -> {error, invalid_payload}
+            _ -> {error, invalid_jwt_format}
         end
     catch
-        _:_ -> {error, invalid_token}
+        Class:Reason ->
+            ?LOG_ERROR("❌ JWT decode error: ~p:~p", [Class, Reason]),
+            {error, {decode_error, Class, Reason}}
     end.
 
 base64url_decode(Bin) ->
