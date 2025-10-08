@@ -22,7 +22,8 @@ start(_StartType, _StartArgs) ->
         {'_', [
             {"/auth/firebase", firebase_handler, []},
             {"/auth/refresh", refresh_handler, []},
-            {"/auth/logout", logout_handler, []}
+            {"/auth/logout", logout_handler, []},
+            {"/auth/revoke-others", revoke_others_handler, []}
             %% Adicione outras rotas aqui, ex: {["/chat"], [], chat_handler, []}
         ]}
     ]),

@@ -16,7 +16,9 @@
     create_access_jwt/2,
     validate_and_rotate_refresh/2,
     revoke_other_sessions/2,
-    revoke_session_by_token/1
+    revoke_session_by_token/1,
+    %% JWT utilities
+    decode_jwt/1
 ]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -192,6 +194,48 @@ revoke_session_by_token(RefreshPlain) ->
                 {error, {db_error, Err}}
         end
     end).
+
+%% -------------------------------------------------------------------
+%% 5) JWT Decoder
+%% -------------------------------------------------------------------
+decode_jwt(Token) when is_binary(Token); is_list(Token) ->
+    try
+        TokenBin = case Token of
+            T when is_list(T) -> list_to_binary(T);
+            T when is_binary(T) -> T
+        end,
+        
+        %% Split JWT into parts
+        [_HeaderB64, PayloadB64, _SignatureB64] = binary:split(TokenBin, <<".">>, [global]),
+        
+        %% Decode payload (we don't verify signature for now)
+        Payload = base64url_decode(PayloadB64),
+        case jsx:decode(Payload, [return_maps]) of
+            Claims when is_map(Claims) ->
+                %% Check expiration
+                Exp = maps:get(<<"exp">>, Claims, 0),
+                Now = erlang:system_time(second),
+                case Exp > Now of
+                    true -> {ok, Claims};
+                    false -> {error, token_expired}
+                end;
+            _ -> {error, invalid_payload}
+        end
+    catch
+        _:_ -> {error, invalid_token}
+    end.
+
+base64url_decode(Bin) ->
+    %% Add padding if needed
+    Padding = case byte_size(Bin) rem 4 of
+        0 -> <<>>;
+        2 -> <<"==">>;
+        3 -> <<"=">>
+    end,
+    Padded = <<Bin/binary, Padding/binary>>,
+    %% Convert base64url to base64
+    Base64 = binary:replace(binary:replace(Padded, <<"-">>, <<"+">>, [global]), <<"_">>, <<"/">>, [global]),
+    base64:decode(Base64).
 
 %% -------------------------------------------------------------------
 %% Helpers
