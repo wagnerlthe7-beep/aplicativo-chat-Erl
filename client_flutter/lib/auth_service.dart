@@ -185,4 +185,43 @@ class AuthService {
     await _storage.delete(key: 'access_token');
     await _storage.delete(key: 'refresh_token');
   }
+
+  /// -----------------------------
+  /// 8) Revogar outras sessões (WhatsApp-style)
+  /// -----------------------------
+  static Future<bool> revokeOtherSessions() async {
+    final accessToken = await _storage.read(key: 'access_token');
+    final deviceId = await getOrCreateDeviceId();
+    
+    if (accessToken == null) {
+      print('❌ Nenhum access token encontrado');
+      return false;
+    }
+
+    try {
+      print('🚫 Revogando outras sessões...');
+      final url = Uri.parse('$backendUrl/auth/revoke-others');
+      final res = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'access_token': accessToken,
+          'device_uuid': deviceId,
+        }),
+      );
+
+      print('📡 Revoke others response: ${res.statusCode}');
+
+      if (res.statusCode == 200) {
+        print('✅ Outras sessões revogadas com sucesso');
+        return true;
+      } else {
+        print('❌ Falha ao revogar outras sessões: ${res.statusCode} ${res.body}');
+        return false;
+      }
+    } catch (e) {
+      print('❌ Erro ao revogar outras sessões: $e');
+      return false;
+    }
+  }
 }
