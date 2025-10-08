@@ -1,0 +1,31 @@
+DEFINIR VARIAVEIS DO AMBIENTE QUE SERAO CHAMADOS NO auth_util.erl    
+ABRIR O WINDOWS POWERSHELL, DIGITAR O SEGUINTE: 
+$bytes = New-Object Byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+$env:SESSION_SECRET = [Convert]::ToBase64String($bytes)                 <- ISSO VAI AJUDAR A DEFINIR O SESSION_SECRET
+
+$env:FIREBASE_API_KEY="AIzaSyBGPDe4Rg_d0C5Kd7woiuF8cqyXBpQh9_w"
+$env:DB_HOST="localhost"
+$env:DB_PORT="5432"
+$env:DB_NAME="chat_app_db"
+$env:DB_USER="postgres"
+$env:DB_PASS="wagner21&"
+
+para ver o que eu defini como VARIAVEL DE AMBIENTE no windows powershell, 
+digita:  $env:FIREBASE_API_KEY
+
+para ver FIREBASE_API_KEY no shell do erlang, digita:  os:getenv("FIREBASE_API_KEY").
+
+
+
+*Para ver se a função verify_firebase_token/1 do modulo auth_util está funcionando corretamente. 
+    Se O idToken foi validado no Firebase, e se conseguiu decodificar a resposta JSON com sucesso. 
+    FACA O SEGUINTE:
+        -abra o shell do erlang: rebar3 shell
+        -defina a variavel IdToken com o IdToken do Firebase (IdToken="Id_Token_do_firebase".)
+        -testa no shell do erlang com o comando: auth_util:verify_firebase_token(IdToken). <- Ele deve retornar:
+            Um MAPA ERLANG com todos os dados do usuário, incluindo:
+                localId → UID do Firebase
+                phoneNumber → número do usuário
+                providerUserInfo → lista de provedores associados (nesse caso, apenas phone)
+                createdAt, lastLoginAt, lastRefreshAt → timestamps.

@@ -1,0 +1,1066 @@
+1.Baixar Erlang ->colocar no Path (Enviroment variables)
+2.Baixar rebar3 ->colocar no Path (Enviroment variables)
+3.Instalar Mysql Community ->colocar no Path (Enviroment variables)
+4.Instalar Android Studio
+5.Instalar jdk para correr java
+6.Instalar VsCode
+7.Instalar Node js (ja vem com npm) ->colocar no Path (Enviroment variables)
+
+Criar um diretorio_raiz em qualquer ponto do disco 
+    cd "diretorio_raiz", dentro deste directorio executar: rebar3 new umbrella server
+        vai criar ficheiros e directorios: 
+            ===> Writing server/apps/server/src/server_app.erl
+            ===> Writing server/apps/server/src/server_sup.erl
+            ===> Writing server/apps/server/src/server.app.src
+            ===> Writing server/rebar.config
+            ===> Writing server/config/sys.config
+            ===> Writing server/config/vm.args
+            ===> Writing server/.gitignore
+            ===> Writing server/LICENSE.md
+            ===> Writing server/README.md
+
+            -> mkdir client-android
+            -> mkdir client-web
+            -> mkdir docs
+            -> mkdir server/sql   <- dentro da pasta server cria a pasta "sql"
+
+            -> Entrar na pasta cd server/apps, executar: rebar3 new app chat_app
+                vai criar ficheiros e directorios:
+                    ===> Writing chat_app/src/chat_app_app.erl
+                    ===> Writing chat_app/src/chat_app_sup.erl
+                    ===> Writing chat_app/src/chat_app.app.src
+                    ===> Writing chat_app/rebar.config
+                    ===> Writing chat_app/.gitignore
+                    ===> Writing chat_app/LICENSE.md
+                    ===> Writing chat_app/README.md
+
+                    entrar na pasta chat_app (cd chat_app) e executar:
+                        -> mkdir c_src
+                        -> mkdir include
+                    
+                    Instalar extensao Erlang no VSCODE
+                    Testar conexao com BASE DE DADOS
+                    dentro da pasta chat_app, tem um ficheiro chamado rebar.config
+                    ai, adicione a informacao seguinte: 
+                        {erl_opts, [debug_info]}.
+                        {deps, [
+                            {mysql, ".*", {git, "https://github.com/mysql-otp/mysql-otp.git", {branch, "master"}}}
+                        ]}.
+
+                        {shell, [
+                            %% {config, "config/sys.config"},
+                            {apps, [chat_app]}
+                        ]}.
+
+                    Depois, executar o comando "rebar3 get-deps" para baixar as dependencias
+                    Logo a seguir, correr o comando "rebar3 compile"
+
+                    Criar um ficheiro de teste "Mysql_test.erl" com o seguinte conteudo: 
+                        -module(mysql_test).
+                        -export([connect/0]).
+
+                        connect() ->
+                            case mysql:start_link([
+                                {host, "localhost"},
+                                {port, 3307},
+                                {user, "root"},
+                                {password, "senha"},
+                                {database, "chat_app"}
+                            ]) of
+                                {ok, Pid} ->
+                                    io:format("Conectado com sucesso!~n"),
+                                    Pid;
+                                Pid when is_pid(Pid) ->
+                                    io:format("Conectado com sucesso!~n"),
+                                    Pid;
+                                Error ->
+                                    io:format("Falha ao conectar: ~p~n", [Error]),
+                                    Error
+                            end.    
+                    
+                            ANTES DE EXECUTAR, CRIE NO MYSQL, A DB_NAME "chat_app"
+
+                            para certificar se a conexao conexao foi feita, basta executar dentro da pasta chat_app o Erlang a partir do comando "rebar3 shell" 
+                            vai aparecer espaco para digitar algo, digite: "Conn = mysql_test:connect()." e ENTER, vai aparecer msg "SUCESSO" ou "ERRO".
+
+                            NO CMD, CORRER ASSIM: mysql -u root -p --port=3307 (isso para mim)
+
+
+                            CASO ACEITE CONECTAR, CRIE UM FICHEIRO chat_db.erl com o seguinte conteudo:
+                                %% server/apps/chat_app/src/chat_db.erl
+                                -module(chat_db).
+                                -behaviour(gen_server).
+
+                                %% API
+                                -export([start_link/0, query/1, exec/1]).
+
+                                %% gen_server callbacks
+                                -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+
+                                -define(DBHOST, "localhost").
+                                -define(DBUSER, "root").
+                                -define(DBPASS, "root").
+                                -define(DBNAME, "chatdb").
+                                -define(DBPORT, 3306).
+
+                                -record(state, {conn}).
+
+                                %%% ========= API =========
+                                start_link() ->
+                                    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+                                query(Sql) ->
+                                    gen_server:call(?MODULE, {query, Sql}).
+
+                                exec(Sql) ->
+                                    gen_server:call(?MODULE, {exec, Sql}).
+
+                                %%% ========= gen_server callbacks =========
+                                init([]) ->
+                                    {ok, Conn} = mysql:start_link([{host, ?DBHOST},
+                                                                {user, ?DBUSER},
+                                                                {password, ?DBPASS},
+                                                                {database, ?DBNAME},
+                                                                {port, ?DBPORT}]),
+                                    {ok, #state{conn = Conn}}.
+
+                                handle_call({query, Sql}, _From, State = #state{conn = Conn}) ->
+                                    {ok, Result} = mysql:query(Conn, Sql),
+                                    {reply, Result, State};
+
+                                handle_call({exec, Sql}, _From, State = #state{conn = Conn}) ->
+                                    ok = mysql:query(Conn, Sql),
+                                    {reply, ok, State};
+
+                                handle_call(_Request, _From, State) ->
+                                    {reply, {error, unknown}, State}.
+
+                                handle_cast(_, State) -> {noreply, State}.
+                                handle_info(_, State) -> {noreply, State}.
+                                terminate(_, _) -> ok.
+                                code_change(_, State, _) -> {ok, State}.
+
+
+                            No chat_app.erl (supervisor da aplicação), você coloca o chat_db como parte dos children supervisionados:
+                                init([]) ->
+                                DbChild = #{id => chat_db,
+                                            start => {chat_db, start_link, []},
+                                            restart => permanent,
+                                            shutdown => 5000,
+                                            type => worker,
+                                            modules => [chat_db]},
+                                {ok, { {one_for_one, 5, 10}, [DbChild] }}.
+
+                                Assim, sempre que você iniciar o backend: rebar3 shell,   ele já abre e mantém a conexão com MySQL ativa.
+
+                        TERMINAMOS COM O SERVER POR ENQUANTO
+
+                        AGORA VAMOS A CONFIGURACAO DO REACT PARA CLIENT-WEB, VAMOS CRIAR UMA TELA DE WELLCOME PARA CLIENTE, assim:
+                        entre no directorio "client-web" e execute o comando: node -v e depois npm -v para certificar de que esta mesmo a funcionar
+                            Caso de erro, coloque o caminho do node js ns variaveis do ambiente, feche o vscode e abra novamente.
+                            depois, execute o seguinte: 
+                                npm init -y, PODE RETORNAR ESTE ERRO: "npm : File C:\Program Files\nodejs\npm.ps1 cannot be loaded because running scripts is disabled on this system"
+                                    PARA RESOLVER, EXECUTE: "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned"
+                                certifique de que nao existe nehum ficheiro com o nome "package.json", caso exita, apague.
+
+                                -# Garante que está na pasta certa
+                                cd E:\aplicativo-chat-WhaClone\client-web
+
+                                # Cria projeto React com Vite
+                                npm create vite@latest . -- --template react
+
+                                # Instala dependências
+                                npm install
+
+                                # Depois eh so Rodar
+                                npm run dev, -> Aparece no console um link do tipo:  http://localhost:5173/ <--  Esse será o teu front-end React.
+ 
+                                Adicionar React Router
+                                Para navegar entre telas (/login, /chat/:id etc.), instalas:
+                                dentro da pasta client-web, executar "npm install react-router-dom"
+
+
+                                ATE AQUI, No client-web (React + Vite) já tens o projeto configurado e funcional. 
+                                    A partir daqui o trabalho passa a ser desenhar as telas do chat e integrar com o backend Erlang mais tarde.
+
+                                
+
+
+
+agora estamos a trabalhar com ANDROID Studio
+IMPORANTE:   
+
+Abre app/build.gradle.kts e MAIS TARDE ADICIONAREMOS estas libs (não agora, só depois da UI):
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.android.material:material:1.9.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+
+    // Navegação entre telas
+    implementation("androidx.navigation:navigation-fragment-ktx:2.7.5")
+    implementation("androidx.navigation:navigation-ui-ktx:2.7.5")
+
+    // Futuro: comunicação com backend
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+    implementation("org.java-websocket:Java-WebSocket:1.5.3")
+}
+
+
+
+ALTERACOES IMPORTANTES: 
+    eu ja tenhom o app iniciando em Erlang com as telas ja correndo inclunido a parte web. 
+    Sabes que a parte android escrito em Kotlin, 
+    quero migrar para que o codigo no Andoird esteja produzido em Flutter escrito em linguagem dart para flexibilizar o building onde eu poderei escolher como eu quero executar o codigo: 
+    se eh em Android ou iOS. para facilitar-me no futuro. 
+    E outra coisa a considerar, nao estamos a considerar o Mnesia aqui para guardar dados dos utilizadores online e ou offline. 
+    e quero migrar para PostgreSQL.
+
+    1: Parte 1: Migrar Android Kotlin → Flutter (Dart)
+        *Instalar Flutter
+        *Configurar as variáveis de ambiente: FLUTTER_HOME e adicionar flutter\bin ao PATH.
+        
+        *Instalar Plugins Flutter e Dart:
+            Abra o Android Studio.
+            Vá para File > Settings > Plugins.
+            Pesquise por "Flutter" e "Dart" e instale ambos.
+            Reinicie o Android Studio para aplicar as alterações.
+
+        *Verificar a Instalação
+        ANTES DE EXECUTAR O FLUTTER DOCTOR, FACA O SEGUINTE:
+            
+            O Flutter precisa do Command-line Tools do Android SDK para compilar apps.
+            As licenças do Android SDK ainda não foram aceitas.
+            Como te-lo:
+            Instalar ou atualizar os command-line tools:
+            Abra o Android Studio → SDK Manager → SDK Tools
+            Marque Android SDK Command-line Tools e clique em Apply e depois OK
+            Aceitar as licenças do Android: 
+                COMANDO: flutter doctor --android-licenses
+                Vai aparecer uma série de prompts y/n. Digite y em todos para aceitar.
+            
+
+            COMANDO: flutter doctor
+                Isso vai mostrar se você tem tudo pronto:
+                Android toolchain configurada
+                Emuladores Android disponíveis
+                VS Code (ou Android Studio) detectado
+                Dart e Flutter prontos para uso
+                Se aparecer algum problema, o próprio flutter doctor dá instruções de como corrigir.
+            COMANDO: flutter --version
+
+    2: Criar projeto Flutter
+        *Entar na pasta raiz do project: cd E:\aplicativo-chat-WhaClone
+
+        *COMANDO: flutter create client_flutter
+            Por padrão ele cria a estrutura para Android e iOS.
+            O projecto terá:
+                client_flutter/
+                lib/          # código Dart
+                android/
+                ios/
+                linux/
+                macos/
+                web/
+                pubspec.yaml  # dependências
+        
+        COMANDO: cd client_flutter
+        COMANDO: flutter run
+        Ele vai perguntar em que dispositivo queres abrir (Android emulador, físico, Chrome, etc.).
+
+        PERGUNTA: entao como ver se a tela inicial web criada pelo flutter funciona ou nao?
+            No Flutter, um projeto pode rodar em Android, iOS e Web (Chrome, Edge, etc.). Para testar a tela inicial web criada pelo flutter create, faz assim:
+            
+            *Passo 1 — Entrar no projeto
+                COMANDO: cd client_flutter
+            *Passo 2 — Ver dispositivos disponíveis
+                COMANDO: flutter devices
+                Se aparecer Chrome ou Edge, está pronto para rodar a versão web.
+            *Passo 3 — Rodar no navegador
+                COMANDO: flutter run -d chrome
+                ou COMANDO: flutter run -d edge
+            *Passo 4 — Resultado
+                O Flutter vai compilar o projeto e abrir automaticamente uma aba no navegador com a tela padrão (Counter App — um botão de incrementar).
+
+    PARA CORRER P ANDROID APP,
+    PODE APARECER UM ERRO NA LINHA 20 DO FICHEIRO build.gradle.kts do directorio android/
+    *RESOLVE-SE ASSIM: 
+        Abra Android Studio
+        Vai em File → Settings → Appearance & Behavior → System Settings → Android SDK.
+        Ir na aba "SDK Tools"
+        Marca a opção NDK (Side by side).
+        Se aparecer lista de versões, seleciona a 27.0.12077973 (ou a mais próxima/atual).
+        Também confirma que o Android SDK Build-Tools e o CMake estão instalados.
+        Aplicar / OK
+        Ele vai baixar e instalar o NDK. Pode demorar um pouco porque é pesado (~1–2 GB).
+        Testar de novo
+        No terminal, dentro do projeto Flutter: "E:\aplicativo-chat-WhaClone\client_flutter" <- DENTRO DESTA pasta
+            *COMANDO: flutter clean      <- "limpa cache de builds antigos."
+            *COMANDO: flutter pub get"   <- "baixa as dependências do pubspec.yaml."
+            
+            Antes de rodar flutter run, certifica-te que o emulador do Android Studio já está aberto.
+            Para ver se o Flutter reconhece ele:
+                *COMANDO: flutter devices
+                SE APARECER emulator-5554 na lista, então já podes rodar o comando "flutter run -d emulator-5554"
+                CASO NAO APARECA, SIGNIFICA QUE: 
+                    O Flutter não está a reconhecer o teu emulador Android (só aparecem Windows + navegadores).
+                    Isso significa que o AVD ainda não foi iniciado ou configurado ou não foi encontrado no caminho correto.
+                    PARA TAL, 
+                        * Ver quais emuladores tens configurados:
+                            COMANDO: flutter emulators
+                            Se não aparecer nenhum AVD listado, significa que ainda não tens um emulador Android criado.
+
+                        *Criar um novo emulador (se não existir)
+
+                        *Iniciar o emulador:
+                            Abra o Android Studio → Device Manager → clique em ▶️ para iniciar o Medium_Phone_API_36.1.
+                        
+                        *Confirma se o Flutter reconhece o emulador ligado
+                            COMANDO: flutter devices
+                            No meu caso aparece: emulator-5554 • Medium_Phone_API_36.1 • android-x64 • Android 15 (API 36)
+                        
+                        *Se aparecer, Tenta de novo
+                            COMANDO: flutter run -d emulator-5554
+                        
+
+                    NOTA: SE QUISERES RODAR NO VEGADOR: flutter run -d chrome
+                          SE QUISERES RODAR NO ANDROID: flutter run -d emulator-5554
+                        
+                    NO CASO DE QUERE Customizar a tela inicial: TRABALHE NO "main.dart" que está em "client_flutter/lib/main.dart"
+                    é onde você vai trocar aquele "Counter App" padrão pela sua tela de login/chat.
+                    Integrar depois com o backend Erlang + PostgreSQL + Mnesia.
+
+
+
+
+
+
+entao, eu quero uma tela incial tipo whatsapp, dai que leva para cadastro se for novo, 
+se for antigo leva drecto para tela de conversas. quero algo real de whatsapp. 
+vamos passo a passo desde a criacao das telas ate la.
+
+USANDO API FIREBASE
+
+Perfeito — vamos fazer **um fluxo real tipo WhatsApp**: tela de boas-vindass → inserir número → verificação por SMS (Firebase Auth) → se novo registra no backend → se já registrado vai direto para lista de conversas. Vou dar **o passo-a-passo completo** (configurações Android/iOS + código Flutter) para que funcione em Android e depois iOS sem reescrever nada.
+
+Vou organizar em blocos: (A) visão geral do fluxo, (B) dependências e configuração do projeto, (C) configurações Android / iOS necessárias no Firebase, (D) telas e navegação (código Flutter), (E) serviço de autenticação com Firebase + troca com teu backend, (F) armazenamento de sessão e decisão inicial, (G) dicas de testes e produção.
+
+---
+
+# 1) Visão geral do fluxo (o que vamos construir)
+
+1. `StartupPage` — verifica se já existe sessão válida → se sim, vai direto para `ChatListPage`; senão vai para `WelcomePage`.
+2. `WelcomePage` — botão “Concordar e Continuar” → `PhoneInputPage`.
+3. `PhoneInputPage` — usuário digita o número → chama Firebase para enviar SMS → navega para `OtpPage`.
+4. `OtpPage` — usuário insere código SMS (ou autoverificação no Android) → Firebase dá `UserCredential`.
+5. Após sucesso, obtém o **ID token Firebase** e envia ao teu backend (endpoint `/auth/firebase`) para:
+
+   * verificar se já existe utilizador com esse número;
+   * se for novo, cria o utilizador no Postgres;
+   * retorna um **token de sessão da tua API** (JWT ou similar) + dados do user.
+6. App guarda token (em secure storage) e vai para `ChatListPage`.
+
+---
+
+# 2) Dependências (pubspec.yaml)
+
+Adiciona ao `pubspec.yaml`:
+
+```yaml
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Firebase
+  firebase_core: any
+  firebase_auth: any
+
+  # http para falar com o teu backend
+  http: any
+
+  # armazenamento de sessão seguro
+  flutter_secure_storage: any
+
+  # utilitários
+  shared_preferences: any
+```
+
+> Obs: uso `any` aqui — usa as versões mais recentes estáveis. 
+EXECUTAR DENTRO DA PASTA client_flutter o COMANDO "flutter pub get" para instalar/actualizar as dependencias no pubspec
+---
+
+# 3) Configuração do Firebase (Android + iOS) — passos essenciais
+
+## No Firebase Console
+
+1. Cria um novo projeto (ou usa um que já tens).
+2. Em **Authentication → Sign-in method** habilita **Phone**.
+3. Em **Authentication → Phone numbers for testing** adiciona alguns números de teste (útil para desenvolvimento sem gastar SMS).
+4. Para Android: adiciona a app Android (package name do teu Flutter). Importante: adiciona **SHA-1** (e SHA-256) do keystore que usas para debug/release (no Windows `keytool`), isso é necessário para o reCAPTCHA/auto-retrieval funcionar.
+5. Para iOS: adiciona a app iOS (bundle id). Se queres auto-verificação no iOS, configura APNs (upload key/cert no Firebase) — para desenvolvimento podes também contar com verificação manual.
+
+## Arquivos de configuração
+
+* Android: baixa `google-services.json` e coloca em `android/app/`.
+* iOS: baixa `GoogleService-Info.plist` e adiciona ao Runner no Xcode (ou `ios/Runner`).
+
+## Android Gradle (project-level / app-level)
+
+* Projeto `android/build.gradle`:
+
+  * adiciona classpath do google services no `buildscript.dependencies` (segue docs Firebase se precisar da versão).
+* App `android/app/build.gradle`:
+
+  * no final: `apply plugin: 'com.google.gms.google-services'`
+
+(Se preferires, sigo com instruções exatas para as versões do Gradle — diz se queres.)
+
+---
+
+# 4) Código Flutter — estrutura e telas principais
+
+Cria uma pasta `lib/` com esses arquivos (vou mostrar os essenciais).
+
+## `main.dart`
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'startup_page.dart';
+import 'welcome_page.dart';
+import 'phone_input_page.dart';
+import 'otp_page.dart';
+import 'chat_list_page.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'WhaClone',
+      debugShowCheckedModeBanner: false,
+      initialRoute: '/',
+      routes: {
+        '/': (c) => StartupPage(),
+        '/welcome': (c) => WelcomePage(),
+        '/phone': (c) => PhoneInputPage(),
+        '/otp': (c) => OtpPage(),
+        '/chatList': (c) => ChatListPage(),
+      },
+    );
+  }
+}
+```
+
+## `startup_page.dart` — decide destino
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+class StartupPage extends StatefulWidget {
+  @override
+  _StartupPageState createState() => _StartupPageState();
+}
+
+class _StartupPageState extends State<StartupPage> {
+  final storage = FlutterSecureStorage();
+
+  @override
+  void initState() {
+    super.initState();
+    _checkSession();
+  }
+
+  Future<void> _checkSession() async {
+    final token = await storage.read(key: 'api_token');
+    if (token != null) {
+      // opcional: verificar token com backend
+      Navigator.pushReplacementNamed(context, '/chatList');
+    } else {
+      Navigator.pushReplacementNamed(context, '/welcome');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(child: CircularProgressIndicator()),
+    );
+  }
+}
+```
+
+## `welcome_page.dart`
+
+```dart
+import 'package:flutter/material.dart';
+
+class WelcomePage extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.chat_bubble, size: 100, color: Colors.green),
+                SizedBox(height: 20),
+                Text("Bem-vindo ao WhaClone", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                SizedBox(height: 40),
+                ElevatedButton(
+                  onPressed: () => Navigator.pushReplacementNamed(context, '/phone'),
+                  child: Text("Concordar e Continuar"),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+```
+
+## `phone_input_page.dart` — digitar número e iniciar verificação
+
+```dart
+import 'package:flutter/material.dart';
+import 'auth_service.dart'; // veremos em seguida
+
+class PhoneInputPage extends StatefulWidget {
+  @override
+  _PhoneInputPageState createState() => _PhoneInputPageState();
+}
+
+class _PhoneInputPageState extends State<PhoneInputPage> {
+  final _controller = TextEditingController();
+  bool _loading = false;
+
+  void _sendCode() async {
+    final phone = _controller.text.trim();
+    if (phone.isEmpty) return;
+    setState(() => _loading = true);
+
+    // chama o AuthService que usa FirebaseAuth.verifyPhoneNumber
+    await AuthService.verifyPhoneNumber(
+      phoneNumber: phone,
+      codeSent: (verificationId, resendToken) {
+        setState(() => _loading = false);
+        Navigator.pushReplacementNamed(context, '/otp', arguments: verificationId);
+      },
+      verificationFailed: (e) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Falha na verificação: ${e.message}')));
+      },
+      autoRetrieved: (userCredential) {
+        // auto sign-in case Android auto verifies
+        _onSignInSuccess(userCredential);
+      },
+    );
+  }
+
+  void _onSignInSuccess(userCredential) {
+    // aqui o AuthService já cuidou de trocar token com backend e salvar sessão,
+    // então só navega para chatList
+    Navigator.pushReplacementNamed(context, '/chatList');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Verificar número')),
+      body: Padding(
+        padding: EdgeInsets.all(20),
+        child: Column(
+          children: [
+            TextField(
+              controller: _controller,
+              keyboardType: TextInputType.phone,
+              decoration: InputDecoration(hintText: '+258 84 123 4567', labelText: 'Número de telefone'),
+            ),
+            SizedBox(height: 20),
+            _loading ? CircularProgressIndicator() : ElevatedButton(onPressed: _sendCode, child: Text('Enviar código'))
+          ],
+        ),
+      ),
+    );
+  }
+}
+```
+
+## `otp_page.dart`
+
+```dart
+import 'package:flutter/material.dart';
+import 'auth_service.dart';
+
+class OtpPage extends StatefulWidget {
+  @override
+  _OtpPageState createState() => _OtpPageState();
+}
+
+class _OtpPageState extends State<OtpPage> {
+  final _codeController = TextEditingController();
+  bool _loading = false;
+  String? verificationId;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    verificationId ??= ModalRoute.of(context)!.settings.arguments as String?;
+  }
+
+  void _submitCode() async {
+    final code = _codeController.text.trim();
+    if (code.isEmpty || verificationId == null) return;
+    setState(() => _loading = true);
+
+    final success = await AuthService.signInWithSmsCode(verificationId: verificationId!, smsCode: code);
+    setState(() => _loading = false);
+    if (success) {
+      Navigator.pushReplacementNamed(context, '/chatList');
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Código inválido')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Código SMS')),
+      body: Padding(
+        padding: EdgeInsets.all(20),
+        child: Column(
+          children: [
+            Text('Digite o código que recebeu por SMS:'),
+            TextField(controller: _codeController, keyboardType: TextInputType.number),
+            SizedBox(height: 20),
+            _loading ? CircularProgressIndicator() : ElevatedButton(onPressed: _submitCode, child: Text('Confirmar')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+```
+
+## `chat_list_page.dart` — tela de conversas (placeholder)
+
+```dart
+import 'package:flutter/material.dart';
+
+class ChatListPage extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Conversas'),
+      ),
+      body: Center(child: Text('Aqui vai a lista de conversas')),
+    );
+  }
+}
+```
+
+---
+
+# 5) `auth_service.dart` — lógica com Firebase + troca com teu backend
+
+Cria `auth_service.dart`. Ele faz: `verifyPhoneNumber`, `signInWithSmsCode`, obtém `idToken` e envia ao backend para criar/obter utilizador.
+
+```dart
+import 'dart:convert';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+
+class AuthService {
+  static final _auth = FirebaseAuth.instance;
+  static final _storage = FlutterSecureStorage();
+  // Põe aqui a URL do teu backend Erlang que irá aceitar o token Firebase
+  static const String backendUrl = 'http://SEU_BACKEND:PORT';
+
+  // inicia verificação (envia SMS)
+  static Future<void> verifyPhoneNumber({
+    required String phoneNumber,
+    required void Function(String verificationId, int? resendToken) codeSent,
+    required void Function(UserCredential userCredential) autoRetrieved,
+    required void Function(FirebaseAuthException e) verificationFailed,
+  }) async {
+    await _auth.verifyPhoneNumber(
+      phoneNumber: phoneNumber,
+      timeout: const Duration(seconds: 60),
+      verificationCompleted: (PhoneAuthCredential credential) async {
+        // assinatura automática (Android)
+        final userCredential = await _auth.signInWithCredential(credential);
+        await _afterFirebaseSignIn(userCredential);
+        autoRetrieved(userCredential);
+      },
+      verificationFailed: verificationFailed,
+      codeSent: (String verificationId, int? resendToken) {
+        codeSent(verificationId, resendToken);
+      },
+      codeAutoRetrievalTimeout: (String verificationId) {},
+    );
+  }
+
+  // login usando o código manualmente
+  static Future<bool> signInWithSmsCode({required String verificationId, required String smsCode}) async {
+    try {
+      final credential = PhoneAuthProvider.credential(verificationId: verificationId, smsCode: smsCode);
+      final userCredential = await _auth.signInWithCredential(credential);
+      await _afterFirebaseSignIn(userCredential);
+      return true;
+    } catch (e) {
+      print('Erro signInWithSmsCode: $e');
+      return false;
+    }
+  }
+
+  // troca o ID token Firebase com teu backend -> backend cria/retorna sessão própria
+  static Future<void> _afterFirebaseSignIn(UserCredential userCredential) async {
+    final user = userCredential.user;
+    if (user == null) return;
+    final idToken = await user.getIdToken();
+
+    // chama teu backend: por exemplo POST /auth/firebase {idToken}
+    final url = Uri.parse('$backendUrl/auth/firebase');
+    final res = await http.post(url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'idToken': idToken, 'phone': user.phoneNumber}));
+
+    if (res.statusCode == 200) {
+      final body = jsonDecode(res.body);
+      final apiToken = body['token']; // supomos que teu backend retorna token
+      // salva token de sessão em storage seguro
+      await _storage.write(key: 'api_token', value: apiToken);
+      // podes salvar mais dados se quiseres
+    } else {
+      // lidar com erro (backend pode criar o user)
+      throw Exception('Backend auth falhou: ${res.statusCode} ${res.body}');
+    }
+  }
+}
+```
+
+> **No backend Erlang**: cria um endpoint `/auth/firebase` que recebe o `idToken`. O backend deve:
+>
+> 1. Validar o `idToken` junto ao Firebase (usando Admin SDK ou verificar JWT public keys do Google).
+> 2. Extrair `phone_number` do token.
+> 3. Verificar na tua base Postgres se esse número existe:
+>
+>    * Se existe → retorna `token` de sessão (JWT gerado pelo teu backend) + dados do user.
+>    * Se não existe → cria o user (nome, phone, created_at) → retorna token + dados.
+>
+> Se quiser, eu gero exemplo de endpoint Erlang que valida token (mas isso envolve usar bibliotecas JWT / chamar Firebase Admin REST — digo se queres).
+
+---
+
+# 6) Armazenamento de sessão
+
+* Use `flutter_secure_storage` para guardar `api_token` (mais seguro que `SharedPreferences`).
+* No `StartupPage` você lê `api_token`; se existir, considera sessão válida (opcional: validar token com backend).
+
+---
+
+# 7) Testes e dicas práticas
+
+* **Test numbers**: no Firebase Console → Authentication → Sign-in method → Phone → add test numbers com códigos fixos — assim não precisas receber SMS reais enquanto desenvolve.
+* **Emulador Android**: a verificação por SMS às vezes não funciona perfeitamente. Teste em dispositivo real para auto-retrieval.
+* **SHA-1/SHA-256**: se o Android falhar na verificação automática, confirme que os fingerprints (SHA-1/256) do debug/release foram adicionados no Firebase para a app Android.
+* **iOS**: para auto verification, configura APNs no Firebase (opcional). Caso contrário, o fluxo manual (digitar código) sempre funciona.
+* **Segurança**: nunca confie apenas no `idToken` no cliente — o backend deve validar o `idToken` junto ao Google / Firebase antes de criar/atualizar utilizador.
+
+---
+
+# 8) Próximos passos que eu posso fazer agora (escolhe qualquer um)
+
+* Gerar a **skeleton app completa** (todos os arquivos do `lib/`) pronta para colar no teu projeto.
+* Gerar exemplo do **endpoint Erlang** `/auth/firebase` que valida ID token (posso fazer com chamadas HTTP à Google public keys ou indicar uso do Admin SDK).
+* Ajudar-te com os passos exatos no Firebase Console e comandos para obter SHA-1 no Windows.
+* Ajustar o design das telas (tema, animações, ícones).
+
+Diz qual queres que eu faça primeiro — se preferes, já te gero a skeleton completa com todos os ficheiros (`main.dart`, `startup_page.dart`, `welcome_page.dart`, `phone_input_page.dart`, `otp_page.dart`, `chat_list_page.dart`, `auth_service.dart`) pronta para testar no teu ambiente.
+
+
+
+            
+
+
+
+USANDO API TWILIO
+
+Perfeito ⚡ — vamos desenhar isso já com **Flutter (frontend)** + **Erlang backend** + **PostgreSQL (histórico/usuários)** + **Mnesia (sessões/usuários online em tempo real)** + **API de SMS** (por ex. Twilio ou Africa’s Talking).
+
+---
+
+## 🔄 Fluxo Completo de Autenticação via SMS
+
+1. **Tela Flutter (número de telefone)**
+
+   * Usuário digita o número.
+   * App envia para o backend (HTTP/REST ou WebSocket inicial).
+
+2. **Backend Erlang**
+
+   * Gera um código aleatório (6 dígitos).
+   * Salva temporariamente no **Mnesia** (rápido, em memória, expira em X minutos).
+   * Chama API de SMS (Twilio, Africa’s Talking, Firebase, etc.).
+   * Envia código ao número do usuário.
+
+3. **Usuário insere o código no app Flutter**.
+
+   * App envia o código para o backend.
+
+4. **Backend Erlang valida**
+
+   * Confere código no **Mnesia**.
+   * Se válido → cria/atualiza usuário no **PostgreSQL** (registro definitivo).
+   * Gera **token de sessão** e também grava em **Mnesia** (usuário online).
+
+5. **Login automático**
+
+   * Nas próximas vezes, se já houver token salvo → app vai direto para tela de conversas.
+
+---
+
+## 📱 Exemplo Flutter (enviar número para backend)
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+
+class PhoneAuthPage extends StatefulWidget {
+  @override
+  _PhoneAuthPageState createState() => _PhoneAuthPageState();
+}
+
+class _PhoneAuthPageState extends State<PhoneAuthPage> {
+  final _phoneController = TextEditingController();
+
+  Future<void> sendPhone() async {
+    final response = await http.post(
+      Uri.parse("http://localhost:4000/send_code"),
+      headers: {"Content-Type": "application/json"},
+      body: jsonEncode({"phone": _phoneController.text}),
+    );
+
+    if (response.statusCode == 200) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => CodeVerifyPage(phone: _phoneController.text)),
+      );
+    } else {
+      print("Erro ao enviar número");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text("Login via SMS")),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            TextField(
+              controller: _phoneController,
+              decoration: InputDecoration(labelText: "Número de telefone"),
+              keyboardType: TextInputType.phone,
+            ),
+            SizedBox(height: 20),
+            ElevatedButton(onPressed: sendPhone, child: Text("Enviar código"))
+          ],
+        ),
+      ),
+    );
+  }
+}
+```
+
+---
+
+## ⚙️ Exemplo Erlang (backend) – envio de SMS via API
+
+Aqui vou simular **Twilio**, mas a lógica é igual para outros provedores.
+
+```erlang
+%%% enviar código SMS
+send_code(Phone) ->
+    Code = random_code(),
+    %% Salva código temporário no Mnesia
+    mnesia:transaction(fun() ->
+        mnesia:write({sms_code, Phone, Code, erlang:system_time(seconds)})
+    end),
+    %% Chamar API Twilio
+    Url = "https://api.twilio.com/2010-04-01/Accounts/" ++ account_sid() ++ "/Messages.json",
+    Body = io_lib:format("To=~s&From=~s&Body=Seu código é ~s",
+                         [Phone, twilio_number(), Code]),
+    httpc:request(post, {Url, auth_header(), "application/x-www-form-urlencoded", Body}, [], []).
+
+%%% código aleatório de 6 dígitos
+random_code() ->
+    Code = integer_to_list(rand:uniform(900000) + 100000),
+    Code.
+
+auth_header() ->
+    {_, Enc} = base64:encode_to_string(account_sid() ++ ":" ++ auth_token()),
+    [{"Authorization", "Basic " ++ Enc}].
+```
+
+---
+
+## 🗂️ Estrutura dos dados
+
+### Mnesia (rápido, temporário)
+
+* **sms_code** → `{sms_code, Phone, Code, Timestamp}`
+* **online_user** → `{online_user, UserId, SessionToken, LastSeen}`
+
+### PostgreSQL (persistente)
+
+* **users**
+
+  ```sql
+  CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    phone VARCHAR(20) UNIQUE,
+    created_at TIMESTAMP DEFAULT now(),
+    last_login TIMESTAMP
+  );
+  ```
+
+---
+
+## 🚀 Como fica na prática
+
+1. Novo utilizador → Digita número → Recebe SMS → Digita código → Backend valida → Entra.
+2. Antigo utilizador → App já tem **token salvo** → Pula SMS → Vai direto para tela principal.
+
+---
+
+👉 Pergunto: queres que eu já monte a **segunda tela Flutter (digitar código de 6 dígitos)** + **Erlang verificação**? Assim já ficas com o fluxo completo (registro/login).
+
+
+DEFINIR VARIAVEIS DO AMBIENTE QUE SERAO CHAMADOS NO auth_util.erl    
+ABRIR O WINDOWS POWERSHELL, DIGITAR O SEGUINTE: 
+$bytes = New-Object Byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+$env:SESSION_SECRET = [Convert]::ToBase64String($bytes)                 <- ISSO VAI AJUDAR A DEFINIR O SESSION_SECRET
+
+para CONFERIR o SESSION_SECRET, DIGITA: $env:SESSION_SECRET
+depois defina o resto..
+$env:FIREBASE_API_KEY="AIzaSyBGPDe4Rg_d0C5Kd7woiuF8cqyXBpQh9_w"
+$env:DB_HOST="localhost"
+$env:DB_PORT="5432"
+$env:DB_NAME="chat_app_db"
+$env:DB_USER="postgres"
+$env:DB_PASS="wagner21&"
+
+para ver o que eu defini como VARIAVEL DE AMBIENTE no windows powershell, 
+digita:  $env:FIREBASE_API_KEY
+
+para ver FIREBASE_API_KEY no shell do erlang, digita:  os:getenv("FIREBASE_API_KEY").
+
+
+# ✅ O QUE VOCÊ FEZ ATÉ AQUI (E FEZ BEM):
+
+✔ Configurou o backend Erlang com Cowboy
+✔ Criou a rota:
+
+```
+POST /auth/firebase
+```
+
+✔ O servidor já está rodando na porta `4000`
+✔ A rota espera receber um JSON com um campo `"idToken"`
+
+Exemplo:
+
+```json
+{
+  "idToken": "ALGUM_TOKEN_AQUI"
+}
+```
+
+---
+
+# ✅ O QUE FALTA PARA TESTAR:
+
+Você precisa gerar **um IdToken verdadeiro do Firebase**, para enviar para essa rota e ver se tudo funciona.
+
+Esse `idToken` é gerado quando um usuário faz login no seu app Flutter (Android).
+
+Sem esse token, o backend não consegue continuar.
+
+---
+
+# ✅ ENTÃO O PLAN0 É ESSE:
+
+## ✅ PASSO 1: No Flutter, pegar o IdToken
+
+Depois que o usuário loga (pode ser login com email/senha, telefone, etc), use esse código:
+
+```dart
+import 'package:firebase_auth/firebase_auth.dart';
+
+Future<void> obterEEnviarToken() async {
+  User? user = FirebaseAuth.instance.currentUser;
+  if (user == null) {
+    print('Usuário não está logado!');
+    return;
+  }
+
+  String token = await user.getIdToken(true);
+  print("ID TOKEN: $token");
+}
+```
+
+Chame `obterEEnviarToken()` depois do login.
+
+✅ Esse token vai aparecer no **Logcat** ou terminal do Flutter.
+
+---
+
+## ✅ PASSO 2: Enviar esse token para o backend Erlang
+
+Você pode usar:
+
+### ✅ Opção A: via curl/Postman
+
+```bash
+curl -X POST http://localhost:4000/auth/firebase \
+   -H "Content-Type: application/json" \
+   -d "{\"idToken\": \"COLE_AQUI_O_TOKEN\"}"
+```
+
+### ✅ Opção B: direto do Flutter
+
+```dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+Future<void> enviarTokenParaBackend() async {
+  String token = await FirebaseAuth.instance.currentUser!.getIdToken(true);
+
+  final response = await http.post(
+    Uri.parse("http://10.0.2.2:4000/auth/firebase"), // Emulador Android
+    headers: {"Content-Type": "application/json"},
+    body: jsonEncode({"idToken": token}),
+  );
+
+  print("Resposta do backend: ${response.body}");
+}
+```
+
+

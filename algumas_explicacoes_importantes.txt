@@ -1,0 +1,78 @@
+
+Vamos detalhar **como a lógica multi-dispositivo tipo WhatsApp** lida com **roubo, perda ou comprometimento de dispositivo**, passo a passo.
+---
+
+## ⚔️ Cenário: Roubo de celular
+
+Suponha que o usuário **já tinha sessão ativa** no dispositivo A (celular roubado), e agora quer **entrar num novo dispositivo B** com o mesmo número.
+
+---
+
+## 🧩 O que acontece tecnicamente
+
+1️⃣ **Dispositivo B** faz login via Firebase (com o número do telefone e SMS).
+👉 Esse processo é a **prova de posse** do número (somente quem tem acesso ao SMS pode autenticar).
+
+2️⃣ Após o login, o backend (Erlang) recebe o `idToken` e executa:
+
+```erlang
+auth_util:create_session_for_user(UserId, DeviceUUID, DeviceInfo)
+```
+
+→ Isso cria uma **nova sessão independente**, com novo refresh token.
+
+3️⃣ Agora, o usuário legítimo pode ir nas “Configurações” → “Gerenciar dispositivos ativos”
+e pressionar **“Sair de todos os outros dispositivos”**, o que executa:
+
+```erlang
+auth_util:revoke_other_sessions(UserId, CurrentDeviceUUID)
+```
+
+➡️ Essa função marca todas as sessões anteriores (incluindo a do dispositivo roubado) como `revoked = true`.
+
+4️⃣ A partir desse momento:
+
+* O **refresh token** salvo no celular roubado não serve mais.
+* O **access token** daquele dispositivo expira logo em seguida (curto prazo, ex: 15 minutos).
+* Mesmo que o ladrão tente continuar usando, todas as chamadas API com aquele token vão falhar com `401 Unauthorized`.
+
+---
+
+## 🛡️ Resultado prático
+
+| Ação do usuário                       | Efeito imediato                                                                                      | Segurança              |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------- |
+| Faz login em novo telefone            | Cria nova sessão e acesso normal                                                                     | ✅ Login legítimo       |
+| Escolhe “Sair de outros dispositivos” | Revoga todos os tokens antigos                                                                       | ✅ Roubado perde acesso |
+| Roubo detectado mas sem logout manual | Sessão antiga continua **até expirar o access token**, mas refresh token não funciona após revogação | ⚠️ Limite controlado   |
+| Roubo + troca de SIM                  | Não importa — sem SMS de verificação, não consegue logar                                             | ✅ Bloqueio natural     |
+
+---
+
+## 🚀 Como WhatsApp faz isso
+
+O WhatsApp usa o mesmo princípio:
+
+* Cada dispositivo (telefone, desktop, web) tem **chaves e tokens distintos**.
+* O servidor mantém lista de sessões por conta.
+* Quando você “Sai de todos os dispositivos”, ele revoga todas as chaves associadas, exceto a atual.
+* Mesmo que o aparelho roubado ainda tenha o app aberto, ele perde acesso às mensagens novas — o servidor não entrega mais nada.
+
+---
+
+## 🧠 Vantagem da nossa lógica
+
+Você não precisa destruir a conta ou bloquear globalmente o usuário —
+apenas **revoga o refresh token do dispositivo comprometido**.
+Isso é o que torna o sistema:
+
+* Seguro ✅
+* Prático ✅
+* Escalável ✅
+
+---
+
+Se quiser, posso te mostrar **como exatamente essa revogação funciona no banco e na função Erlang** (linha a linha),
+para que entendas como o servidor identifica e “mata” a sessão do dispositivo roubado.
+
+Quer que eu te mostre isso agora (a parte do `revoke_other_sessions/2` com detalhes reais)?

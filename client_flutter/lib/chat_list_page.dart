@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'auth_service.dart';
 
 class ChatListPage extends StatelessWidget {
-  final storage = FlutterSecureStorage();
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -15,20 +13,24 @@ class ChatListPage extends StatelessWidget {
             Text('Aqui vai a lista de conversas'),
             SizedBox(height: 20),
             ElevatedButton(
-              child: Text('Logout & Reset Token'),
+              child: Text('Logout & Reset Tokens'),
               onPressed: () async {
-                // Remove o token salvo
-                await storage.delete(key: 'api_token');
+                try {
+                  // Chama logout do backend e limpa storage
+                  await AuthService.logout();
 
-                // Opcional: remove tudo do storage
-                // await storage.deleteAll();
-
-                // Volta para a tela inicial
-                Navigator.pushNamedAndRemoveUntil(
-                  context,
-                  '/startup', // substitua pela sua rota inicial
-                  (route) => false,
-                );
+                  // Volta para a tela inicial / startup
+                  Navigator.pushNamedAndRemoveUntil(
+                    context,
+                    '/', // substitua pela tua rota inicial
+                    (route) => false,
+                  );
+                } catch (e) {
+                  // Mostra erro caso algo falhe
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Erro ao fazer logout: $e')),
+                  );
+                }
               },
             ),
           ],

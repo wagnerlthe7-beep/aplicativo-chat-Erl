@@ -253,10 +253,12 @@ Se quiseres avançar com o plano que propus (migrar para biblioteca segura), pos
 É só dizer: **queres que eu converta já o token para usar `jose`?**
 
 
-olha, eu fiz esse pequeno debuga aqui: case epgsql:connect(Host, DbUser, DbPass, [{database, DbName}, {port, Port}]) of
-            {ok, Conn} ->
-                io:format("🔹 Conectou: ~p ~p~n", [Phone, FirebaseUid]),
-                select_or_insert_user(Conn, Phone, FirebaseUid);
-            {error, Err} ->
-                {error, {db_connect_error, Err}}
-        end                 no log, a mensagem conectou apareceu. o que isso signifca????
+
+===========IMPORTANTE=============
+DEPOIS DE EXECUTAR ALGUNS COMMITS E MUDAR DE BRANCH, TIVE ERRO DE DEPENDCIAS.
+SOLUCAO: NO POWERSHELL:
+EXECUTAR O COMANDO: cd E:\aplicativo-chat-WhaClone\server
+EXECUTAR O COMANDO: rebar3 clean --all
+EXECUTAR O COMANDO: Remove-Item -Recurse -Force _build
+EXECUTAR O COMANDO: Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\rebar3"
+EXECUTAR O COMANDO: rebar3 get-deps

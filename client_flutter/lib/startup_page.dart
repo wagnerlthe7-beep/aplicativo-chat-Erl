@@ -16,7 +16,7 @@ class _StartupPageState extends State<StartupPage> {
   }
 
   Future<void> _checkSession() async {
-    final token = await storage.read(key: 'api_token');
+    final token = await storage.read(key: 'access_token');
     if (token != null) {
       // opcional: verificar token com backend
       Navigator.pushReplacementNamed(context, '/chatList');
