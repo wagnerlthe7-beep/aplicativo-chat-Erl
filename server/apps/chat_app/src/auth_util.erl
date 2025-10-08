@@ -18,7 +18,8 @@
     revoke_other_sessions/2,
     revoke_session_by_token/1,
     %% JWT utilities
-    decode_jwt/1
+    decode_jwt/1,
+    safe_to_integer/1
 ]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -74,10 +75,11 @@ select_or_insert_user(Conn, Phone, FirebaseUid) ->
             _ = epgsql:equery(Conn, "UPDATE users SET last_login = now() WHERE id = $1", [Id]),
             {ok, #{id => Id, name => Name, phone => PhoneDb, is_active => IsActive, profile_picture => ProfilePic}};
         {ok, _, []} ->
+            %% ✅✅✅ CORREÇÃO DEFINITIVA: Sem caracteres especiais
             SqlIns = "INSERT INTO users (name, phone, is_active, created_at, firebase_uid)
                       VALUES ($1, $2, true, now(), $3)
                       RETURNING id, name, phone, is_active",
-            case epgsql:equery(Conn, SqlIns, [<<"Usuário">>, PhoneBin, FirebaseUidBin]) of
+            case epgsql:equery(Conn, SqlIns, [<<"Usuario">>, PhoneBin, FirebaseUidBin]) of
                 {ok, _, _, [Row | _]} ->
                     {Id, Name, PhoneDb, IsActive} = Row,
                     {ok, #{id => Id, name => Name, phone => PhoneDb, is_active => IsActive}};
@@ -106,13 +108,22 @@ create_session_token(UserMap) ->
 
             Iat = erlang:system_time(second),
             Exp = Iat + 3600,
-            Claims = #{
+            
+            %% ✅✅✅ CORREÇÃO: Incluir session_id nas claims
+            BaseClaims = #{
                 <<"user_id">> => ensure_binary_utf8(maps:get(id, UserMap, <<"unknown">>)),
                 <<"phone">>   => ensure_binary_utf8(maps:get(phone, UserMap, <<"unknown">>)),
                 <<"name">>    => ensure_binary_utf8(maps:get(name, UserMap, <<"unknown">>)),
                 <<"iat">>     => Iat,
                 <<"exp">>     => Exp
             },
+            
+            %% ✅ Adicionar session_id se estiver presente no UserMap
+            Claims = case maps:get(session_id, UserMap, undefined) of
+                undefined -> BaseClaims;
+                SessionId -> BaseClaims#{<<"session_id">> => ensure_binary_utf8(SessionId)}
+            end,
+            
             PBase = base64url(jsx:encode(Claims)),
             SigningInput = <<HBase/binary, $., PBase/binary>>,
             Sig = base64url(crypto:mac(hmac, sha256, SecretBin, SigningInput)),
@@ -170,16 +181,55 @@ validate_and_rotate_refresh(UserId, RefreshPlain) ->
 
 revoke_other_sessions(UserId, KeepId) ->
     ?LOG_INFO("🚫 Revoking other sessions for user ~p, keeping session ~p", [UserId, KeepId]),
-    db_util:with_connection(fun(Conn) ->
-        case epgsql:equery(Conn, "UPDATE sessions SET revoked=true WHERE user_id=$1 AND id<>$2", [UserId, KeepId]) of
-            {ok, _, Count} ->
-                ?LOG_INFO("✅ Revoked ~p sessions for user ~p", [Count, UserId]),
-                ok;
-            Err ->
-                ?LOG_ERROR("❌ Failed to revoke sessions: ~p", [Err]),
-                {error, {db_error, Err}}
-        end
-    end).
+    
+    try
+        UserIdInt = safe_to_integer(UserId),
+        KeepIdInt = safe_to_integer(KeepId),
+        
+        db_util:with_connection(fun(Conn) ->
+            %% ✅✅✅ VERIFICAÇÃO EXTRA: Confirmar que a sessão a ser mantida pertence ao usuário
+            SqlVerify = "SELECT user_id FROM sessions WHERE id = $1",
+            case epgsql:equery(Conn, SqlVerify, [KeepIdInt]) of
+                {ok, _, [{SessionUserId}]} when SessionUserId =:= UserIdInt ->
+                    %% ✅ Sessão pertence ao usuário - PODE revogar outras
+                    ?LOG_INFO("✅ Session ~p belongs to user ~p - proceeding with revocation", [KeepIdInt, UserIdInt]),
+                    
+                    SqlRevoke = "UPDATE sessions SET revoked=true WHERE user_id=$1 AND id<>$2",
+                    case epgsql:equery(Conn, SqlRevoke, [UserIdInt, KeepIdInt]) of
+                        {ok, Count} ->  
+                            ?LOG_INFO("✅ Revoked ~p sessions for user ~p", [Count, UserIdInt]),
+                            ok;
+                        {error, Reason} ->
+                            ?LOG_ERROR("❌ Failed to revoke sessions: ~p", [Reason]),
+                            {error, {db_error, Reason}}
+                    end;
+                    
+                {ok, _, [{OtherUserId}]} ->
+                    %% ❌ Sessão NÃO pertence ao usuário - NÃO revoga!
+                    ?LOG_ERROR("❌ SECURITY VIOLATION: Session ~p belongs to user ~p, but revocation requested by user ~p", 
+                              [KeepIdInt, OtherUserId, UserIdInt]),
+                    {error, security_violation};
+                    
+                {ok, _, []} ->
+                    ?LOG_ERROR("❌ Session ~p not found", [KeepIdInt]),
+                    {error, session_not_found};
+                    
+                {error, Reason} ->
+                    ?LOG_ERROR("❌ Database error in session verification: ~p", [Reason]),
+                    {error, Reason}
+            end
+        end)
+    catch
+        throw:{invalid_integer, Value} ->
+            ?LOG_ERROR("❌ Invalid integer value: ~p", [Value]),
+            {error, {invalid_integer, Value}};
+        throw:{invalid_integer_type, Value} ->
+            ?LOG_ERROR("❌ Invalid integer type: ~p", [Value]),
+            {error, {invalid_integer_type, Value}};
+        Class:Reason:Stack ->
+            ?LOG_ERROR("❌ Unexpected error in revoke_other_sessions: ~p:~p ~p", [Class, Reason, Stack]),
+            {error, {unexpected_error, Class, Reason}}
+    end.
 
 revoke_session_by_token(RefreshPlain) ->
     ?LOG_INFO("🚫 Revoking session by refresh token"),
@@ -263,3 +313,23 @@ ensure_binary_utf8(Other) ->
     try unicode:characters_to_binary(io_lib:format("~p", [Other]), utf8, utf8)
     catch _:_ -> <<"unknown">>
     end.
+
+%% -------------------------------------------------------------------
+%% Helper para converter para integer seguro
+%% -------------------------------------------------------------------
+safe_to_integer(Value) when is_binary(Value) ->
+    try binary_to_integer(Value)
+    catch _:_ -> 
+        ?LOG_ERROR("❌ Cannot convert binary to integer: ~p", [Value]),
+        throw({invalid_integer, Value})
+    end;
+safe_to_integer(Value) when is_list(Value) ->
+    try list_to_integer(Value)
+    catch _:_ -> 
+        ?LOG_ERROR("❌ Cannot convert list to integer: ~p", [Value]),
+        throw({invalid_integer, Value})
+    end;
+safe_to_integer(Value) when is_integer(Value) -> Value;
+safe_to_integer(Value) ->
+    ?LOG_ERROR("❌ Invalid type for integer conversion: ~p", [Value]),
+    throw({invalid_integer_type, Value}).

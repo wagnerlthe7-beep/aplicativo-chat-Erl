@@ -49,7 +49,20 @@ init(Req0, State) ->
                                         {ok, SessData} ->
                                             SessionId = maps:get(session_id, SessData),
                                             RefreshToken = maps:get(refresh_token, SessData),
-                                            ResAccess = catch auth_util:create_access_jwt(UserMap, SessionId),
+                                            
+                                            %% ✅✅✅ CORREÇÃO: REVOGAR SESSÕES ANTIGAS AUTOMATICAMENTE
+                                            UserId = maps:get(id, UserMap),
+                                            case auth_util:revoke_other_sessions(UserId, SessionId) of
+                                                ok -> 
+                                                    ?LOG_INFO("✅ Sessões antigas revogadas para usuário ~p", [UserId]);
+                                                {error, ReasonRevoke} ->
+                                                    ?LOG_WARNING("⚠️ Não foi possível revogar sessões antigas: ~p", [ReasonRevoke])
+                                            end,
+                                            %% ✅✅✅ FIM DA CORREÇÃO
+                                            
+                                            %% ✅✅✅ CORREÇÃO: Garantir que session_id está no UserMap para o JWT
+                                            UserMapWithSession = UserMap#{session_id => SessionId},
+                                            ResAccess = catch auth_util:create_access_jwt(UserMapWithSession, SessionId),
                                             case ResAccess of
                                                 {ok, AccessToken} ->
                                                     Response = #{
