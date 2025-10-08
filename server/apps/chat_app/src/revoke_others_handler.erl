@@ -18,9 +18,11 @@ init(Req0, State) ->
             Dec = catch jsx:decode(Body, [return_maps]),
             case Dec of
                 #{<<"access_token">> := AccessToken, <<"device_uuid">> := _DeviceUUID} ->
+                    ?LOG_INFO("🔍 Received access token: ~s", [AccessToken]),
                     %% Decodificar JWT para obter user_id
                     case auth_util:decode_jwt(AccessToken) of
                         {ok, Claims} ->
+                            ?LOG_INFO("✅ JWT decoded successfully: ~p", [Claims]),
                             UserId = maps:get(<<"user_id">>, Claims),
                             SessionId = maps:get(<<"session_id">>, Claims),
                             ?LOG_INFO("🚫 Revoking other sessions for user ~p, keeping session ~p", [UserId, SessionId]),
@@ -37,7 +39,7 @@ init(Req0, State) ->
                             end;
                         {error, Reason} ->
                             ?LOG_ERROR("❌ Failed to decode JWT: ~p", [Reason]),
-                            ReqF = firebase_handler:reply_json(Req1, 401, #{error => <<"invalid_token">>}),
+                            ReqF = firebase_handler:reply_json(Req1, 401, #{error => list_to_binary(io_lib:format("jwt_decode_error:~p",[Reason]))}),
                             {ok, ReqF, State}
                     end;
                 _ ->
