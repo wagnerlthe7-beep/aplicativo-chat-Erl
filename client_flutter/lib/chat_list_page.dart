@@ -111,33 +111,6 @@ class _ChatListPageState extends State<ChatListPage> {
                 color: Colors.grey[600],
               ),
             ),
-            SizedBox(height: 40),
-            if (_isLoading)
-              CircularProgressIndicator()
-            else
-              Column(
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: _revokeOtherSessions,
-                    icon: Icon(Icons.security),
-                    label: Text('Sair de outros dispositivos'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.orange,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                  SizedBox(height: 10),
-                  ElevatedButton.icon(
-                    onPressed: _logout,
-                    icon: Icon(Icons.logout),
-                    label: Text('Logout'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
-                ],
-              ),
           ],
         ),
       ),
@@ -150,8 +123,8 @@ class _ChatListPageState extends State<ChatListPage> {
       builder: (context) => AlertDialog(
         title: Text('Sair de outros dispositivos'),
         content: Text(
-          'Isso irá desconectar todos os outros dispositivos que estão usando sua conta. '
-          'Eles precisarão fazer login novamente. Deseja continuar?',
+          'Isso irá desconectar este dispositivo e todos os outros dispositivos que estão usando sua conta. '
+          'Você precisará fazer login novamente em todos os dispositivos. Deseja continuar?',
         ),
         actions: [
           TextButton(
