@@ -39,22 +39,48 @@ init(Req0, State) ->
                             case ResUser of
                                 {ok, UserMap} ->
                                     %% 3) create_session_token (catch)
-                                    ResToken = catch auth_util:create_session_token(UserMap),
-                                    io:format("🔹 create_session_token returned: ~p~n", [ResToken]),
+                                    DeviceUUID = maps:get(<<"device_uuid">>, Dec, <<"unknown_device">>),
+                                    DeviceInfo = maps:get(<<"device_info">>, Dec, <<"unknown">>),
 
-                                    case ResToken of
-                                        {ok, Token} ->
-                                            Response = #{token => Token, user => user_map_to_list(UserMap)},
-                                            ReqF = reply_json(Req1, 200, Response),
+                                    ResSession = catch auth_util:create_session_for_user(maps:get(id, UserMap), DeviceUUID, DeviceInfo),
+                                    io:format("🆕 create_session_for_user result: ~p~n", [ResSession]),
+
+                                    case ResSession of
+                                        {ok, SessData} ->
+                                            SessionId = maps:get(session_id, SessData),
+                                            RefreshToken = maps:get(refresh_token, SessData),
+                                            
+                                            %% ✅✅✅ CORREÇÃO: REVOGAR SESSÕES ANTIGAS AUTOMATICAMENTE
+                                            UserId = maps:get(id, UserMap),
+                                            case auth_util:revoke_other_sessions(UserId, SessionId) of
+                                                ok -> 
+                                                    ?LOG_INFO("✅ Sessões antigas revogadas para usuário ~p", [UserId]);
+                                                {error, ReasonRevoke} ->
+                                                    ?LOG_WARNING("⚠️ Não foi possível revogar sessões antigas: ~p", [ReasonRevoke])
+                                            end,
+                                            %% ✅✅✅ FIM DA CORREÇÃO
+                                            
+                                            %% ✅✅✅ CORREÇÃO: Garantir que session_id está no UserMap para o JWT
+                                            UserMapWithSession = UserMap#{session_id => SessionId},
+                                            ResAccess = catch auth_util:create_access_jwt(UserMapWithSession, SessionId),
+                                            case ResAccess of
+                                                {ok, AccessToken} ->
+                                                    Response = #{
+                                                        access_token => AccessToken,
+                                                        refresh_token => RefreshToken,
+                                                        user => user_map_to_list(UserMap)
+                                                    },
+                                                    ReqF = reply_json(Req1, 200, Response),
+                                                    {ok, ReqF, State};
+                                                {error, Reason2} ->
+                                                    ReqF = reply_json(Req1, 500, #{error => list_to_binary(io_lib:format("access_token_error:~p",[Reason2]))}),
+                                                    {ok, ReqF, State}
+                                            end;
+                                        {error, ReasonSess} ->
+                                            ReqF = reply_json(Req1, 500, #{error => list_to_binary(io_lib:format("create_session_error:~p",[ReasonSess]))}),
                                             {ok, ReqF, State};
-                                        {error, Reason} ->
-                                            ReqF = reply_json(Req1, 500, #{error => list_to_binary(io_lib:format("create_token_error:~p",[Reason]))}),
-                                            {ok, ReqF, State};
-                                        {'EXIT', Reason} ->
-                                            ReqF = reply_json(Req1, 500, #{error => list_to_binary(io_lib:format("create_token_exit:~p",[Reason]))}),
-                                            {ok, ReqF, State};
-                                        Other ->
-                                            ReqF = reply_json(Req1, 500, #{error => list_to_binary(io_lib:format("create_token_unexpected:~p",[Other]))}),
+                                        {'EXIT', ReasonSess} ->
+                                            ReqF = reply_json(Req1, 500, #{error => list_to_binary(io_lib:format("session_exit:~p",[ReasonSess]))}),
                                             {ok, ReqF, State}
                                     end;
                                 {error, Reason} ->

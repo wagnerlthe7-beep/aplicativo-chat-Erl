@@ -1,0 +1,1 @@
+no auth_util, a forma como se conecta a base de dados, se criar condicoes de ter apenas um modulo que faz isso e chama, seria mais pratico.

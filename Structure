@@ -1,0 +1,298 @@
+aplicativo-chat-whaclone/
+│
+├── server/                      # Backend Erlang
+│   ├── apps/
+│   │   └── chat_app/            # Aplicação OTP principal
+│   │       ├── src/             # Código Erlang
+│   │       │   ├── chat_app.erl
+│   │       │   ├── chat_server.erl
+│   │       │   ├── chat_client_handler.erl
+│   │       │   ├── mysql_test.erl
+│   │       │   ├── chat_app.app.src
+│   │       │   └── ...
+│   │       ├── c_src/           # Código em C/C++ (ex: Signal bindings)
+│   │       │   └── signal_wrapper.c
+│   │       ├── include/         # Definições (.hrl)
+│   │       ├── test/            # Testes eunit/common_test
+│   │       └── rebar.config     # Config do projeto
+│   ├── sql/                     # Scripts SQL (migrar depois para PostgreSQL)
+│   │   └── init.sql
+│   └── rebar.config             # Config global do umbrella
+│
+├── client_flutter/              # App Flutter (Android, iOS, Web, Desktop)
+│   ├── android/                 # Configurações específicas para Android
+│   ├── ios/                     # Configurações específicas para iOS
+│   ├── web/                     # Configurações para rodar no navegador
+│   ├── lib/                     # Código principal em Dart
+│   │   ├── main.dart            # Ponto de entrada
+│   │   ├── screens/             # Telas (Login, Chat, Conversas, etc.)
+│   │   ├── widgets/             # Componentes reutilizáveis
+│   │   └── services/            # Conexão com backend Erlang/PostgreSQL
+│   ├── test/                    # Testes unitários
+│   ├── pubspec.yaml             # Dependências do Flutter
+│   └── README.md                # Guia do client Flutter
+│
+├── docs/                        # Documentação
+│   ├── architecture.md
+│   ├── roadmap.md
+│   └── api_spec.md
+│
+└── README.md                    # Guia geral do projeto
+
+
+
+
+
+Aqui vai o **SQL completo** para um **sistema corporativo de chat**, unindo a tua ideia inicial (ACL) + funcionalidades de mensagens estilo WhatsApp:
+
+-- ======================
+-- 1. Users
+-- ======================
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(50),
+    username VARCHAR(50) UNIQUE,
+    email VARCHAR(100) UNIQUE,
+    phone VARCHAR(20) UNIQUE NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    last_login TIMESTAMPTZ
+);
+
+-- ======================
+-- 2. Roles (ex.: Admin, Manager, User, Auditor)
+-- ======================
+CREATE TABLE roles (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    description VARCHAR(150)
+);
+
+-- ======================
+-- 3. Permissions (actions allowed)
+-- ======================
+CREATE TABLE permissions (
+    id SERIAL PRIMARY KEY,
+    description VARCHAR(100) NOT NULL
+);
+
+-- ======================
+-- 4. Role ↔ Permissions (N:N)
+-- ======================
+CREATE TABLE role_permissions (
+    role_id INT,
+    permission_id INT,
+    PRIMARY KEY (role_id, permission_id),
+    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+);
+
+-- ======================
+-- 5. User ↔ Roles (N:N)
+-- ======================
+CREATE TABLE user_roles (
+    user_id INT,
+    role_id INT,
+    PRIMARY KEY (user_id, role_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
+);
+
+-- ======================
+-- 6. Chat Groups
+-- ======================
+CREATE TABLE chat_groups (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    created_by INT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    is_private BOOLEAN DEFAULT false,
+    group_type VARCHAR(20) DEFAULT 'private' CHECK (group_type IN ('private','public','broadcast')),
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ======================
+-- 7. Group Members
+-- ======================
+CREATE TABLE group_members (
+    group_id INT,
+    user_id INT,
+    role VARCHAR(20) DEFAULT 'member' CHECK (role IN ('admin','member')),
+    joined_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (group_id, user_id),
+    FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+-- ======================
+-- 8. Messages
+-- ======================
+CREATE TABLE messages (
+    id SERIAL PRIMARY KEY,
+    sender_id INT NOT NULL,
+    receiver_id INT,        -- private
+    group_id INT,           -- group
+    content TEXT,
+    message_type VARCHAR(20) DEFAULT 'text' CHECK (message_type IN ('text','image','video','audio','document','system')),
+    sent_at TIMESTAMPTZ DEFAULT now(),
+    status VARCHAR(20) DEFAULT 'sent' CHECK (status IN ('sent','delivered','read')),
+    is_deleted BOOLEAN DEFAULT false,
+    edited_at TIMESTAMPTZ,
+    FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
+    CONSTRAINT chk_target CHECK (
+        (receiver_id IS NOT NULL AND group_id IS NULL) OR
+        (receiver_id IS NULL AND group_id IS NOT NULL)
+    )
+);
+
+-- Indexes
+CREATE INDEX idx_messages_group ON messages(group_id, sent_at);
+CREATE INDEX idx_messages_user ON messages(sender_id, sent_at);
+
+-- ======================
+-- 9. Attachments
+-- ======================
+CREATE TABLE attachments (
+    id SERIAL PRIMARY KEY,
+    message_id INT NOT NULL,
+    file_type VARCHAR(20) NOT NULL,           -- image, video, audio, document
+    mime_type VARCHAR(50),
+    file_path VARCHAR(255) NOT NULL,          -- ex: /uploads/2025/09/file.png
+    thumbnail_path VARCHAR(255),
+    size INT,
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_attachments_msg ON attachments(message_id);
+
+
+
+1️⃣ Roles (Funções)
+INSERT INTO roles (name, description) VALUES
+('Admin', 'Full access to the system'),
+('Manager', 'Can manage groups and users'),
+('User', 'Regular user, can chat'),
+('Auditor', 'Read-only access to logs and messages');
+
+
+
+2️⃣ Permissions
+INSERT INTO permissions (description) VALUES
+('CREATE_GROUP'),
+('DELETE_GROUP'),
+('ADD_USER'),
+('REMOVE_USER'),
+('SEND_MESSAGE'),
+('DELETE_MESSAGE'),
+('VIEW_LOGS');
+
+
+
+3️⃣ Role ↔ Permissions
+-- Admin gets everything
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r, permissions p
+WHERE r.name = 'Admin';
+
+-- Manager can create groups, add/remove users, send/delete messages
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+JOIN permissions p ON p.description IN ('CREATE_GROUP','ADD_USER','REMOVE_USER','SEND_MESSAGE','DELETE_MESSAGE')
+WHERE r.name = 'Manager';
+
+-- User can only send messages
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+JOIN permissions p ON p.description = 'SEND_MESSAGE'
+WHERE r.name = 'User';
+
+-- Auditor can only view logs
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+JOIN permissions p ON p.description = 'VIEW_LOGS'
+WHERE r.name = 'Auditor';
+
+
+
+4️⃣ Usuários iniciais
+INSERT INTO users (first_name, last_name, username, phone, email)
+VALUES 
+('Alice', 'Admin', 'alice_admin', '+258841234567', 'alice@chatapp.com'),
+('Bob', 'Manager', 'bob_manager', '+258841234568', 'bob@chatapp.com'),
+('Charlie', 'User', 'charlie_user', '+258841234569', 'charlie@chatapp.com');
+
+
+
+5️⃣ Usuário ↔ Roles
+-- Alice é Admin
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.username = 'alice_admin' AND r.name = 'Admin';
+
+-- Bob é Manager
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.username = 'bob_manager' AND r.name = 'Manager';
+
+-- Charlie é User
+INSERT INTO user_roles (user_id, role_id)
+SELECT u.id, r.id FROM users u, roles r
+WHERE u.username = 'charlie_user' AND r.name = 'User';
+
+
+
+6️⃣ Grupos de chat iniciais
+INSERT INTO chat_groups (name, description, created_by, is_private, group_type)
+SELECT 'General Chat', 'Group for all users', u.id, false, 'public'
+FROM users u WHERE u.username = 'alice_admin';
+
+INSERT INTO chat_groups (name, description, created_by, is_private, group_type)
+SELECT 'Admins Only', 'Private group for admins', u.id, true, 'private'
+FROM users u WHERE u.username = 'alice_admin';
+
+
+
+7️⃣ Membros dos grupos
+-- General Chat: todos
+INSERT INTO group_members (group_id, user_id, role)
+SELECT g.id, u.id, 'member'
+FROM chat_groups g, users u
+WHERE g.name = 'General Chat';
+
+-- Admins Only: só Alice
+INSERT INTO group_members (group_id, user_id, role)
+SELECT g.id, u.id, 'admin'
+FROM chat_groups g, users u
+WHERE g.name = 'Admins Only' AND u.username = 'alice_admin';
+
+
++-----------------+ +--------------------+ +--------------+
+| Android Client |<--(Protobuf/TCP)-->| Load Balancer |<--->| CDN/Push SRV |
+| (Kotlin + E2EE) | /| (HAProxy / Nginx) | +--------------+
++-----------------+ / +--------------------+
+/ | ^
++-----------------+ / | |
+| Web Client |<--(WebSocket)--/ | | (internal API / replication)
+| (React + WS + | +---v--v---+
+| Protobuf) | | Erlang | <---> Redis (pub/sub, cache)
++-----------------+ | Backend | MySQL (persistence)
++----+-----+
+|
+| (replication / backup)
++----v-----+
+| Storage |
+| (S3 / MinIO)
++----------+
+
+
+Notes:
+- E2EE keys managed client-side; server only stores ciphertext and metadata.
+- Protobuf over WebSocket/TCP to reduce overhead.
