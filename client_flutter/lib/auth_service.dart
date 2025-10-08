@@ -187,45 +187,80 @@ class AuthService {
   }
 
   /// -----------------------------
-  /// 8) Revogar outras sessões (WhatsApp-style) - SOLUÇÃO ALTERNATIVA
+  /// 8) Revogar outras sessões (CORRIGIDA) - ✅✅✅
   /// -----------------------------
   static Future<bool> revokeOtherSessions() async {
-    final refreshToken = await _storage.read(key: 'refresh_token');
+    final accessToken = await _storage.read(key: 'access_token');
+    final deviceId = await getOrCreateDeviceId();
     
-    if (refreshToken == null) {
-      print('❌ Nenhum refresh token encontrado');
+    if (accessToken == null) {
+      print('❌ Nenhum access token encontrado');
       return false;
     }
 
     try {
-      print('🚫 Revogando outras sessões via logout...');
+      print('🚫 Revogando outras sessões...');
       
-      // SOLUÇÃO ALTERNATIVA: Usar o endpoint de logout existente
-      // que já funciona para revogar a sessão atual
-      final url = Uri.parse('$backendUrl/auth/logout');
+      // ✅ USAR O ENDPOINT CORRETO: /auth/revoke-others
+      final url = Uri.parse('$backendUrl/auth/revoke-others');
       final res = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'refresh_token': refreshToken,
+          'access_token': accessToken,
+          'device_uuid': deviceId,
         }),
       );
 
-      print('📡 Logout response: ${res.statusCode}');
+      print('📡 Revoke others response: ${res.statusCode} ${res.body}');
 
       if (res.statusCode == 200) {
-        print('✅ Sessão atual revogada com sucesso');
-        // Limpar storage local
-        await _storage.delete(key: 'access_token');
-        await _storage.delete(key: 'refresh_token');
+        print('✅ Outras sessões revogadas com sucesso!');
+        // ✅ NÃO limpa o storage - mantém a sessão ATUAL
         return true;
       } else {
-        print('❌ Falha ao revogar sessão: ${res.statusCode} ${res.body}');
+        print('❌ Falha ao revogar outras sessões: ${res.statusCode}');
         return false;
       }
     } catch (e) {
-      print('❌ Erro ao revogar sessões: $e');
+      print('❌ Erro ao revogar outras sessões: $e');
       return false;
     }
+  }
+
+  /// -----------------------------
+  /// 9) ✅✅✅ NOVA: Validar sessão com backend
+  /// -----------------------------
+  static Future<bool> validateCurrentSession() async {
+    final accessToken = await _storage.read(key: 'access_token');
+    
+    if (accessToken == null) {
+      return false;
+    }
+
+    try {
+      final url = Uri.parse('$backendUrl/auth/validate-session');
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'access_token': accessToken,
+        }),
+      );
+
+      return response.statusCode == 200;
+    } catch (e) {
+      print('❌ Error validating session: $e');
+      return false;
+    }
+  }
+
+  /// -----------------------------
+  /// 10) ✅✅✅ NOVA: Limpar sessão localmente
+  /// -----------------------------
+  static Future<void> clearLocalSession() async {
+    await _storage.delete(key: 'access_token');
+    await _storage.delete(key: 'refresh_token');
+    print('✅ Local session cleared');
   }
 }

@@ -29,3 +29,8 @@ para ver FIREBASE_API_KEY no shell do erlang, digita:  os:getenv("FIREBASE_API_K
                 phoneNumber → número do usuário
                 providerUserInfo → lista de provedores associados (nesse caso, apenas phone)
                 createdAt, lastLoginAt, lastRefreshAt → timestamps.
+
+
+espera ai, vou te mandar aqui os ficheiros que tenho:     
+no backend-erlang tenho: auth_util, db_util, firebase_handler, logut_handler, revoke_others_handler, chat_app_app, chat_app.app.src e server.     
+no no flutter tenho main.dart, welcome_page.dart, startup_page.dart, phone_input_page.dart, otp_page.dart, chat_list_page.dart, auth_service.dart. 

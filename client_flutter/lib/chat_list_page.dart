@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'auth_service.dart';
+import 'dart:async';
 
 class ChatListPage extends StatefulWidget {
   @override
@@ -8,6 +9,58 @@ class ChatListPage extends StatefulWidget {
 
 class _ChatListPageState extends State<ChatListPage> {
   bool _isLoading = false;
+  Timer? _sessionTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startSessionValidationTimer();
+  }
+
+  @override
+  void dispose() {
+    _sessionTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startSessionValidationTimer() {
+    // ✅✅✅ Verificar a cada 10 segundos se a sessão ainda é válida
+    _sessionTimer = Timer.periodic(Duration(seconds: 10), (timer) async {
+      final isValid = await AuthService.validateCurrentSession();
+      if (!isValid && mounted) {
+        timer.cancel();
+        _showSessionExpiredDialog();
+      }
+    });
+  }
+
+  void _showSessionExpiredDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text('Sessão Expirada'),
+        content: Text('Sua sessão foi encerrada em outro dispositivo. Você será redirecionado para o login.'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _redirectToLogin();
+            },
+            child: Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _redirectToLogin() async {
+    await AuthService.clearLocalSession();
+    Navigator.pushNamedAndRemoveUntil(
+      context,
+      '/welcome',
+      (route) => false,
+    );
+  }
 
   Future<void> _logout() async {
     setState(() => _isLoading = true);
@@ -15,7 +68,7 @@ class _ChatListPageState extends State<ChatListPage> {
       await AuthService.logout();
       Navigator.pushNamedAndRemoveUntil(
         context,
-        '/',
+        '/welcome',
         (route) => false,
       );
     } catch (e) {
@@ -111,6 +164,8 @@ class _ChatListPageState extends State<ChatListPage> {
                 color: Colors.grey[600],
               ),
             ),
+            SizedBox(height: 20),
+            if (_isLoading) CircularProgressIndicator(),
           ],
         ),
       ),
@@ -123,8 +178,8 @@ class _ChatListPageState extends State<ChatListPage> {
       builder: (context) => AlertDialog(
         title: Text('Sair de outros dispositivos'),
         content: Text(
-          'Isso irá desconectar este dispositivo e todos os outros dispositivos que estão usando sua conta. '
-          'Você precisará fazer login novamente em todos os dispositivos. Deseja continuar?',
+          'Isso irá desconectar todos os outros dispositivos que estão usando sua conta. '
+          'Você permanecerá conectado neste dispositivo. Deseja continuar?',
         ),
         actions: [
           TextButton(
