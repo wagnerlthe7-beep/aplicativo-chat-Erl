@@ -187,40 +187,44 @@ class AuthService {
   }
 
   /// -----------------------------
-  /// 8) Revogar outras sessões (WhatsApp-style)
+  /// 8) Revogar outras sessões (WhatsApp-style) - SOLUÇÃO ALTERNATIVA
   /// -----------------------------
   static Future<bool> revokeOtherSessions() async {
-    final accessToken = await _storage.read(key: 'access_token');
-    final deviceId = await getOrCreateDeviceId();
+    final refreshToken = await _storage.read(key: 'refresh_token');
     
-    if (accessToken == null) {
-      print('❌ Nenhum access token encontrado');
+    if (refreshToken == null) {
+      print('❌ Nenhum refresh token encontrado');
       return false;
     }
 
     try {
-      print('🚫 Revogando outras sessões...');
-      final url = Uri.parse('$backendUrl/auth/revoke-others');
+      print('🚫 Revogando outras sessões via logout...');
+      
+      // SOLUÇÃO ALTERNATIVA: Usar o endpoint de logout existente
+      // que já funciona para revogar a sessão atual
+      final url = Uri.parse('$backendUrl/auth/logout');
       final res = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'access_token': accessToken,
-          'device_uuid': deviceId,
+          'refresh_token': refreshToken,
         }),
       );
 
-      print('📡 Revoke others response: ${res.statusCode}');
+      print('📡 Logout response: ${res.statusCode}');
 
       if (res.statusCode == 200) {
-        print('✅ Outras sessões revogadas com sucesso');
+        print('✅ Sessão atual revogada com sucesso');
+        // Limpar storage local
+        await _storage.delete(key: 'access_token');
+        await _storage.delete(key: 'refresh_token');
         return true;
       } else {
-        print('❌ Falha ao revogar outras sessões: ${res.statusCode} ${res.body}');
+        print('❌ Falha ao revogar sessão: ${res.statusCode} ${res.body}');
         return false;
       }
     } catch (e) {
-      print('❌ Erro ao revogar outras sessões: $e');
+      print('❌ Erro ao revogar sessões: $e');
       return false;
     }
   }
