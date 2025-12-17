@@ -47,54 +47,51 @@ init(Req0, State) ->
             {ok, Req0, State}
     end.
 
-check_session_valid(UserId, SessionId) ->
-    try
-        db_util:with_connection(fun(Conn) ->
-            %% ✅✅✅ CORREÇÃO: Conversão manual sem safe_to_integer
-            UserIdInt = case UserId of
-                U when is_binary(U) -> 
-                    try binary_to_integer(U) 
-                    catch _:_ -> throw({invalid_user_id, U}) 
-                    end;
-                U when is_list(U) -> 
-                    try list_to_integer(U) 
-                    catch _:_ -> throw({invalid_user_id, U}) 
-                    end;
-                U when is_integer(U) -> U;
-                _ -> throw({invalid_user_id, UserId})
-            end,
-            
-            SessionIdInt = case SessionId of
-                S when is_binary(S) -> 
-                    try binary_to_integer(S) 
-                    catch _:_ -> throw({invalid_session_id, S}) 
-                    end;
-                S when is_list(S) -> 
-                    try list_to_integer(S) 
-                    catch _:_ -> throw({invalid_session_id, S}) 
-                    end;
-                S when is_integer(S) -> S;
-                _ -> throw({invalid_session_id, SessionId})
-            end,
-            
-            Sql = "SELECT revoked FROM sessions WHERE user_id = $1 AND id = $2",
-            case epgsql:equery(Conn, Sql, [UserIdInt, SessionIdInt]) of
-                {ok, _, [{Revoked}]} ->
-                    case Revoked of
-                        true -> {error, revoked};
-                        false -> {ok, valid}
-                    end;
-                {ok, _, []} ->
-                    {error, not_found};
-                {error, Reason} ->
-                    {error, Reason}
-            end
-        end)
-    catch
-        throw:{invalid_user_id, _} -> {error, invalid_user_id};
-        throw:{invalid_session_id, _} -> {error, invalid_session_id};
-        _:_ -> {error, internal_error}
-    end.
+    check_session_valid(UserId, SessionId) ->
+        try
+            db_util:with_connection(fun(Conn) ->
+                %% ✅✅✅ CORREÇÃO: Conversão manual sem safe_to_integer
+                UserIdInt = case UserId of
+                    U when is_binary(U) -> 
+                        try binary_to_integer(U) 
+                        catch _:_ -> throw({invalid_user_id, U}) 
+                        end;
+                    U when is_list(U) -> 
+                        try list_to_integer(U) 
+                        catch _:_ -> throw({invalid_user_id, U}) 
+                        end;
+                    U when is_integer(U) -> U;
+                    _ -> throw({invalid_user_id, UserId})
+                end,
+                
+                SessionIdInt = case SessionId of
+                    S when is_binary(S) -> 
+                        try binary_to_integer(S) 
+                        catch _:_ -> throw({invalid_session_id, S}) 
+                        end;
+                    S when is_list(S) -> 
+                        try list_to_integer(S) 
+                        catch _:_ -> throw({invalid_session_id, S}) 
+                        end;
+                    S when is_integer(S) -> S;
+                    _ -> throw({invalid_session_id, SessionId})
+                end,
+                
+                Sql = "SELECT revoked FROM sessions WHERE user_id = $1 AND id = $2 AND revoked = false",  %% ✅✅✅ SÓ verifica revoked
+                case epgsql:equery(Conn, Sql, [UserIdInt, SessionIdInt]) of
+                    {ok, _, [{_}]} ->  %% ✅✅✅ Se encontrou = VÁLIDA (não importa expires_at)
+                        {ok, valid};
+                    {ok, _, []} ->
+                        {error, not_found};  %% ❌ Sessão revogada ou não existe
+                    {error, Reason} ->
+                        {error, Reason}
+                end
+            end)
+        catch
+            throw:{invalid_user_id, _} -> {error, invalid_user_id};
+            throw:{invalid_session_id, _} -> {error, invalid_session_id};
+            _:_ -> {error, internal_error}
+        end.
 
 send_json(Req, Status, Map) ->
     Json = jsx:encode(Map),

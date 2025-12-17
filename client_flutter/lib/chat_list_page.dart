@@ -1,30 +1,99 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'auth_service.dart';
+import 'chat_page.dart';
+import 'chat_service.dart';
+import 'chat_model.dart';
 import 'dart:async';
+import 'contacts_helper.dart';
 
 class ChatListPage extends StatefulWidget {
   @override
   _ChatListPageState createState() => _ChatListPageState();
 }
 
-class _ChatListPageState extends State<ChatListPage> {
+class _ChatListPageState extends State<ChatListPage>
+    with TickerProviderStateMixin {
   bool _isLoading = false;
   Timer? _sessionTimer;
+  Timer? _chatRefreshTimer;
+  late TabController _tabController;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  // ✅ SISTEMA DE CHATS REAL
+  StreamSubscription<List<ChatContact>>? _chatSubscription;
+  List<ChatContact> _chats = [];
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 3, vsync: this);
     _startSessionValidationTimer();
+    _initializeRealChats();
   }
 
   @override
   void dispose() {
     _sessionTimer?.cancel();
+    _chatRefreshTimer?.cancel();
+    _chatSubscription?.cancel();
+    _tabController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
+  // ✅ INICIALIZAR CHATS REAIS - CORRIGIDO
+  void _initializeRealChats() {
+    print('🚀 Inicializando chats reais...');
+
+    // ✅ CONECTAR AO WEBSOCKET PRIMEIRO
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await ChatService.connect();
+
+      // ✅ DEPOIS CARREGAR CHATS DO STORAGE
+      final currentChats = ChatService.currentChatList;
+      if (mounted) {
+        setState(() {
+          _chats = currentChats;
+        });
+      }
+
+      print('📊 Chats iniciais carregados: ${_chats.length}');
+
+      // ✅ SE NÃO HOUVER CHATS, TENTAR RECONSTRUIR
+      if (_chats.isEmpty) {
+        print('🔄 Nenhum chat encontrado, reconstruindo...');
+        await ChatService.rebuildChatsFromHistory();
+      }
+
+      // ✅ INICIAR TIMER DE VERIFICAÇÃO
+      _startChatRefreshTimer();
+    });
+
+    // ✅ OUVIR ATUALIZAÇÕES EM TEMPO REAL
+    _chatSubscription = ChatService.chatListStream.listen((chats) {
+      print('📡 Lista de chats atualizada: ${chats.length} chats');
+      if (mounted) {
+        setState(() {
+          _chats = chats;
+        });
+      }
+    });
+  }
+
+  // ✅ VERIFICAR E RECARREGAR CHATS PERIODICAMENTE
+  void _startChatRefreshTimer() {
+    _chatRefreshTimer = Timer.periodic(Duration(seconds: 3), (timer) {
+      if (_chats.isEmpty && mounted) {
+        print('🔄 Verificando chats vazios...');
+        // Não força reconstrução automática - deixa o usuário recarregar manualmente
+      }
+    });
+  }
+
   void _startSessionValidationTimer() {
-    // ✅✅✅ Verificar a cada 10 segundos se a sessão ainda é válida
     _sessionTimer = Timer.periodic(Duration(seconds: 10), (timer) async {
       final isValid = await AuthService.validateCurrentSession();
       if (!isValid && mounted) {
@@ -40,7 +109,9 @@ class _ChatListPageState extends State<ChatListPage> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: Text('Sessão Expirada'),
-        content: Text('Sua sessão foi encerrada em outro dispositivo. Você será redirecionado para o login.'),
+        content: Text(
+          'Sua sessão foi encerrada em outro dispositivo. Você será redirecionado para o login.',
+        ),
         actions: [
           TextButton(
             onPressed: () {
@@ -55,10 +126,330 @@ class _ChatListPageState extends State<ChatListPage> {
 
   void _redirectToLogin() async {
     await AuthService.clearLocalSession();
-    Navigator.pushNamedAndRemoveUntil(
-      context,
-      '/welcome',
-      (route) => false,
+    Navigator.pushNamedAndRemoveUntil(context, '/welcome', (route) => false);
+  }
+
+  // ✅ BOTÃO PARA RECARREGAR CONVERSAS
+  Future<void> _reloadChats() async {
+    setState(() => _isLoading = true);
+
+    print('🔄 Recarregando conversas...');
+
+    // ✅ FORÇAR RECONSTRUÇÃO DOS CHATS
+    await ChatService.rebuildChatsFromHistory();
+
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // ✅ ABRIR LISTA DE CONTATOS
+  Future<void> _openContactsList() async {
+    final contactPermission = await Permission.contacts.status;
+
+    if (!contactPermission.isGranted) {
+      final result = await Permission.contacts.request();
+      if (!result.isGranted) {
+        _showPermissionDeniedDialog();
+        return;
+      }
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      final contacts = await FlutterContacts.getContacts(
+        withProperties: true,
+        withPhoto: true,
+      );
+
+      _showContactsSelectionDialog(contacts);
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Erro ao carregar contatos: $e')));
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // ✅ DIÁLOGO DE SELEÇÃO DE CONTATOS (mantido igual)
+  void _showContactsSelectionDialog(List<Contact> contacts) {
+    final searchController = TextEditingController();
+    List<Contact> filteredContacts = List.from(contacts);
+    bool _isSearching = false;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          void filterContacts(String query) {
+            setState(() {
+              if (query.isEmpty) {
+                filteredContacts = List.from(contacts);
+              } else {
+                filteredContacts = contacts.where((contact) {
+                  final name = contact.displayName.toLowerCase();
+                  final phones = contact.phones
+                      .map((phone) => phone.number)
+                      .join(' ');
+                  final searchLower = query.toLowerCase();
+
+                  return name.contains(searchLower) ||
+                      phones.contains(searchLower) ||
+                      phones
+                          .replaceAll(RegExp(r'[\s\-\(\)]'), '')
+                          .contains(searchLower);
+                }).toList();
+              }
+            });
+          }
+
+          void _toggleSearch() {
+            setState(() {
+              _isSearching = !_isSearching;
+              if (!_isSearching) {
+                searchController.clear();
+                filterContacts('');
+              }
+            });
+          }
+
+          return AlertDialog(
+            title: Container(
+              height: 40,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.contacts, color: Colors.green, size: 20),
+                      SizedBox(width: 6),
+                      if (!_isSearching)
+                        Text(
+                          'Selecionar Contacto',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                    ],
+                  ),
+
+                  if (_isSearching)
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Padding(
+                              padding: EdgeInsets.only(left: 16),
+                              child: TextField(
+                                controller: searchController,
+                                autofocus: true,
+                                onChanged: filterContacts,
+                                decoration: InputDecoration(
+                                  hintText: 'Pesquisar...',
+                                  hintStyle: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 14,
+                                  ),
+                                  border: InputBorder.none,
+                                  contentPadding: EdgeInsets.zero,
+                                ),
+                                style: TextStyle(fontSize: 14),
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              Icons.close,
+                              color: Colors.green,
+                              size: 20,
+                            ),
+                            padding: EdgeInsets.all(4),
+                            constraints: BoxConstraints(
+                              minWidth: 36,
+                              minHeight: 36,
+                            ),
+                            onPressed: _toggleSearch,
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    IconButton(
+                      icon: Icon(Icons.search, color: Colors.green, size: 20),
+                      padding: EdgeInsets.all(4),
+                      constraints: BoxConstraints(minWidth: 36, minHeight: 36),
+                      onPressed: _toggleSearch,
+                    ),
+                ],
+              ),
+            ),
+            content: Container(
+              width: double.maxFinite,
+              height: MediaQuery.of(context).size.height * 0.6,
+              child: Column(
+                children: [
+                  if (!_isSearching) SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Text(
+                        '${filteredContacts.length} contactos encontrados',
+                        style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 12),
+
+                  Expanded(
+                    child: filteredContacts.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  _isSearching &&
+                                          searchController.text.isNotEmpty
+                                      ? Icons.search_off
+                                      : Icons.contacts_outlined,
+                                  size: 60,
+                                  color: Colors.grey,
+                                ),
+                                SizedBox(height: 16),
+                                Text(
+                                  _isSearching &&
+                                          searchController.text.isNotEmpty
+                                      ? 'Nenhum resultado para "${searchController.text}"'
+                                      : 'Nenhum contacto encontrado',
+                                  style: TextStyle(color: Colors.grey),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
+                            itemCount: filteredContacts.length,
+                            itemBuilder: (context, index) {
+                              final contact = filteredContacts[index];
+                              return _buildContactItem(contact);
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Voltar'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // ✅ ITEM DA LISTA DE CONTATOS
+  Widget _buildContactItem(Contact contact) {
+    final displayName = contact.displayName.isEmpty
+        ? 'Sem nome'
+        : contact.displayName;
+    final phones = contact.phones.isNotEmpty
+        ? contact.phones.first.number
+        : 'Sem telefone';
+
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: Colors.grey[200]!)),
+      ),
+      child: ListTile(
+        leading: contact.photo != null
+            ? CircleAvatar(
+                radius: 22,
+                backgroundImage: MemoryImage(contact.photo!),
+              )
+            : CircleAvatar(
+                radius: 22,
+                backgroundColor: Colors.green[100],
+                child: Icon(Icons.person, color: Colors.green, size: 24),
+              ),
+        title: Text(
+          displayName,
+          style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16),
+        ),
+        subtitle: Text(
+          phones,
+          style: TextStyle(color: Colors.grey[600], fontSize: 14),
+        ),
+        trailing: Icon(Icons.chat, color: Colors.green),
+        onTap: () {
+          Navigator.pop(context);
+          _startNewChat(contact);
+        },
+      ),
+    );
+  }
+
+  // ✅ INICIAR NOVO CHAT
+  Future<void> _startNewChat(Contact contact) async {
+    setState(() => _isLoading = true);
+    try {
+      final remoteUserId = await ContactsHelper.fetchBackendUserId(contact);
+      if (!mounted) return;
+
+      if (remoteUserId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Este contato ainda não está registrado no SpeekJoy.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              ChatPage(contact: contact, remoteUserId: remoteUserId),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Erro ao iniciar conversa: $e')));
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // ✅ RESTANTE DAS FUNÇÕES (mantidas iguais)
+  void _showPermissionDeniedDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Permissão Necessária'),
+        content: Text(
+          'Para selecionar contatos, é necessário permitir o acesso à lista de contatos.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: Text('Configurações'),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+          ),
+        ],
+      ),
     );
   }
 
@@ -66,15 +457,11 @@ class _ChatListPageState extends State<ChatListPage> {
     setState(() => _isLoading = true);
     try {
       await AuthService.logout();
-      Navigator.pushNamedAndRemoveUntil(
-        context,
-        '/welcome',
-        (route) => false,
-      );
+      Navigator.pushNamedAndRemoveUntil(context, '/welcome', (route) => false);
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro ao fazer logout: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Erro ao fazer logout: $e')));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -100,9 +487,9 @@ class _ChatListPageState extends State<ChatListPage> {
         );
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erro: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Erro: $e')));
     } finally {
       setState(() => _isLoading = false);
     }
@@ -111,16 +498,48 @@ class _ChatListPageState extends State<ChatListPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.white,
       appBar: AppBar(
-        title: Text('Conversas'),
+        backgroundColor: Colors.green,
+        elevation: 0,
+        title: Text(
+          'SpeekJoy',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
         actions: [
+          // ✅ BOTÃO DE RECARREGAR CHATS
+          IconButton(
+            icon: _isLoading
+                ? SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                : Icon(Icons.refresh, color: Colors.white),
+            onPressed: _isLoading ? null : _reloadChats,
+          ),
+          IconButton(
+            icon: Icon(Icons.camera_alt, color: Colors.white),
+            onPressed: () {},
+          ),
+          IconButton(
+            icon: Icon(Icons.search, color: Colors.white),
+            onPressed: () {},
+          ),
           PopupMenuButton<String>(
+            icon: Icon(Icons.more_vert, color: Colors.white),
             onSelected: (value) {
-              if (value == 'logout') {
+              if (value == 'logout')
                 _logout();
-              } else if (value == 'revoke_others') {
+              else if (value == 'revoke_others')
                 _showRevokeDialog();
-              }
             },
             itemBuilder: (context) => [
               PopupMenuItem(
@@ -146,28 +565,299 @@ class _ChatListPageState extends State<ChatListPage> {
             ],
           ),
         ],
-      ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.chat_bubble_outline,
-              size: 80,
-              color: Colors.grey[400],
+        bottom: PreferredSize(
+          preferredSize: Size.fromHeight(70),
+          child: Container(
+            color: Colors.white,
+            child: Column(
+              children: [
+                Container(height: 1, color: Colors.grey[300]),
+                Container(
+                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                  child: TabBar(
+                    controller: _tabController,
+                    indicatorColor: Colors.green,
+                    labelColor: Colors.green,
+                    unselectedLabelColor: Colors.grey[600],
+                    tabs: [
+                      Tab(
+                        child: Column(
+                          children: [
+                            Icon(Icons.chat_bubble_outline, size: 18),
+                            SizedBox(height: 2),
+                            Text('CHATS', style: TextStyle(fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                      Tab(
+                        child: Column(
+                          children: [
+                            Icon(Icons.radio_button_checked, size: 18),
+                            SizedBox(height: 2),
+                            Text('STATUS', style: TextStyle(fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                      Tab(
+                        child: Column(
+                          children: [
+                            Icon(Icons.call, size: 18),
+                            SizedBox(height: 2),
+                            Text('CALLS', style: TextStyle(fontSize: 10)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            SizedBox(height: 20),
-            Text(
-              'Aqui vai a lista de conversas',
-              style: TextStyle(
-                fontSize: 18,
-                color: Colors.grey[600],
+          ),
+        ),
+      ),
+      body: Column(
+        children: [
+          Container(
+            color: Colors.white,
+            padding: EdgeInsets.all(16),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: TextField(
+                controller: _searchController,
+                onChanged: (value) => setState(() => _searchQuery = value),
+                decoration: InputDecoration(
+                  hintText: 'Pesquisar ou começar nova conversa',
+                  hintStyle: TextStyle(color: Colors.grey[600]),
+                  prefixIcon: Icon(Icons.search, color: Colors.grey[600]),
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                ),
               ),
             ),
-            SizedBox(height: 20),
-            if (_isLoading) CircularProgressIndicator(),
+          ),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [_buildChatsTab(), _buildStatusTab(), _buildCallsTab()],
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _openContactsList,
+        backgroundColor: Colors.green,
+        child: _isLoading
+            ? SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+              )
+            : Icon(Icons.chat, color: Colors.white),
+      ),
+    );
+  }
+
+  // ✅ CHATS TAB COM DADOS REAIS
+  Widget _buildChatsTab() {
+    final filteredChats = _getFilteredChats();
+
+    if (filteredChats.isEmpty) {
+      return _buildEmptyChatsState();
+    }
+
+    return ListView.builder(
+      padding: EdgeInsets.only(top: 8),
+      itemCount: filteredChats.length,
+      itemBuilder: (context, index) => _buildRealChatItem(filteredChats[index]),
+    );
+  }
+
+  // ✅ ITEM DE CHAT REAL
+  Widget _buildRealChatItem(ChatContact chat) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: Colors.grey[200]!, width: 0.5),
+        ),
+      ),
+      child: ListTile(
+        leading: CircleAvatar(
+          radius: 25,
+          backgroundImage: chat.photo != null ? MemoryImage(chat.photo!) : null,
+          child: chat.photo == null
+              ? Icon(Icons.person, color: Colors.grey[600], size: 28)
+              : null,
+          backgroundColor: chat.photo == null ? Colors.grey[300] : null,
+        ),
+        title: Text(
+          chat.name,
+          style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16),
+        ),
+        subtitle: Text(
+          chat.lastMessage,
+          style: TextStyle(color: Colors.grey[600], fontSize: 14),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              _formatTime(chat.lastMessageTime),
+              style: TextStyle(color: Colors.grey[500], fontSize: 12),
+            ),
+            if (chat.unreadCount > 0)
+              Container(
+                margin: EdgeInsets.only(top: 4),
+                padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.green,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  chat.unreadCount.toString(),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
           ],
         ),
+        onTap: () {
+          print(
+            '👆 Clicado no chat: ${chat.name} (Unread: ${chat.unreadCount})',
+          );
+
+          // ✅✅✅ MARCAR COMO LIDO ANTES DE ABRIR O CHAT
+          //ChatService.markChatAsRead(chat.contactId);
+
+          // ✅ CRIAR CONTATO TEMPORÁRIO PARA NAVEGAÇÃO
+          final contact = Contact()
+            ..displayName = chat.name
+            ..phones = [Phone(chat.phoneNumber ?? '')]
+            ..photo = chat.photo;
+
+          // NAVEGAR PARA O CHAT
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) =>
+                  ChatPage(contact: contact, remoteUserId: chat.contactId),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ✅ FILTRAR CHATS POR PESQUISA
+  List<ChatContact> _getFilteredChats() {
+    if (_searchQuery.isEmpty) return _chats;
+
+    return _chats.where((chat) {
+      return chat.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+          chat.lastMessage.toLowerCase().contains(_searchQuery.toLowerCase());
+    }).toList();
+  }
+
+  // ✅ ESTADO VAZIO PARA CHATS
+  Widget _buildEmptyChatsState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.chat_bubble_outline, size: 80, color: Colors.grey[300]),
+          SizedBox(height: 16),
+          Text(
+            'Nenhuma conversa',
+            style: TextStyle(color: Colors.grey, fontSize: 18),
+          ),
+          SizedBox(height: 8),
+          Text(
+            'Inicie uma conversa para ver os chats aqui',
+            style: TextStyle(color: Colors.grey, fontSize: 14),
+          ),
+          SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: _openContactsList,
+            icon: Icon(Icons.chat),
+            label: Text('Iniciar primeira conversa'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ✅ FORMATAR HORA
+  String _formatTime(DateTime timestamp) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final messageDay = DateTime(timestamp.year, timestamp.month, timestamp.day);
+
+    if (messageDay == today) {
+      return '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+    } else {
+      return '${timestamp.day}/${timestamp.month}';
+    }
+  }
+
+  // ✅ TABS DE STATUS E CALLS
+  Widget _buildStatusTab() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.radio_button_checked, size: 80, color: Colors.grey[400]),
+          SizedBox(height: 20),
+          Text(
+            'Status em breve',
+            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+          ),
+          SizedBox(height: 10),
+          Text(
+            'Esta funcionalidade será implementada em breve',
+            style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCallsTab() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.call, size: 80, color: Colors.grey[400]),
+          SizedBox(height: 20),
+          Text(
+            'Chamadas em breve',
+            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+          ),
+          SizedBox(height: 10),
+          Text(
+            'Esta funcionalidade será implementada em breve',
+            style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+            textAlign: TextAlign.center,
+          ),
+        ],
       ),
     );
   }
@@ -178,8 +868,7 @@ class _ChatListPageState extends State<ChatListPage> {
       builder: (context) => AlertDialog(
         title: Text('Sair de outros dispositivos'),
         content: Text(
-          'Isso irá desconectar todos os outros dispositivos que estão usando sua conta. '
-          'Você permanecerá conectado neste dispositivo. Deseja continuar?',
+          'Isso irá desconectar todos os outros dispositivos que estão usando sua conta. Você permanecerá conectado neste dispositivo. Deseja continuar?',
         ),
         actions: [
           TextButton(

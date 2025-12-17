@@ -30,10 +30,11 @@ init(Req0, State) ->
                         {ok, Claims} ->
                             Phone = maps:get(<<"phoneNumber">>, Claims, undefined),
                             FirebaseUid = maps:get(<<"localId">>, Claims, undefined),
-                            io:format("📌 Phone: ~p, FirebaseUid: ~p~n", [Phone, FirebaseUid]),
+                            UserName = maps:get(<<"user_name">>, Dec, undefined), %% ✅✅✅ NOVO: Nome do usuário
+                            io:format("📌 Phone: ~p, FirebaseUid: ~p, UserName: ~p~n", [Phone, FirebaseUid, UserName]),
 
-                            %% 2) get_or_create_user (catch)
-                            ResUser = catch auth_util:get_or_create_user(Phone, FirebaseUid),
+                            %% 2) get_or_create_user (catch) - com nome se fornecido
+                            ResUser = catch auth_util:get_or_create_user(Phone, FirebaseUid, UserName),
                             io:format("🔹 get_or_create_user returned: ~p~n", [ResUser]),
 
                             case ResUser of
