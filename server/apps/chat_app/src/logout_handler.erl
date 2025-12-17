@@ -1,5 +1,5 @@
 %%%-------------------------------------------------------------------
-%%% logout_handler.erl
+%%% logout_handler.erl - CORRIGIDO
 %%% Handler para /auth/logout (revoga 1 refresh token) 
 %%%-------------------------------------------------------------------
 -module(logout_handler).
@@ -14,28 +14,43 @@ init(Req0, State) ->
     case Method of
         <<"POST">> ->
             {ok, Body, Req1} = cowboy_req:read_body(Req0),
-            io:format("🔒 /auth/logout Body: ~p~n", [Body]),
+            ?LOG_INFO("🔒 /auth/logout Body: ~p", [Body]),
             Dec = catch jsx:decode(Body, [return_maps]),
             case Dec of
                 #{<<"refresh_token">> := Refresh} ->
                     Res = catch auth_util:revoke_session_by_token(Refresh),
-                    io:format("🔒 revoke_session_by_token -> ~p~n", [Res]),
+                    ?LOG_INFO("🔒 revoke_session_by_token -> ~p", [Res]),
                     case Res of
                         ok ->
-                            ReqF = firebase_handler:reply_json(Req1, 200, #{ok => <<"logged_out">>}),
-                            {ok, ReqF, State};
+                            Response = jsx:encode(#{<<"success">> => true, <<"message">> => <<"Logged out successfully">>}),
+                            Req2 = cowboy_req:reply(200, #{
+                                <<"content-type">> => <<"application/json">>
+                            }, Response, Req1),
+                            {ok, Req2, State};
                         {ok, _} ->
-                            ReqF = firebase_handler:reply_json(Req1, 200, #{ok => <<"logged_out">>}),
-                            {ok, ReqF, State};
+                            Response = jsx:encode(#{<<"success">> => true, <<"message">> => <<"Logged out successfully">>}),
+                            Req2 = cowboy_req:reply(200, #{
+                                <<"content-type">> => <<"application/json">>
+                            }, Response, Req1),
+                            {ok, Req2, State};
                         _ ->
-                            ReqF = firebase_handler:reply_json(Req1, 500, #{error => list_to_binary(io_lib:format("revoke_failed:~p",[Res]))}),
-                            {ok, ReqF, State}
+                            Response = jsx:encode(#{<<"success">> => false, <<"error">> => <<"Failed to revoke session">>}),
+                            Req2 = cowboy_req:reply(500, #{
+                                <<"content-type">> => <<"application/json">>
+                            }, Response, Req1),
+                            {ok, Req2, State}
                     end;
                 _ ->
-                    ReqF = firebase_handler:reply_json(Req1, 400, #{error => <<"invalid_payload">>}),
-                    {ok, ReqF, State}
+                    Response = jsx:encode(#{<<"success">> => false, <<"error">> => <<"Invalid payload">>}),
+                    Req2 = cowboy_req:reply(400, #{
+                        <<"content-type">> => <<"application/json">>
+                    }, Response, Req1),
+                    {ok, Req2, State}
             end;
         _ ->
-            ReqF = firebase_handler:reply_json(Req0, 405, #{error => <<"method_not_allowed">>}),
-            {ok, ReqF, State}
+            Response = jsx:encode(#{<<"success">> => false, <<"error">> => <<"Method not allowed">>}),
+            Req2 = cowboy_req:reply(405, #{
+                <<"content-type">> => <<"application/json">>
+            }, Response, Req0),
+            {ok, Req2, State}
     end.

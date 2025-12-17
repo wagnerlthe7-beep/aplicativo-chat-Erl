@@ -1,0 +1,274 @@
+// ✅ VERSÃO CORRIGIDA - Evitar duplicatas e melhorar estabilidade
+import 'dart:convert';
+import 'dart:async';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import 'package:uuid/uuid.dart';
+
+class ChatService {
+  static WebSocketChannel? _channel;
+  static String? _currentUserId;
+  static const _secureStorage = FlutterSecureStorage();
+
+  // ✅ CONTROLE DE RECONEXÃO
+  static bool _isReconnecting = false;
+  static int _reconnectAttempts = 0;
+  static const int _maxReconnectAttempts = 5;
+
+  static final _messageController =
+      StreamController<Map<String, dynamic>>.broadcast();
+  static final _typingController =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  // ✅ CONTROLE DE MENSAGENS ENVIADAS (evitar duplicatas)
+  static final Set<String> _sentMessageIds = {};
+
+  static Future<bool> connect() async {
+    if (_channel != null && !_isReconnecting) {
+      return true;
+    }
+
+    try {
+      _reconnectAttempts++;
+      final authData = await _loadAuthData();
+      final token = authData['token'];
+      _currentUserId = authData['userId'];
+
+      if (token == null || _currentUserId == null) {
+        print('❌ No authentication data found');
+        return false;
+      }
+
+      final url = 'ws://10.0.2.2:4000/ws?token=$token';
+      _channel = WebSocketChannel.connect(Uri.parse(url));
+
+      _channel!.stream.listen(
+        _handleIncomingMessage,
+        onError: (error) {
+          print('❌ WebSocket error: $error');
+          _handleDisconnect();
+        },
+        onDone: () {
+          print('🔌 WebSocket disconnected');
+          _handleDisconnect();
+        },
+      );
+
+      _isReconnecting = false;
+      _reconnectAttempts = 0;
+      print('✅ WebSocket connected for user $_currentUserId');
+      return true;
+    } catch (e) {
+      print('❌ WebSocket connection error: $e');
+      _handleDisconnect();
+      return false;
+    }
+  }
+
+  static void _handleDisconnect() {
+    _channel = null;
+
+    // ✅ RECONEXÃO INTELIGENTE
+    if (!_isReconnecting && _reconnectAttempts < _maxReconnectAttempts) {
+      _isReconnecting = true;
+      final delay = Duration(
+        seconds: _reconnectAttempts * 2,
+      ); // Backoff exponencial
+      print('🔄 Tentando reconectar em ${delay.inSeconds} segundos...');
+
+      Future.delayed(delay, () {
+        if (_isReconnecting) {
+          connect();
+        }
+      });
+    } else if (_reconnectAttempts >= _maxReconnectAttempts) {
+      print('❌ Máximo de tentativas de reconexão atingido');
+      _isReconnecting = false;
+    }
+  }
+
+  static void _handleIncomingMessage(dynamic data) {
+    try {
+      final message = json.decode(data);
+      print('📨 Received: $message');
+
+      // ✅ IGNORAR MENSAGENS DUPLICADAS DO BACKEND
+      final messageId = message['message_id']?.toString();
+      if (messageId != null && _sentMessageIds.contains(messageId)) {
+        print('🔄 Ignorando mensagem duplicada: $messageId');
+        _sentMessageIds.remove(messageId); // Limpar após confirmação
+        return;
+      }
+
+      switch (message['type']) {
+        case 'welcome':
+          print('✅ Authenticated with chat server');
+          break;
+        case 'message':
+          _messageController.add(message);
+          break;
+        case 'typing':
+          _typingController.add(message);
+          break;
+        case 'message_sent': // ✅ CONFIRMAÇÃO DE ENVIO
+          final sentMessageId = message['message_id']?.toString();
+          if (sentMessageId != null) {
+            _sentMessageIds.remove(sentMessageId);
+            print('✅ Mensagem confirmada pelo servidor: $sentMessageId');
+          }
+          break;
+        default:
+          print('❓ Unknown message type: ${message['type']}');
+      }
+    } catch (e) {
+      print('❌ Error parsing message: $e - Raw data: $data');
+    }
+  }
+
+  // ✅ ENVIO COM CONTROLE DE DUPLICATAS
+  static void sendMessage(String toUserId, String content, {String? tempId}) {
+    if (_channel == null) {
+      print('❌ WebSocket not connected');
+      return;
+    }
+
+    final messageId =
+        tempId ??
+        'msg_${DateTime.now().millisecondsSinceEpoch}_${_uuid.v4().substring(0, 8)}';
+    final message = {
+      'type': 'message',
+      'to': toUserId,
+      'content': content,
+      'message_id': messageId, // ✅ ID ÚNICO PARA CONTROLE
+    };
+
+    // ✅ REGISTRAR MENSAGEM ENVIADA (evitar eco)
+    _sentMessageIds.add(messageId);
+
+    try {
+      _channel!.sink.add(json.encode(message));
+      print('📤 Sent message to $toUserId (ID: $messageId): $content');
+    } catch (e) {
+      print('❌ Error sending message: $e');
+      _sentMessageIds.remove(messageId); // Remover se falhou
+    }
+  }
+
+  // ✅ MANTER OUTRAS FUNÇÕES EXISTENTES...
+  static final Uuid _uuid = Uuid();
+
+  static void sendTypingIndicator(String toUserId, bool isTyping) {
+    if (_channel == null) return;
+
+    final message = {
+      'type': 'typing',
+      'to': toUserId,
+      'is_typing': isTyping,
+      'message_id': 'typing_${DateTime.now().millisecondsSinceEpoch}',
+    };
+
+    _channel!.sink.add(json.encode(message));
+    print('⌨️ Sent typing indicator to $toUserId: $isTyping');
+  }
+
+  // ✅ CORREÇÃO: Carregar histórico com timestamp correto
+  static Future<List<Map<String, dynamic>>> loadChatHistory(
+    String contactUserId,
+  ) async {
+    try {
+      final currentUserId = await _secureStorage.read(key: 'user_id');
+
+      if (currentUserId == null) {
+        print('❌ User ID não encontrado no SecureStorage');
+        return [];
+      }
+
+      final url = Uri.parse(
+        'http://10.0.2.2:4000/api/messages/history/$currentUserId/$contactUserId',
+      );
+
+      print('📨 Carregando histórico: $currentUserId -> $contactUserId');
+
+      final accessToken = await _secureStorage.read(key: 'access_token');
+      final headers = {
+        'Content-Type': 'application/json',
+        if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+      };
+
+      final response = await http.get(url, headers: headers);
+      print('📡 Response status: ${response.statusCode}');
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final messages = (data['messages'] as List<dynamic>? ?? []);
+        print('✅ Histórico carregado: ${messages.length} mensagens');
+
+        // ✅ DEBUG: Verificar timestamps do servidor
+        for (final msg in messages.take(3)) {
+          final sentAt = msg['sent_at'];
+          final content = msg['content'];
+          print('   - [$sentAt] $content');
+        }
+
+        return messages.cast<Map<String, dynamic>>();
+      } else {
+        print('❌ Erro ao carregar histórico: ${response.statusCode}');
+        return [];
+      }
+    } catch (e) {
+      print('❌ Erro loadChatHistory: $e');
+      return [];
+    }
+  }
+
+  static void disconnect() {
+    _isReconnecting = false;
+    _reconnectAttempts = 0;
+    _sentMessageIds.clear();
+    _channel?.sink.close();
+    _channel = null;
+    print('🔌 WebSocket disconnected');
+  }
+
+  static Stream<Map<String, dynamic>> get messageStream =>
+      _messageController.stream;
+  static Stream<Map<String, dynamic>> get typingStream =>
+      _typingController.stream;
+  static bool get isConnected => _channel != null;
+
+  // ✅ MANTER _loadAuthData e _extractUserIdFromToken...
+  static Future<Map<String, String?>> _loadAuthData() async {
+    final token = await _secureStorage.read(key: 'access_token');
+    var userId = await _secureStorage.read(key: 'user_id');
+
+    if (token == null || userId == null) {
+      final prefs = await SharedPreferences.getInstance();
+      final legacyToken = prefs.getString('access_token');
+      final legacyUserId = prefs.getString('user_id');
+
+      if (legacyToken != null && legacyUserId != null) {
+        await _secureStorage.write(key: 'access_token', value: legacyToken);
+        await _secureStorage.write(key: 'user_id', value: legacyUserId);
+        return {'token': legacyToken, 'userId': legacyUserId};
+      }
+    }
+
+    return {'token': token, 'userId': userId};
+  }
+
+  static String? _extractUserIdFromToken(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return null;
+
+      final normalized = base64Url.normalize(parts[1]);
+      final payload = utf8.decode(base64Url.decode(normalized));
+      final data = json.decode(payload) as Map<String, dynamic>;
+      return data['user_id']?.toString();
+    } catch (e) {
+      return null;
+    }
+  }
+}
