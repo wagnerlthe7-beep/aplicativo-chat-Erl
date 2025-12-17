@@ -71,7 +71,7 @@ class AuthService {
   }
 
   /// -----------------------------
-  /// 4) Firebase SMS code login
+  /// 4) Firebase SMS code login (SEM finalizar backend automaticamente)
   /// -----------------------------
   static Future<bool> signInWithSmsCode({
     required String verificationId,
@@ -83,7 +83,8 @@ class AuthService {
         smsCode: smsCode,
       );
       final userCredential = await _auth.signInWithCredential(credential);
-      await afterFirebaseSignInBackend(userCredential: userCredential);
+      // ✅✅✅ REMOVIDO: await afterFirebaseSignInBackend(userCredential: userCredential);
+      // Agora o backend será chamado apenas quando necessário
       return true;
     } catch (e) {
       print('❌ Erro signInWithSmsCode: $e');
@@ -109,7 +110,9 @@ class AuthService {
       final deviceInfo =
           '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
 
-      print('🔄 Enviando dados para backend: device=$deviceId, phone=${user.phoneNumber}');
+      print(
+        '🔄 Enviando dados para backend: device=$deviceId, phone=${user.phoneNumber}',
+      );
 
       final url = Uri.parse('$backendUrl/auth/firebase');
       final res = await http.post(
@@ -127,10 +130,19 @@ class AuthService {
 
       if (res.statusCode == 200) {
         final body = jsonDecode(res.body);
-        // Backend retorna access_token + refresh_token
+        // Backend retorna access_token + refresh_token + user
         await _storage.write(key: 'access_token', value: body['access_token']);
-        await _storage.write(key: 'refresh_token', value: body['refresh_token']);
-        print('✅ Tokens salvos com sucesso');
+        await _storage.write(
+          key: 'refresh_token',
+          value: body['refresh_token'],
+        );
+        if (body['user'] != null && body['user']['id'] != null) {
+          await _storage.write(
+            key: 'user_id',
+            value: body['user']['id'].toString(),
+          );
+        }
+        print('✅ Tokens e user_id salvos com sucesso');
       } else {
         print('❌ Backend auth falhou: ${res.statusCode} ${res.body}');
         throw Exception('Backend auth falhou: ${res.statusCode} ${res.body}');
@@ -192,7 +204,7 @@ class AuthService {
   static Future<bool> revokeOtherSessions() async {
     final accessToken = await _storage.read(key: 'access_token');
     final deviceId = await getOrCreateDeviceId();
-    
+
     if (accessToken == null) {
       print('❌ Nenhum access token encontrado');
       return false;
@@ -200,7 +212,7 @@ class AuthService {
 
     try {
       print('🚫 Revogando outras sessões...');
-      
+
       // ✅ USAR O ENDPOINT CORRETO: /auth/revoke-others
       final url = Uri.parse('$backendUrl/auth/revoke-others');
       final res = await http.post(
@@ -233,7 +245,7 @@ class AuthService {
   /// -----------------------------
   static Future<bool> validateCurrentSession() async {
     final accessToken = await _storage.read(key: 'access_token');
-    
+
     if (accessToken == null) {
       return false;
     }
@@ -243,9 +255,7 @@ class AuthService {
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'access_token': accessToken,
-        }),
+        body: jsonEncode({'access_token': accessToken}),
       );
 
       return response.statusCode == 200;
@@ -262,5 +272,165 @@ class AuthService {
     await _storage.delete(key: 'access_token');
     await _storage.delete(key: 'refresh_token');
     print('✅ Local session cleared');
+  }
+
+  /// -----------------------------
+  /// 11) ✅✅✅ NOVA: Verificar se é usuário novo
+  /// -----------------------------
+  static Future<bool> isNewUser() async {
+    final user = _auth.currentUser;
+    if (user == null) return true;
+
+    try {
+      final idToken = await user.getIdToken();
+      final deviceId = await getOrCreateDeviceId();
+      final deviceInfo =
+          '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+
+      print('🔍 Verificando se é usuário novo...');
+
+      final url = Uri.parse('$backendUrl/auth/check-user');
+      final res = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'idToken': idToken,
+          'phone': user.phoneNumber,
+          'device_uuid': deviceId,
+          'device_info': deviceInfo,
+        }),
+      );
+
+      print('📡 Check user response: ${res.statusCode}');
+
+      if (res.statusCode == 200) {
+        final body = jsonDecode(res.body);
+        final isNew = body['is_new_user'] ?? true;
+        print('✅ Usuário novo: $isNew');
+        return isNew;
+      } else {
+        print('❌ Erro ao verificar usuário: ${res.statusCode} ${res.body}');
+        return true; // Assume que é novo em caso de erro
+      }
+    } catch (e) {
+      print('❌ Erro em isNewUser: $e');
+      return true; // Assume que é novo em caso de erro
+    }
+  }
+
+  /// -----------------------------
+  /// 12) ✅✅✅ NOVA: Completar login de usuário existente
+  /// -----------------------------
+  static Future<bool> completeExistingUserLogin() async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      print('❌ Nenhum usuário Firebase encontrado');
+      return false;
+    }
+
+    try {
+      final idToken = await user.getIdToken();
+      final deviceId = await getOrCreateDeviceId();
+      final deviceInfo =
+          '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+
+      print('🔄 Finalizando login de usuário existente...');
+
+      final url = Uri.parse('$backendUrl/auth/firebase');
+      final res = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'idToken': idToken,
+          'phone': user.phoneNumber,
+          'device_uuid': deviceId,
+          'device_info': deviceInfo,
+          // Não enviar user_name para usuários existentes
+        }),
+      );
+
+      print('📡 Backend response: ${res.statusCode}');
+
+      if (res.statusCode == 200) {
+        final body = jsonDecode(res.body);
+        await _storage.write(key: 'access_token', value: body['access_token']);
+        await _storage.write(
+          key: 'refresh_token',
+          value: body['refresh_token'],
+        );
+        print('✅ Login de usuário existente finalizado');
+        return true;
+      } else {
+        print('❌ Backend auth falhou: ${res.statusCode} ${res.body}');
+        return false;
+      }
+    } catch (e) {
+      print('❌ Erro em completeExistingUserLogin: $e');
+      return false;
+    }
+  }
+
+  /// -----------------------------
+  /// 13) ✅✅✅ NOVA: Finalizar cadastro com nome do usuário
+  /// -----------------------------
+  static Future<bool> completeRegistrationWithName(String userName) async {
+    final user = _auth.currentUser;
+    if (user == null) {
+      print('❌ Nenhum usuário Firebase encontrado');
+      return false;
+    }
+
+    try {
+      final idToken = await user.getIdToken();
+      final deviceId = await getOrCreateDeviceId();
+      final deviceInfo =
+          '${Platform.operatingSystem} ${Platform.operatingSystemVersion}';
+
+      print(
+        '🔄 Finalizando cadastro com nome: $userName, device=$deviceId, phone=${user.phoneNumber}',
+      );
+
+      final url = Uri.parse('$backendUrl/auth/firebase');
+      final res = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'idToken': idToken,
+          'phone': user.phoneNumber,
+          'device_uuid': deviceId,
+          'device_info': deviceInfo,
+          'user_name': userName, // ✅✅✅ NOVO: Nome do usuário
+        }),
+      );
+
+      print('📡 Backend response: ${res.statusCode}');
+
+      if (res.statusCode == 200) {
+        final body = jsonDecode(res.body);
+        // Backend retorna access_token + refresh_token
+        await _storage.write(key: 'access_token', value: body['access_token']);
+        await _storage.write(
+          key: 'refresh_token',
+          value: body['refresh_token'],
+        );
+        print('✅ Cadastro finalizado com sucesso');
+        return true;
+      } else {
+        print('❌ Backend auth falhou: ${res.statusCode} ${res.body}');
+        return false;
+      }
+    } catch (e) {
+      print('❌ Erro em completeRegistrationWithName: $e');
+      return false;
+    }
+  }
+
+  /// Retorna o user_id salvo após login
+  static Future<String?> getCurrentUserId() async {
+    return await _storage.read(key: 'user_id');
+  }
+
+  static Future<String?> getAccessToken() async {
+    return await _storage.read(key: 'access_token'); // ✅ SecureStorage
   }
 }

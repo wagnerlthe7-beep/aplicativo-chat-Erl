@@ -482,3 +482,192 @@ verify_firebase_token(IdToken) when is_binary(IdToken); is_list(IdToken) ->
                     {error, {http_error, Reason}}
             end
     end.
+
+
+
+
+
+13.10.2025
+chat_service.dart: 
+import 'dart:convert';
+import 'dart:async';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'auth_service.dart';
+
+class ChatService {
+  static WebSocketChannel? _channel;
+  static String? _currentUserId;
+  static bool _isConnected = false;
+  
+  // ✅ STREAMS PARA TODAS AS FUNCIONALIDADES
+  static final _messageController = StreamController<Map<String, dynamic>>.broadcast();
+  static final _presenceController = StreamController<Map<String, dynamic>>.broadcast();
+  static final _typingController = StreamController<Map<String, dynamic>>.broadcast();
+  static final _deliveryController = StreamController<Map<String, dynamic>>.broadcast();
+  static final _connectionController = StreamController<bool>.broadcast();
+
+  static Future<bool> connect() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('access_token');
+      _currentUserId = prefs.getString('user_id');
+      
+      if (token == null || _currentUserId == null) {
+        print('❌ No authentication data found');
+        _updateConnectionStatus(false);
+        return false;
+      }
+
+      // ✅ FECHAR CONEXÃO EXISTENTE
+      disconnect();
+
+      _channel = WebSocketChannel.connect(
+        Uri.parse('ws://10.0.2.2:4000/ws?token=$token'),
+      );
+
+      _channel!.stream.listen(
+        _handleIncomingMessage,
+        onError: _handleError,
+        onDone: _handleDisconnect,
+      );
+
+      _updateConnectionStatus(true);
+      print('✅ WebSocket connected for user $_currentUserId');
+      return true;
+    } catch (e) {
+      print('❌ WebSocket connection error: $e');
+      _updateConnectionStatus(false);
+      _reconnect();
+      return false;
+    }
+  }
+
+  static void _handleIncomingMessage(dynamic data) {
+    try {
+      final message = json.decode(data);
+      print('📨 Received: $message');
+      
+      final type = message['type'];
+      switch (type) {
+        case 'welcome':
+          print('✅ Authenticated with chat server');
+          break;
+        case 'message':
+          _messageController.add(message);
+          // ✅ AUTO-CONFIRMAR ENTREGA
+          if (message['to'] == _currentUserId) {
+            markMessageDelivered(message['message_id']);
+          }
+          break;
+        case 'typing':
+          _typingController.add(message);
+          break;
+        case 'presence':
+          _presenceController.add(message);
+          break;
+        case 'message_delivered':
+        case 'message_read':
+          _deliveryController.add(message);
+          break;
+        case 'error':
+          print('❌ Server error: ${message['error']}');
+          break;
+        default:
+          print('❓ Unknown message type: $type');
+      }
+    } catch (e) {
+      print('❌ Error parsing message: $e, data: $data');
+    }
+  }
+
+  static void _handleError(error) {
+    print('❌ WebSocket error: $error');
+    _updateConnectionStatus(false);
+    _reconnect();
+  }
+
+  static void _handleDisconnect() {
+    print('🔌 WebSocket disconnected');
+    _updateConnectionStatus(false);
+    _reconnect();
+  }
+
+  static void _reconnect() async {
+    await Future.delayed(Duration(seconds: 3));
+    print('🔄 Attempting to reconnect...');
+    connect();
+  }
+
+  static void _updateConnectionStatus(bool connected) {
+    _isConnected = connected;
+    _connectionController.add(connected);
+  }
+
+  static void _send(Map<String, dynamic> data) {
+    if (_channel != null && _isConnected) {
+      try {
+        _channel!.sink.add(json.encode(data));
+        print('📤 Sent: $data');
+      } catch (e) {
+        print('❌ Error sending message: $e');
+        _updateConnectionStatus(false);
+      }
+    } else {
+      print('❌ WebSocket not connected, cannot send message');
+    }
+  }
+
+  // ✅ MÉTODOS PÚBLICOS
+  static void sendMessage(String toUserId, String content) {
+    _send({
+      'type': 'message',
+      'to': toUserId,
+      'content': content,
+    });
+  }
+
+  static void sendTyping(String toUserId, bool isTyping) {
+    _send({
+      'type': 'typing',
+      'to': toUserId,
+      'is_typing': isTyping,
+    });
+  }
+
+  static void markMessageRead(String messageId) {
+    _send({
+      'type': 'message_read',
+      'message_id': messageId,
+    });
+  }
+
+  static void markMessageDelivered(String messageId) {
+    _send({
+      'type': 'message_delivered',
+      'message_id': messageId,
+    });
+  }
+
+  static void sendPing() {
+    _send({
+      'type': 'ping',
+    });
+  }
+
+  static void disconnect() {
+    _channel?.sink.close();
+    _channel = null;
+    _updateConnectionStatus(false);
+    print('🔌 WebSocket disconnected');
+  }
+
+  // ✅ GETTERS
+  static Stream<Map<String, dynamic>> get messageStream => _messageController.stream;
+  static Stream<Map<String, dynamic>> get presenceStream => _presenceController.stream;
+  static Stream<Map<String, dynamic>> get typingStream => _typingController.stream;
+  static Stream<Map<String, dynamic>> get deliveryStream => _deliveryController.stream;
+  static Stream<bool> get connectionStream => _connectionController.stream;
+  static bool get isConnected => _isConnected;
+  static String? get currentUserId => _currentUserId;
+}

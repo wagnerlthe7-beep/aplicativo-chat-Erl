@@ -30,9 +30,17 @@ class _OtpPageState extends State<OtpPage> {
     );
 
     if (success) {
-      // AuthService.signInWithSmsCode já chama afterFirebaseSignInBackend automaticamente
-      // Então só navega para a próxima tela
-      Navigator.pushReplacementNamed(context, '/chatList');
+      // ✅✅✅ NOVO: Verificar se é um usuário novo ou existente
+      final isNewUser = await AuthService.isNewUser();
+      
+      if (isNewUser) {
+        // Usuário novo: navegar para página de nome
+        Navigator.pushReplacementNamed(context, '/nameInput');
+      } else {
+        // Usuário existente: finalizar login normalmente
+        await AuthService.completeExistingUserLogin();
+        Navigator.pushReplacementNamed(context, '/chatList');
+      }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Código inválido')),
@@ -45,26 +53,164 @@ class _OtpPageState extends State<OtpPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Código SMS')),
-      body: Padding(
-        padding: EdgeInsets.all(20),
-        child: Column(
-          children: [
-            Text('Digite o código que recebeu por SMS:'),
-            TextField(
-              controller: _codeController,
-              keyboardType: TextInputType.number,
-            ),
-            SizedBox(height: 20),
-            _loading
-                ? CircularProgressIndicator()
-                : ElevatedButton(
-                    onPressed: _submitCode,
-                    child: Text('Confirmar'),
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back, color: Colors.green),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          'Código SMS',
+          style: TextStyle(
+            color: Colors.grey[800],
+            fontSize: 18,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+              SizedBox(height: 40),
+              Icon(
+                Icons.sms,
+                size: 80,
+                color: Colors.green,
+              ),
+              SizedBox(height: 30),
+              Text(
+                'Digite o código de verificação',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.grey[800],
+                ),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 16),
+              Text(
+                'Enviamos um código de 6 dígitos para o seu número',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.grey[600],
+                ),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 50),
+              TextField(
+                controller: _codeController,
+                keyboardType: TextInputType.number,
+                enabled: !_loading,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 8,
+                ),
+                maxLength: 6,
+                decoration: InputDecoration(
+                  labelText: 'Código de verificação',
+                  hintText: '000000',
+                  prefixIcon: Icon(Icons.lock, color: Colors.green),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
                   ),
-          ],
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.green, width: 2),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                  counterText: '', // Remove o contador de caracteres
+                ),
+              ),
+              SizedBox(height: 40),
+              ElevatedButton(
+                onPressed: _loading ? null : _submitCode,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                  padding: EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  elevation: 0,
+                ),
+                child: _loading
+                    ? Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          ),
+                          SizedBox(width: 12),
+                          Text('Verificando...'),
+                        ],
+                      )
+                    : Text(
+                        'Verificar código',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+              ),
+              SizedBox(height: 30),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    'Não recebeu o código? ',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: Colors.grey[600],
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () {
+                      // TODO: Implementar reenvio de código
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Funcionalidade em desenvolvimento')),
+                      );
+                    },
+                    child: Text(
+                      'Reenviar',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.green,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(height: 20),
+              ],
+            ),
+          ),
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    super.dispose();
   }
 }

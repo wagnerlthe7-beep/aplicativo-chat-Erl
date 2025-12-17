@@ -10,8 +10,12 @@
         inets,
         ssl,
         cowboy,
+        public_key,
+        asn1,
         ranch,
-        epgsql
+        epgsql,
+        poolboy,
+        gproc
     ]},
     {env, []},
     {modules, [server, auth_util, firebase_handler, chat_app_app]},

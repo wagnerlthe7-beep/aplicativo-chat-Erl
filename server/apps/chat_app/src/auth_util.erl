@@ -7,8 +7,10 @@
 -export([
     verify_firebase_token/1,
     get_or_create_user/2,
+    get_or_create_user/3, %% ✅✅✅ NOVO: Versão com nome do usuário
     create_session_token/1,
     select_or_insert_user/3,
+    select_or_insert_user/4, %% ✅✅✅ NOVO: Versão com nome do usuário
     maybe_update_firebase_uid/3,
     %% Multi-device / Refresh logic
     create_session_for_user/3,
@@ -19,7 +21,8 @@
     revoke_session_by_token/1,
     %% JWT utilities
     decode_jwt/1,
-    safe_to_integer/1
+    safe_to_integer/1,
+    ensure_binary_utf8/1
 ]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -63,6 +66,13 @@ get_or_create_user(Phone, FirebaseUid) ->
         select_or_insert_user(Conn, Phone, FirebaseUid)
     end).
 
+%% ✅✅✅ NOVO: Versão com nome do usuário
+get_or_create_user(Phone, FirebaseUid, UserName) ->
+    ?LOG_INFO("🔍 Getting or creating user for phone: ~s, name: ~p", [Phone, UserName]),
+    db_util:with_connection(fun(Conn) ->
+        select_or_insert_user(Conn, Phone, FirebaseUid, UserName)
+    end).
+
 select_or_insert_user(Conn, Phone, FirebaseUid) ->
     PhoneBin = ensure_binary_utf8(Phone),
     FirebaseUidBin = ensure_binary_utf8(FirebaseUid),
@@ -88,6 +98,55 @@ select_or_insert_user(Conn, Phone, FirebaseUid) ->
         Err -> {error, {select_failed, Err}}
     end.
 
+%% ✅✅✅ NOVO: Versão com nome do usuário
+select_or_insert_user(Conn, Phone, FirebaseUid, UserName) ->
+    PhoneBin = ensure_binary_utf8(Phone),
+    FirebaseUidBin = ensure_binary_utf8(FirebaseUid),
+    
+    %% Determinar o nome a usar
+    NameToUse = case UserName of
+        undefined -> <<"Usuario">>; %% Nome padrão se não fornecido
+        null -> <<"Usuario">>; %% Nome padrão se null
+        Name when is_binary(Name) andalso byte_size(Name) > 0 -> Name; %% Usar nome fornecido
+        Name when is_list(Name) andalso length(Name) > 0 -> ensure_binary_utf8(Name); %% Converter lista para binary
+        _ -> <<"Usuario">> %% Fallback para nome padrão
+    end,
+
+    SqlSel = "SELECT id, name, phone, is_active, profile_picture FROM users WHERE phone = $1",
+    case epgsql:equery(Conn, SqlSel, [PhoneBin]) of
+        {ok, _, [Row | _]} ->
+            %% ✅✅✅ Usuário existente: atualizar nome se fornecido e diferente
+            {Id, NameFromDb, PhoneDb, IsActive, ProfilePic} = Row,
+            _ = maybe_update_firebase_uid(Conn, Id, FirebaseUidBin),
+            _ = epgsql:equery(Conn, "UPDATE users SET last_login = now() WHERE id = $1", [Id]),
+            
+            %% ✅✅✅ Atualizar nome se fornecido e diferente do atual
+            case UserName of
+                undefined -> ok; %% Não atualizar se não fornecido
+                null -> ok; %% Não atualizar se null
+                _ when NameToUse =/= NameFromDb ->
+                    epgsql:equery(Conn, "UPDATE users SET name = $1 WHERE id = $2", [NameToUse, Id]),
+                    ?LOG_INFO("✅ Updated user name from ~s to ~s", [NameFromDb, NameToUse]);
+                _ -> ok %% Nome igual, não atualizar
+            end,
+            
+            {ok, #{id => Id, name => NameToUse, phone => PhoneDb, is_active => IsActive, profile_picture => ProfilePic}};
+            
+        {ok, _, []} ->
+            %% ✅✅✅ Usuário novo: criar com nome fornecido
+            SqlIns = "INSERT INTO users (name, phone, is_active, created_at, firebase_uid)
+                      VALUES ($1, $2, true, now(), $3)
+                      RETURNING id, name, phone, is_active",
+            case epgsql:equery(Conn, SqlIns, [NameToUse, PhoneBin, FirebaseUidBin]) of
+                {ok, _, _, [Row | _]} ->
+                    {Id, NameFromDb, PhoneDb, IsActive} = Row,
+                    ?LOG_INFO("✅ Created new user with name: ~s", [NameToUse]),
+                    {ok, #{id => Id, name => NameFromDb, phone => PhoneDb, is_active => IsActive}};
+                Err -> {error, {insert_failed, Err}}
+            end;
+        Err -> {error, {select_failed, Err}}
+    end.
+
 maybe_update_firebase_uid(Conn, Id, FirebaseUid) when is_binary(FirebaseUid) ->
     epgsql:equery(Conn,
         "UPDATE users SET firebase_uid = $1 WHERE id = $2 AND (firebase_uid IS NULL OR firebase_uid = '')",
@@ -107,7 +166,7 @@ create_session_token(UserMap) ->
             HBase = base64url(Header),
 
             Iat = erlang:system_time(second),
-            Exp = Iat + 3600,
+            Exp = Iat + 31536000,  % 365 dias
             
             %% ✅✅✅ CORREÇÃO: Incluir session_id nas claims
             BaseClaims = #{
@@ -140,7 +199,7 @@ create_session_for_user(UserId, DeviceUUID, DeviceInfo) ->
     Hash = crypto:hash(sha256, Refresh),
     db_util:with_connection(fun(Conn) ->
         Sql = "INSERT INTO sessions (user_id, device_uuid, device_info, refresh_token_hash, created_at, expires_at)
-               VALUES ($1, $2, $3, $4, now(), now() + interval '30 days')
+               VALUES ($1, $2, $3, $4, now(), NULL) 
                RETURNING id",
         case epgsql:equery(Conn, Sql, [UserId, DeviceUUID, DeviceInfo, Hash]) of
             {ok, _, _, [{SessionId}]} -> 
@@ -162,7 +221,7 @@ validate_and_rotate_refresh(UserId, RefreshPlain) ->
     ?LOG_INFO("🔄 Validating and rotating refresh token for user ~p", [UserId]),
     RefreshHash = crypto:hash(sha256, RefreshPlain),
     db_util:with_connection(fun(Conn) ->
-        SqlSel = "SELECT id FROM sessions WHERE user_id = $1 AND refresh_token_hash = $2 AND revoked = false AND expires_at > now()",
+        SqlSel = "SELECT id FROM sessions WHERE user_id = $1 AND refresh_token_hash = $2 AND revoked = false",
         case epgsql:equery(Conn, SqlSel, [UserId, RefreshHash]) of
             {ok, _, [{SessionId}]} ->
                 New = generate_refresh_token(),
@@ -236,12 +295,12 @@ revoke_session_by_token(RefreshPlain) ->
     Hash = crypto:hash(sha256, RefreshPlain),
     db_util:with_connection(fun(Conn) ->
         case epgsql:equery(Conn, "UPDATE sessions SET revoked=true WHERE refresh_token_hash=$1", [Hash]) of
-            {ok, _, Count} ->
+            {ok, Count} ->  % ✅ CORREÇÃO: {ok, Count} em vez de {ok, _, Count}
                 ?LOG_INFO("✅ Revoked ~p sessions by token", [Count]),
                 ok;
-            Err ->
-                ?LOG_ERROR("❌ Failed to revoke session by token: ~p", [Err]),
-                {error, {db_error, Err}}
+            {error, Reason} ->
+                ?LOG_ERROR("❌ Failed to revoke session by token: ~p", [Reason]),
+                {error, {db_error, Reason}}
         end
     end).
 
