@@ -258,10 +258,36 @@ class AuthService {
         body: jsonEncode({'access_token': accessToken}),
       );
 
-      return response.statusCode == 200;
+      if (response.statusCode == 200) {
+        // Sessão válida
+        return true;
+      }
+
+      if (response.statusCode == 401) {
+        // Tentar entender se foi realmente revogada
+        try {
+          final body = jsonDecode(response.body);
+          final error = body['error']?.toString();
+
+          if (error == 'session_revoked' || error == 'session_not_found') {
+            // ✅ Apenas aqui consideramos a sessão inválida de verdade
+            return false;
+          }
+        } catch (_) {
+          // Ignora erros de parse e trata como erro genérico
+        }
+      }
+
+      // Para outros códigos (500, 400, erro inesperado), NÃO derruba sessão.
+      // Apenas loga e considera ainda válida do ponto de vista do app.
+      print(
+        '⚠️ validateCurrentSession: status inesperado ${response.statusCode} ${response.body}',
+      );
+      return true;
     } catch (e) {
-      print('❌ Error validating session: $e');
-      return false;
+      // ❌ Importante: erro de rede NÃO deve matar a sessão.
+      print('❌ Error validating session (mantendo sessão): $e');
+      return true;
     }
   }
 
