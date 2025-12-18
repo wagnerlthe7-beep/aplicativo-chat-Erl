@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:io';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -41,6 +42,7 @@ class ChatService {
   static final _chatListController =
       StreamController<List<ChatContact>>.broadcast();
   static final Map<String, ChatContact> _chatContacts = {};
+  static String? _activeChatContactId;
 
   static String _generateMessageId() {
     return 'msg_${DateTime.now().millisecondsSinceEpoch}_${_uuid.v4().substring(0, 8)}';
@@ -100,6 +102,23 @@ class ChatService {
   static void _handleDisconnect() {
     _channel = null;
 
+    // ✅ Quando desconectar (perda de internet / WS fechado),
+    // marcar TODOS os contatos locais como offline para o cliente atual.
+    if (_userPresenceStatus.isNotEmpty) {
+      print('📡 WS desconectado - limpando status de presença local');
+      final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+      final ids = _userPresenceStatus.keys.toList();
+      for (final userId in ids) {
+        _userPresenceStatus[userId] = 'offline';
+        _presenceTimestamps[userId] = nowTs;
+        _presenceController.add({
+          'user_id': userId,
+          'status': 'offline',
+          'timestamp': nowTs,
+        });
+      }
+    }
+
     if (!_isReconnecting && _reconnectAttempts < _maxReconnectAttempts) {
       _isReconnecting = true;
       final delay = Duration(seconds: _reconnectAttempts * 2);
@@ -113,6 +132,19 @@ class ChatService {
     } else if (_reconnectAttempts >= _maxReconnectAttempts) {
       print('❌ Máximo de tentativas de reconexão atingido');
       _isReconnecting = false;
+    }
+  }
+
+  // ✅ Informar qual chat está atualmente aberto (para controle de unread)
+  static void setActiveChat(String contactId) {
+    _activeChatContactId = contactId;
+    print('📂 Active chat set to: $contactId');
+  }
+
+  static void clearActiveChat(String contactId) {
+    if (_activeChatContactId == contactId) {
+      print('📂 Active chat cleared: $contactId');
+      _activeChatContactId = null;
     }
   }
 
@@ -237,6 +269,15 @@ class ChatService {
         contactId = fromUserId;
         messageType = 'RECEBIDA';
         print('   💬 Mensagem RECEBIDA de: $contactId');
+
+        // ✅ NOVO: se o chat desse contato está ABERTO neste dispositivo,
+        // não aumentar unread (comportamento WhatsApp).
+        if (_activeChatContactId == contactId) {
+          print(
+            '   👀 Chat ativo com $contactId - forçando unread=false (já lido)',
+          );
+          shouldIncreaseUnread = false;
+        }
       }
 
       print('   🔄 Atualizando chat com: $contactId');
@@ -476,10 +517,46 @@ class ChatService {
     }
   }
 
-  static void sendMessage(String toUserId, String content, {String? tempId}) {
+  // ✅ Verificar se é possível enviar mensagem (conexão + internet)
+  static Future<bool> canSendMessage() async {
     if (_channel == null) {
-      print('❌ WebSocket not connected');
-      return;
+      print('❌ Não conectado ao WebSocket');
+      return false;
+    }
+
+    try {
+      final result = await InternetAddress.lookup(
+        'google.com',
+      ).timeout(const Duration(seconds: 3));
+      final hasInternet = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (!hasInternet) {
+        print('❌ Sem conexão com internet');
+      }
+      return hasInternet;
+    } on SocketException catch (_) {
+      print('❌ Sem conexão com internet (SocketException)');
+      return false;
+    } on TimeoutException catch (_) {
+      print('❌ Sem conexão com internet (Timeout)');
+      return false;
+    } catch (e) {
+      print('❌ Erro ao verificar conexão com internet: $e');
+      return false;
+    }
+  }
+
+  static Future<void> sendMessage(
+    String toUserId,
+    String content, {
+    String? tempId,
+  }) async {
+    final okToSend = await canSendMessage();
+    if (!okToSend) {
+      throw Exception('Sem conexão com internet para enviar mensagem.');
+    }
+
+    if (_channel == null) {
+      throw Exception('WebSocket não está conectado.');
     }
 
     final messageId = tempId ?? _generateMessageId();
@@ -501,6 +578,7 @@ class ChatService {
     } catch (e) {
       print('❌ Error sending message: $e');
       _sentMessageIds.remove(messageId);
+      rethrow;
     }
   }
 
@@ -547,7 +625,7 @@ class ChatService {
 
       if (currentUserId == null) {
         print('❌ User ID não encontrado no SecureStorage');
-        return [];
+        return await _loadChatHistoryFromStorage('unknown', contactUserId);
       }
 
       final url = Uri.parse(
@@ -569,13 +647,70 @@ class ChatService {
         final data = json.decode(response.body);
         final messages = (data['messages'] as List<dynamic>? ?? []);
         print('✅ Histórico carregado: ${messages.length} mensagens');
+
+        // ✅ Salvar cópia local para uso offline
+        await _saveChatHistoryToStorage(currentUserId, contactUserId, messages);
+
         return messages.cast<Map<String, dynamic>>();
       } else {
         print('❌ Erro ao carregar histórico: ${response.statusCode}');
-        return [];
+        return await _loadChatHistoryFromStorage(currentUserId, contactUserId);
       }
     } catch (e) {
       print('❌ Erro loadChatHistory: $e');
+
+      // Fallback: tentar histórico local em caso de erro (inclui sem internet)
+      try {
+        final currentUserId = await _secureStorage.read(key: 'user_id');
+        return await _loadChatHistoryFromStorage(
+          currentUserId ?? 'unknown',
+          contactUserId,
+        );
+      } catch (e2) {
+        print('❌ Erro ao carregar histórico local: $e2');
+        return [];
+      }
+    }
+  }
+
+  // ✅ Helpers para histórico offline
+  static String _historyStorageKey(String meId, String contactId) {
+    return 'chat_history_${meId}_$contactId';
+  }
+
+  static Future<void> _saveChatHistoryToStorage(
+    String meId,
+    String contactId,
+    List<dynamic> messages,
+  ) async {
+    try {
+      final key = _historyStorageKey(meId, contactId);
+      final jsonData = json.encode(messages);
+      await _secureStorage.write(key: key, value: jsonData);
+      print('💾 Histórico salvo localmente ($meId <-> $contactId)');
+    } catch (e) {
+      print('❌ Erro ao salvar histórico local: $e');
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> _loadChatHistoryFromStorage(
+    String meId,
+    String contactId,
+  ) async {
+    try {
+      final key = _historyStorageKey(meId, contactId);
+      final raw = await _secureStorage.read(key: key);
+      if (raw == null) {
+        print('📂 Nenhum histórico local para $meId <-> $contactId');
+        return [];
+      }
+      final data = json.decode(raw) as List<dynamic>;
+      print(
+        '📂 Histórico local carregado: ${data.length} mensagens ($meId <-> $contactId)',
+      );
+      return data.cast<Map<String, dynamic>>();
+    } catch (e) {
+      print('❌ Erro ao carregar histórico local: $e');
       return [];
     }
   }
@@ -613,6 +748,32 @@ class ChatService {
       }
     } else {
       print('   ❌ Chat não encontrado: $contactId');
+    }
+  }
+
+  // ✅ NOVO: marcar como lido SEM cooldown (para uso dentro do chat aberto)
+  static void markChatAsReadImmediate(String contactId) {
+    print('📖📖📖 MARK CHAT AS READ IMMEDIATE 📖📖📖');
+    print('   ContactId: $contactId');
+
+    _lastMarkAsReadCall.remove(contactId); // ignora cooldown
+
+    if (_chatContacts.containsKey(contactId)) {
+      final currentChat = _chatContacts[contactId]!;
+
+      if (currentChat.unreadCount > 0) {
+        print('   🔄 Unread (immediate): ${currentChat.unreadCount} -> 0');
+        _chatContacts[contactId] = currentChat.copyWith(unreadCount: 0);
+        _saveChatsToStorage();
+        _chatListController.add(_getSortedChatList());
+        print('   ✅ Chat marcado como lido (immediate): ${currentChat.name}');
+      } else {
+        print(
+          '   ℹ️  Chat já estava como lido (immediate): ${currentChat.name}',
+        );
+      }
+    } else {
+      print('   ❌ Chat não encontrado (immediate): $contactId');
     }
   }
 

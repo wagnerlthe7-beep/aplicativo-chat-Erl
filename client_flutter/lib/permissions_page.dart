@@ -11,8 +11,9 @@ class _PermissionsPageState extends State<PermissionsPage> {
   Map<Permission, bool> _permissionStatuses = {};
   bool _isLoading = false;
   int _currentPermissionIndex = 0;
-  
-  final List<Permission> _permissions = PermissionService.getEssentialPermissions();
+
+  final List<Permission> _permissions =
+      PermissionService.getEssentialPermissions();
 
   @override
   void initState() {
@@ -21,7 +22,9 @@ class _PermissionsPageState extends State<PermissionsPage> {
   }
 
   Future<void> _checkAllPermissions() async {
-    final statuses = await PermissionService.checkMultiplePermissions(_permissions);
+    final statuses = await PermissionService.checkMultiplePermissions(
+      _permissions,
+    );
     setState(() {
       _permissionStatuses = statuses;
     });
@@ -29,9 +32,9 @@ class _PermissionsPageState extends State<PermissionsPage> {
 
   Future<void> _requestPermission(Permission permission) async {
     setState(() => _isLoading = true);
-    
+
     final granted = await PermissionService.requestPermission(permission);
-    
+
     setState(() {
       _permissionStatuses[permission] = granted;
       _isLoading = false;
@@ -46,21 +49,23 @@ class _PermissionsPageState extends State<PermissionsPage> {
 
   Future<void> _requestAllRemainingPermissions() async {
     setState(() => _isLoading = true);
-    
+
     final deniedPermissions = _permissionStatuses.entries
         .where((entry) => !entry.value)
         .map((entry) => entry.key)
         .toList();
-    
+
     if (deniedPermissions.isNotEmpty) {
-      final results = await PermissionService.requestMultiplePermissions(deniedPermissions);
+      final results = await PermissionService.requestMultiplePermissions(
+        deniedPermissions,
+      );
       setState(() {
         _permissionStatuses.addAll(results);
       });
     }
-    
+
     setState(() => _isLoading = false);
-    
+
     // Verificar se todas foram concedidas
     final allGranted = _permissionStatuses.values.every((granted) => granted);
     if (allGranted) {
@@ -75,7 +80,9 @@ class _PermissionsPageState extends State<PermissionsPage> {
   void _showPermissionGrantedSnackBar(Permission permission) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('✅ ${PermissionService.getPermissionTitle(permission)} permitido!'),
+        content: Text(
+          '✅ ${PermissionService.getPermissionTitle(permission)} permitido!',
+        ),
         backgroundColor: Colors.green,
         duration: Duration(seconds: 2),
       ),
@@ -136,11 +143,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(height: 20),
-              Icon(
-                Icons.security,
-                size: 80,
-                color: Colors.green,
-              ),
+              Icon(Icons.security, size: 80, color: Colors.green),
               SizedBox(height: 30),
               Text(
                 'Permissões Necessárias',
@@ -154,14 +157,11 @@ class _PermissionsPageState extends State<PermissionsPage> {
               SizedBox(height: 16),
               Text(
                 'Para uma melhor experiência, o SpeekJoy precisa de algumas permissões para funcionar completamente.',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.grey[600],
-                ),
+                style: TextStyle(fontSize: 16, color: Colors.grey[600]),
                 textAlign: TextAlign.center,
               ),
               SizedBox(height: 40),
-              
+
               // Lista de permissões
               Expanded(
                 child: ListView.builder(
@@ -169,7 +169,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
                   itemBuilder: (context, index) {
                     final permission = _permissions[index];
                     final isGranted = _permissionStatuses[permission] ?? false;
-                    
+
                     return Container(
                       margin: EdgeInsets.only(bottom: 16),
                       decoration: BoxDecoration(
@@ -190,35 +190,52 @@ class _PermissionsPageState extends State<PermissionsPage> {
                           PermissionService.getPermissionTitle(permission),
                           style: TextStyle(
                             fontWeight: FontWeight.w600,
-                            color: isGranted ? Colors.green[800] : Colors.grey[800],
+                            color: isGranted
+                                ? Colors.green[800]
+                                : Colors.grey[800],
                           ),
                         ),
                         subtitle: Text(
-                          PermissionService.getPermissionDescription(permission),
+                          PermissionService.getPermissionDescription(
+                            permission,
+                          ),
                           style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey[600],
                           ),
                         ),
                         trailing: isGranted
-                            ? Icon(Icons.check_circle, color: Colors.green, size: 24)
+                            ? Icon(
+                                Icons.check_circle,
+                                color: Colors.green,
+                                size: 24,
+                              )
                             : IconButton(
-                                icon: Icon(Icons.arrow_forward_ios, color: Colors.grey[400]),
-                                onPressed: _isLoading ? null : () => _requestPermission(permission),
+                                icon: Icon(
+                                  Icons.arrow_forward_ios,
+                                  color: Colors.grey[400],
+                                ),
+                                onPressed: _isLoading
+                                    ? null
+                                    : () => _requestPermission(permission),
                               ),
-                        onTap: _isLoading || isGranted ? null : () => _requestPermission(permission),
+                        onTap: _isLoading || isGranted
+                            ? null
+                            : () => _requestPermission(permission),
                       ),
                     );
                   },
                 ),
               ),
-              
+
               SizedBox(height: 20),
-              
+
               // Botões de ação
               if (!allGranted) ...[
                 ElevatedButton(
-                  onPressed: _isLoading ? null : _requestAllRemainingPermissions,
+                  onPressed: _isLoading
+                      ? null
+                      : _requestAllRemainingPermissions,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green,
                     foregroundColor: Colors.white,
@@ -237,7 +254,9 @@ class _PermissionsPageState extends State<PermissionsPage> {
                               height: 20,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.white,
+                                ),
                               ),
                             ),
                             SizedBox(width: 12),
@@ -254,7 +273,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
                 ),
                 SizedBox(height: 12),
               ],
-              
+
               TextButton(
                 onPressed: _navigateToChatList,
                 child: Text(
@@ -266,14 +285,11 @@ class _PermissionsPageState extends State<PermissionsPage> {
                   ),
                 ),
               ),
-              
+
               SizedBox(height: 20),
               Text(
                 'Você pode alterar essas permissões a qualquer momento nas configurações do dispositivo.',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[500],
-                ),
+                style: TextStyle(fontSize: 12, color: Colors.grey[500]),
                 textAlign: TextAlign.center,
               ),
             ],

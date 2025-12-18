@@ -39,6 +39,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    // Informar ao ChatService qual chat está ativo (para controle de unread)
+    ChatService.setActiveChat(widget.remoteUserId);
     _initializeChat();
 
     // ✅ COMPORTAMENTO WHATSAPP: Marcar como lido ao abrir o chat
@@ -74,6 +76,9 @@ class _ChatPageState extends State<ChatPage> {
       print('🚪 Saindo do chat - marcando como lido finalmente');
       _markChatAsRead();
     }
+
+    // Limpar chat ativo
+    ChatService.clearActiveChat(widget.remoteUserId);
 
     _messageSubscription?.cancel();
     _presenceSubscription?.cancel();
@@ -134,7 +139,8 @@ class _ChatPageState extends State<ChatPage> {
     }
 
     print('📖 Marcando chat como lido (Comportamento WhatsApp)');
-    ChatService.markChatAsRead(widget.remoteUserId);
+    // ✅ Usar versão IMEDIATA (sem cooldown) quando o usuário abre o chat
+    ChatService.markChatAsReadImmediate(widget.remoteUserId);
     _hasMarkedAsRead = true;
   }
 
@@ -254,6 +260,10 @@ class _ChatPageState extends State<ChatPage> {
 
         if (isFromMe && messageId != null) {
           _pendingMessageIds.remove(messageId);
+        } else if (!isFromMe) {
+          // ✅ Mensagem recebida enquanto o chat está aberto:
+          // marcar como lida imediatamente para não aumentar unread na lista.
+          ChatService.markChatAsReadImmediate(widget.remoteUserId);
         }
       }
     }
@@ -398,7 +408,7 @@ class _ChatPageState extends State<ChatPage> {
     return senderId == _currentUserId;
   }
 
-  void _sendMessage() {
+  Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty || !_isConnected || _currentUserId == null) return;
 
@@ -416,7 +426,7 @@ class _ChatPageState extends State<ChatPage> {
           text: text,
           isMe: true,
           timestamp: DateTime.now(),
-          status: 'sent',
+          status: 'sent', // ícone de enviado só se realmente for ao servidor
         ),
       );
     });
@@ -424,8 +434,31 @@ class _ChatPageState extends State<ChatPage> {
     _messageController.clear();
     _scrollToBottom();
 
-    // ✅✅✅ CORREÇÃO: Apenas envia a mensagem - o ChatService cuida do resto
-    ChatService.sendMessage(widget.remoteUserId, text, tempId: tempMessageId);
+    try {
+      // ✅ Envia efetivamente (com verificação de internet)
+      await ChatService.sendMessage(
+        widget.remoteUserId,
+        text,
+        tempId: tempMessageId,
+      );
+    } catch (e) {
+      print('❌ Falha ao enviar mensagem: $e');
+
+      // ❌ Sem internet / WS desconectado: remover bolha e devolver texto
+      setState(() {
+        _messages.removeWhere((m) => m.id == tempMessageId);
+      });
+      _pendingMessageIds.remove(tempMessageId);
+      _messageController.text = text;
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sem conexão com a internet. Mensagem não enviada.'),
+          ),
+        );
+      }
+    }
 
     // ❌ REMOVIDO: ChatService.updateChatContact - já é feito automaticamente no ChatService
   }
