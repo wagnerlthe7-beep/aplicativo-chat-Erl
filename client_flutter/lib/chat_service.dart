@@ -951,6 +951,14 @@ class ChatService {
     final token = await _secureStorage.read(key: 'access_token');
     var userId = await _secureStorage.read(key: 'user_id');
 
+    if (userId == null && token != null) {
+      final extracted = _tryExtractUserIdFromJwt(token);
+      if (extracted != null) {
+        await _secureStorage.write(key: 'user_id', value: extracted);
+        userId = extracted;
+      }
+    }
+
     if (token == null || userId == null) {
       final prefs = await SharedPreferences.getInstance();
       final legacyToken = prefs.getString('access_token');
@@ -964,5 +972,29 @@ class ChatService {
     }
 
     return {'token': token, 'userId': userId};
+  }
+
+  static String? _tryExtractUserIdFromJwt(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length < 2) return null;
+      final payloadB64 = parts[1];
+      final normalized = _normalizeBase64Url(payloadB64);
+      final payloadBytes = base64Url.decode(normalized);
+      final payload = json.decode(utf8.decode(payloadBytes));
+      final uid = payload['user_id'];
+      if (uid == null) return null;
+      return uid.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String _normalizeBase64Url(String input) {
+    final rem = input.length % 4;
+    if (rem == 2) return '$input==';
+    if (rem == 3) return '$input=';
+    if (rem == 1) return '$input===';
+    return input;
   }
 }
