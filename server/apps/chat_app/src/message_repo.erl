@@ -1,6 +1,6 @@
 %% message_repo.erl - módulo correto
 -module(message_repo).
--export([save_message/3, get_user_messages/1, mark_message_delivered/1, mark_message_read/1, get_chat_history/2, get_chat_history/4]).
+-export([save_message/3, get_user_messages/1, mark_message_delivered/1, mark_message_read/1, get_chat_history/2, get_chat_history/4, get_message_sender/1]).
 
 save_message(SenderId, ReceiverId, Content) ->
     db_pool:with_connection(fun(Conn) ->
@@ -33,6 +33,16 @@ mark_message_read(MessageId) ->
     db_pool:with_connection(fun(Conn) ->
         Sql = "UPDATE messages SET status = 'read' WHERE id = $1",
         epgsql:equery(Conn, Sql, [MessageId])
+    end).
+
+get_message_sender(MessageId) ->
+    db_pool:with_connection(fun(Conn) ->
+        Sql = "SELECT sender_id FROM messages WHERE id = $1",
+        case epgsql:equery(Conn, Sql, [MessageId]) of
+            {ok, _, [{SenderId}]} -> {ok, integer_to_binary(SenderId)};
+            {ok, _, []} -> {error, not_found};
+            {error, Error} -> {error, Error}
+        end
     end).
 
 get_chat_history(UserId, ContactId) ->

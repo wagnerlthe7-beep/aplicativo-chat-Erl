@@ -80,7 +80,8 @@ class ChatService {
       );
 
       _isReconnecting = false;
-      _reconnectAttempts = 0;
+      // NÃO resetar tentativas aqui, apenas após receber 'welcome' ou conexão estável
+      // _reconnectAttempts = 0;
       print('✅ WebSocket connected for user $_currentUserId');
 
       // ✅ INICIAR SISTEMA DE HEARTBEAT
@@ -163,6 +164,8 @@ class ChatService {
       switch (message['type']) {
         case 'welcome':
           print('✅ Authenticated with chat server');
+          // ✅ Conexão estabelecida com sucesso - resetar contador de tentativas
+          _reconnectAttempts = 0;
           break;
         case 'message':
           _messageController.add(message);
@@ -730,7 +733,7 @@ class ChatService {
 
     _lastMarkAsReadCall[contactId] = now;
 
-    print('📖📖📖 MARK CHAT AS READ (WHATSAPP STYLE) 📖📖📖');
+    print('📖📖📖 MARK CHAT AS READ 📖📖📖');
     print('   ContactId: $contactId');
     print('   Razão: Chat aberto pelo usuário');
 
@@ -774,6 +777,25 @@ class ChatService {
       }
     } else {
       print('   ❌ Chat não encontrado (immediate): $contactId');
+    }
+  }
+
+  static Future<void> markMessagesRead(String contactId) async {
+    try {
+      final meId = await _secureStorage.read(key: 'user_id');
+      final token = await _secureStorage.read(key: 'access_token');
+      if (meId == null || token == null) return;
+      final url = Uri.parse(
+        'http://10.0.2.2:4000/api/messages/mark_read/$meId/$contactId',
+      );
+      final headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      };
+      final res = await http.post(url, headers: headers);
+      print('📡 markMessagesRead response: ${res.statusCode}');
+    } catch (e) {
+      print('❌ markMessagesRead error: $e');
     }
   }
 

@@ -132,60 +132,54 @@ terminate(_Reason, _Req, #state{user_id = UserId}) ->
 %%% HANDLE MESSAGES - CORRIGIDO PARA SALVAR NA BD PRIMEIRO
 %%%===================================================================
 
-%% ✅ MENSAGEM DE TEXTO - FLUXO CORRIGIDO
+%% ✅ MENSAGEM DE TEXTO - FLUXO CORRIGIDO VIA ROUTER
 handle_websocket_message(#{<<"type">> := <<"message">>} = Data, #state{user_id = FromId}) ->
     ToId = maps:get(<<"to">>, Data, <<"unknown">>),
     Content = maps:get(<<"content">>, Data, <<"">>),
     
-    io:format("💬💬💬 MENSAGEM RECEBIDA NO WEBSOCKET 💬💬💬~n", []),
+    io:format("MENSAGEM RECEBIDA NO WEBSOCKET~n", []),
     io:format("   De: ~p~n", [FromId]),
     io:format("   Para: ~p~n", [ToId]),
     io:format("   Conteúdo: ~p~n", [Content]),
     
-    %% ✅ 1. PRIMEIRO SALVAR NA BD
-    case message_repo:save_message(FromId, ToId, Content) of
-        {ok, MessageId} ->
-            io:format("   ✅✅✅ MENSAGEM SALVA NA BD, ID: ~p~n", [MessageId]),
+    %% ✅ USAR MESSAGE_ROUTER PARA LÓGICA CENTRALIZADA (SALVAR + ENTREGAR + NOTIFICAR)
+    %% Extrair o ID da mensagem do cliente (UUID) se existir
+    ClientMsgId = maps:get(<<"message_id">>, Data, undefined),
+    
+    case message_router:send_message(FromId, ToId, Content, ClientMsgId) of
+        {ok, FullMessage, DeliveryStatus} ->
+            io:format("   ✅✅✅ MENSAGEM PROCESSADA COM SUCESSO PELO ROUTER. Status: ~p~n", [DeliveryStatus]),
             
-            %% ✅ 2. CRIAR MENSAGEM COMPLETA COM ID DA BD
-            Timestamp = erlang:system_time(second),
-            MessageIdBin = list_to_binary(integer_to_list(MessageId)),
-            
-            FullMessage = #{
-                <<"type">> => <<"message">>,
-                <<"from">> => FromId,
-                <<"to">> => ToId,
-                <<"content">> => Content,
-                <<"timestamp">> => Timestamp,
-                <<"message_id">> => MessageIdBin,
-                <<"db_message_id">> => MessageId,
-                <<"status">> => <<"sent">>
-            },
-            
-            %% ✅ 3. ENVIAR PARA O DESTINATÁRIO (se online)
-            case user_session:send_message(FromId, ToId, FullMessage) of
-                ok ->
-                    io:format("   ✅✅✅ MENSAGEM ENVIADA PARA DESTINATÁRIO~n");
-                {error, user_offline} ->
-                    io:format("   💾 Destinatário offline - mensagem salva na BD~n");
-                {error, Reason} ->
-                    io:format("   ⚠️  Erro ao enviar para destinatário: ~p~n", [Reason])
-            end,
-            
-            %% ✅ 4. CONFIRMAR AO REMETENTE QUE FOI SALVA
+            %% ✅ 1. CONFIRMAR AO REMETENTE QUE FOI SALVA (SENT)
+            %% Usamos os dados da mensagem salva (incluindo DB ID)
             Confirmation = FullMessage#{
-                <<"status">> => <<"sent_and_saved">>,
+                <<"status">> => <<"sent">>, 
                 <<"should_increase_unread">> => false
             },
-            self() ! {send_message, Confirmation};
+            self() ! {send_message, Confirmation},
             
-        {error, DbError} ->
-            io:format("   ❌❌❌ ERRO AO SALVAR NA BD: ~p~n", [DbError]),
+            %% ✅ 2. SE FOI ENTREGUE, ENVIAR EVENTO DELIVERED IMEDIATAMENTE
+            if DeliveryStatus == delivered ->
+                DeliveryMsg = #{
+                    <<"type">> => <<"message_delivered">>,
+                    <<"message_id">> => maps:get(<<"message_id">>, FullMessage),
+                    <<"db_message_id">> => maps:get(<<"db_message_id">>, FullMessage),
+                    <<"status">> => <<"delivered">>,
+                    <<"delivered_at">> => erlang:system_time(second)
+                },
+                io:format("   🚀 Enviando evento DELIVERED imediato para remetente~n"),
+                self() ! {send_message, DeliveryMsg};
+            true ->
+                ok
+            end;
+            
+        {error, Error} ->
+            io:format("   ❌ ERRO NO ROUTER: ~p~n", [Error]),
             
             ErrorMsg = #{
                 <<"type">> => <<"error">>,
-                <<"error">> => <<"failed_to_save">>,
-                <<"details">> => list_to_binary(io_lib:format("~p", [DbError])),
+                <<"error">> => <<"failed_to_send">>,
+                <<"details">> => list_to_binary(io_lib:format("~p", [Error])),
                 <<"timestamp">> => erlang:system_time(second)
             },
             self() ! {send_message, ErrorMsg}
