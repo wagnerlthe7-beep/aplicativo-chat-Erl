@@ -31,7 +31,7 @@ send_message(FromId, ToId, Content) ->
     MessageId = generate_message_id(),
     Timestamp = erlang:system_time(second),
     
-    %% ✅ PRIMEIRO: SALVAR NA BD
+    %% ✅ PRIMEIRO: SALVAR NA BD (status inicial = 'sent')
     io:format("🎯🎯🎯 MESSAGE ROUTER: Salvando mensagem na BD 🎯🎯🎯~n", []),
     io:format("   FromId: ~p, ToId: ~p, Content: ~p~n", [FromId, ToId, Content]),
     
@@ -39,7 +39,7 @@ send_message(FromId, ToId, Content) ->
         {ok, DbMessageId} ->
             io:format("   ✅✅✅ Mensagem salva na BD com ID: ~p~n", [DbMessageId]),
             
-            %% ✅ APENAS UMA MENSAGEM: para o DESTINATÁRIO (COM unread)
+            %% ✅ MENSAGEM PARA O DESTINATÁRIO (status = delivered se online)
             MessageToReceiver = #{<<"type">> => <<"message">>,
                                  <<"from">> => FromId,
                                  <<"to">> => ToId,
@@ -47,13 +47,16 @@ send_message(FromId, ToId, Content) ->
                                  <<"timestamp">> => Timestamp,
                                  <<"message_id">> => MessageId,
                                  <<"db_message_id">> => DbMessageId,
-                                 <<"status">> => <<"received">>,
+                                 <<"status">> => <<"delivered">>,  %% para o destinatário, já entregue
                                  <<"should_increase_unread">> => true},
             
-            %% ✅ Enviar APENAS para destinatário (COM unread)
+            %% ✅ Enviar para destinatário (online -> delivered; offline -> continua sent)
             case user_session:send_message(FromId, ToId, MessageToReceiver) of
                 ok ->
                     io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p~n", [ToId]),
+                    
+                    %% ✅ ATUALIZAR BD: status = 'delivered'
+                    message_repo:mark_message_delivered(DbMessageId),
                     
                     %% ✅ Confirmação de entrega para o remetente
                     DeliveryMsg = #{<<"type">> => <<"message_delivered">>,
@@ -66,8 +69,10 @@ send_message(FromId, ToId, Content) ->
                     {ok, MessageToReceiver};
                     
                 {error, user_offline} ->
-                    io:format("   💾 Usuário ~p offline - armazenando mensagem~n", [ToId]),
-                    store_offline_message(ToId, MessageToReceiver),
+                    io:format("   💾 Usuário ~p offline - armazenando mensagem (status=sent)~n", [ToId]),
+                    store_offline_message(ToId, MessageToReceiver#{
+                      <<"status">> => <<"sent">>
+                    }),
                     {ok, MessageToReceiver};
                     
                 {error, Reason} ->

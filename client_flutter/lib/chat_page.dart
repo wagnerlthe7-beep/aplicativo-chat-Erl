@@ -31,7 +31,7 @@ class _ChatPageState extends State<ChatPage> {
   bool _hasMarkedAsRead = false;
   Timer? _markAsReadTimer;
 
-  // ✅ Status de presença do contato
+  // Status de presença do contato
   String _contactPresenceStatus = 'offline'; // 'online', 'offline'
   Timer? _presenceOnlineTimer;
   Timer? _presenceOfflineTimer;
@@ -43,13 +43,13 @@ class _ChatPageState extends State<ChatPage> {
     ChatService.setActiveChat(widget.remoteUserId);
     _initializeChat();
 
-    // ✅ COMPORTAMENTO WHATSAPP: Marcar como lido ao abrir o chat
+    // Marcar como lido ao abrir o chat
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _markAsReadOnOpen();
     });
   }
 
-  // ✅✅✅ NOVO: Marcar como lido ao abrir (com pequeno delay)
+  // Marcar como lido ao abrir (com pequeno delay)
   void _markAsReadOnOpen() {
     if (_hasMarkedAsRead) return;
 
@@ -58,7 +58,7 @@ class _ChatPageState extends State<ChatPage> {
     // ✅ Pequeno delay para garantir que tudo foi carregado
     _markAsReadTimer = Timer(Duration(milliseconds: 500), () {
       if (!_hasMarkedAsRead && mounted) {
-        print('✅✅✅ WHATSAPP BEHAVIOR: Marcando chat como lido ao abrir');
+        print('Marcando chat como lido ao abrir');
         _markChatAsRead();
         _hasMarkedAsRead = true;
       }
@@ -71,7 +71,7 @@ class _ChatPageState extends State<ChatPage> {
     _presenceOnlineTimer?.cancel();
     _presenceOfflineTimer?.cancel();
 
-    // ✅ GARANTIR que marca como lido se ainda não marcou
+    // GARANTIR que marca como lido se ainda não marcou
     if (!_hasMarkedAsRead && mounted) {
       print('🚪 Saindo do chat - marcando como lido finalmente');
       _markChatAsRead();
@@ -86,7 +86,7 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
-  // ✅ Carregar status de presença do contato
+  // Carregar status de presença do contato
   Future<void> _loadContactPresence() async {
     try {
       print('🔍 Buscando presença para: ${widget.remoteUserId}');
@@ -120,26 +120,26 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  // ✅ Formatar status para exibição (estilo WhatsApp)
+  // Formatar status para exibição
   String _getPresenceText() {
     if (_contactPresenceStatus == 'online') {
       return 'online';
     }
 
-    // ✅ REQUISITO: quando offline, NÃO mostrar nada (campo vazio)
+    // REQUISITO: quando offline, NÃO mostrar nada (campo vazio)
     // Isso significa "offline" de forma silenciosa.
     return '';
   }
 
-  // ✅✅✅ MELHORADO: Marcar como lido com verificação
+  // MELHORADO: Marcar como lido com verificação
   void _markChatAsRead() {
     if (_hasMarkedAsRead) {
       print('⏳ Chat já foi marcado como lido nesta sessão');
       return;
     }
 
-    print('📖 Marcando chat como lido (Comportamento WhatsApp)');
-    // ✅ Usar versão IMEDIATA (sem cooldown) quando o usuário abre o chat
+    print('📖 Marcando chat como lido');
+    // Usar versão IMEDIATA (sem cooldown) quando o usuário abre o chat
     ChatService.markChatAsReadImmediate(widget.remoteUserId);
     _hasMarkedAsRead = true;
   }
@@ -176,7 +176,7 @@ class _ChatPageState extends State<ChatPage> {
         _handleIncomingMessage(message);
       });
 
-      // ✅ ESCUTAR EVENTOS DE PRESENÇA (com delay de 2s para aparecer/sumir)
+      // ESCUTAR EVENTOS DE PRESENÇA (com delay de 2s para aparecer/sumir)
       _presenceSubscription = ChatService.presenceStream.listen((presence) {
         final userId = presence['user_id']?.toString();
         final status = presence['status']?.toString();
@@ -189,7 +189,7 @@ class _ChatPageState extends State<ChatPage> {
           _presenceOfflineTimer?.cancel();
 
           if (status == 'online') {
-            // ✅ Esperar 2 segundos antes de mostrar "online"
+            // Esperar 2 segundos antes de mostrar "online"
             _presenceOnlineTimer = Timer(const Duration(seconds: 2), () {
               if (!mounted) return;
               setState(() {
@@ -198,7 +198,7 @@ class _ChatPageState extends State<ChatPage> {
               print('✅ Presença aplicada (ONLINE) após delay');
             });
           } else if (status == 'offline') {
-            // ✅ Esperar 2 segundos antes de remover o "online"
+            // Esperar 2 segundos antes de remover o "online"
             _presenceOfflineTimer = Timer(const Duration(seconds: 2), () async {
               if (!mounted) return;
 
@@ -213,7 +213,7 @@ class _ChatPageState extends State<ChatPage> {
         }
       });
 
-      // ✅ BUSCAR STATUS INICIAL COM DELAY DE 2s TAMBÉM
+      // BUSCAR STATUS INICIAL COM DELAY DE 2s TAMBÉM
       Future.delayed(const Duration(seconds: 2), () {
         if (mounted) {
           _loadContactPresence();
@@ -261,7 +261,7 @@ class _ChatPageState extends State<ChatPage> {
         if (isFromMe && messageId != null) {
           _pendingMessageIds.remove(messageId);
         } else if (!isFromMe) {
-          // ✅ Mensagem recebida enquanto o chat está aberto:
+          // Mensagem recebida enquanto o chat está aberto:
           // marcar como lida imediatamente para não aumentar unread na lista.
           ChatService.markChatAsReadImmediate(widget.remoteUserId);
         }
@@ -368,7 +368,7 @@ class _ChatPageState extends State<ChatPage> {
         }
       }
 
-      // ✅ CORREÇÃO: ADICIONAR 2 HORAS
+      // CORREÇÃO: ADICIONAR 2 HORAS
       final correctedDateTime = parsedDateTime.add(const Duration(hours: 2));
       return correctedDateTime;
     } catch (e) {
@@ -435,7 +435,7 @@ class _ChatPageState extends State<ChatPage> {
     _scrollToBottom();
 
     try {
-      // ✅ Envia efetivamente (com verificação de internet)
+      // Envia efetivamente (com verificação de internet)
       await ChatService.sendMessage(
         widget.remoteUserId,
         text,
@@ -444,7 +444,6 @@ class _ChatPageState extends State<ChatPage> {
     } catch (e) {
       print('❌ Falha ao enviar mensagem: $e');
 
-      // ❌ Sem internet / WS desconectado: remover bolha e devolver texto
       setState(() {
         _messages.removeWhere((m) => m.id == tempMessageId);
       });
@@ -459,8 +458,6 @@ class _ChatPageState extends State<ChatPage> {
         );
       }
     }
-
-    // ❌ REMOVIDO: ChatService.updateChatContact - já é feito automaticamente no ChatService
   }
 
   void _scrollToBottom() {
@@ -475,7 +472,7 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  // ✅ SISTEMA DE DATAS ESTILO WHATSAPP
+  // SISTEMA DE DATAS
   List<MessageGroup> _groupMessagesByDate() {
     if (_messages.isEmpty) return [];
 
