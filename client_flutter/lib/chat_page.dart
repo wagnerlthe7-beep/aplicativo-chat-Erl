@@ -141,6 +141,7 @@ class _ChatPageState extends State<ChatPage> {
     print('📖 Marcando chat como lido');
     // Usar versão IMEDIATA (sem cooldown) quando o usuário abre o chat
     ChatService.markChatAsReadImmediate(widget.remoteUserId);
+    ChatService.markMessagesRead(widget.remoteUserId);
     _hasMarkedAsRead = true;
   }
 
@@ -225,6 +226,71 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void _handleIncomingMessage(Map<String, dynamic> message) {
+    print('📨 RAW MESSAGE RECEIVED: $message'); // LOG DETALHADO
+    final type = message['type']?.toString();
+
+    // ✅ TRATAMENTO ROBUSTO DE STATUS (SENT -> DELIVERED -> READ)
+    if (type == 'message_delivered' || type == 'message_read') {
+      final messageId = message['message_id']?.toString();
+      final dbMessageId = message['db_message_id']?.toString();
+
+      print('📥 Status Update: $type');
+      print('   - ID Evento: $messageId');
+      print('   - DB ID: $dbMessageId');
+
+      if (messageId != null) {
+        final newStatus = type == 'message_delivered' ? 'delivered' : 'read';
+
+        // Tenta encontrar por UUID (messageId) OU pelo ID de banco (dbMessageId)
+        // Isso resolve o problema de incompatibilidade entre UUID local e ID do banco
+        final idx = _messages.indexWhere((m) {
+          final matchesUuid = m.id == messageId;
+          final matchesDbId = dbMessageId != null && m.id == dbMessageId;
+          // Também verificar se o messageId do evento já é o ID numérico (caso do read)
+          final matchesIdDirectly = m.id == messageId;
+
+          return (matchesUuid || matchesDbId || matchesIdDirectly) && m.isMe;
+        });
+
+        if (idx >= 0 && mounted) {
+          final oldMsg = _messages[idx];
+
+          // Evitar downgrade de status (ex: read -> delivered)
+          if (oldMsg.status == 'read' && newStatus == 'delivered') {
+            print(
+              '⚠️ Ignorando status anterior ($newStatus) pois já está lida',
+            );
+            return;
+          }
+
+          print('✅ Atualizando mensagem ${oldMsg.id} para $newStatus');
+
+          setState(() {
+            // ✅ CRÍTICO: Se recebermos o ID do banco (dbMessageId),
+            // atualizamos o ID local para garantir que eventos futuros (ex: read)
+            // que usam o ID do banco consigam encontrar a mensagem.
+            final finalId = dbMessageId ?? oldMsg.id;
+
+            _messages[idx] = ChatMessage(
+              id: finalId,
+              text: oldMsg.text,
+              isMe: oldMsg.isMe,
+              timestamp: oldMsg.timestamp,
+              status: newStatus,
+            );
+          });
+        } else {
+          print('❌ Mensagem não encontrada para atualização de status');
+          print(
+            '   IDs buscados: messageId=$messageId, dbMessageId=$dbMessageId',
+          );
+          // print('   IDs locais disponíveis: ${_messages.map((m) => "${m.id}").toList()}');
+        }
+        _pendingMessageIds.remove(messageId);
+      }
+      return;
+    }
+
     final fromUserId = message['from']?.toString();
     final toUserId = message['to']?.toString();
     final messageId = message['message_id']?.toString();
@@ -264,6 +330,7 @@ class _ChatPageState extends State<ChatPage> {
           // Mensagem recebida enquanto o chat está aberto:
           // marcar como lida imediatamente para não aumentar unread na lista.
           ChatService.markChatAsReadImmediate(widget.remoteUserId);
+          ChatService.markMessagesRead(widget.remoteUserId);
         }
       }
     }

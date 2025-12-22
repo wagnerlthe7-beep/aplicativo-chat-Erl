@@ -15,6 +15,7 @@
 
 -export([
     send_message/3,
+    send_message/4,
     mark_message_delivered/2,
     mark_message_read/2, 
     send_typing_indicator/3,
@@ -28,7 +29,14 @@
 %%% @end
 %%%-------------------------------------------------------------------
 send_message(FromId, ToId, Content) ->
-    MessageId = generate_message_id(),
+    send_message(FromId, ToId, Content, undefined).
+
+send_message(FromId, ToId, Content, ClientMsgId) ->
+    MessageId = case ClientMsgId of
+        undefined -> generate_message_id();
+        <<>> -> generate_message_id();
+        Id -> Id
+    end,
     Timestamp = erlang:system_time(second),
     
     %% ✅ PRIMEIRO: SALVAR NA BD (status inicial = 'sent')
@@ -58,22 +66,19 @@ send_message(FromId, ToId, Content) ->
                     %% ✅ ATUALIZAR BD: status = 'delivered'
                     message_repo:mark_message_delivered(DbMessageId),
                     
-                    %% ✅ Confirmação de entrega para o remetente
-                    DeliveryMsg = #{<<"type">> => <<"message_delivered">>,
-                                   <<"message_id">> => MessageId,
-                                   <<"db_message_id">> => DbMessageId,
-                                   <<"status">> => <<"delivered">>,
-                                   <<"delivered_at">> => erlang:system_time(second)},
-                    user_session:send_message(ToId, FromId, DeliveryMsg),
+                    %% ✅ Confirmação de entrega para o remetente (AGORA RETORNADA NA TUPLA)
+                    %% O chamador (ws_handler) deve enviar a notificação imediatamente.
                     
-                    {ok, MessageToReceiver};
+                    io:format("   ✅ Mensagem entregue para ~p. Retornando status 'delivered' para remetente.~n", [ToId]),
+                    
+                    {ok, MessageToReceiver, delivered};
                     
                 {error, user_offline} ->
                     io:format("   💾 Usuário ~p offline - armazenando mensagem (status=sent)~n", [ToId]),
                     store_offline_message(ToId, MessageToReceiver#{
                       <<"status">> => <<"sent">>
                     }),
-                    {ok, MessageToReceiver};
+                    {ok, MessageToReceiver, sent};
                     
                 {error, Reason} ->
                     io:format("   ❌ Erro ao enviar mensagem: ~p~n", [Reason]),
@@ -98,7 +103,7 @@ mark_message_delivered(MessageId, ByUser) ->
                           <<"timestamp">> => erlang:system_time(second)},
             user_session:send_message(ByUser, FromId, DeliveryMsg),
             ok;
-        {error, not_found} ->
+        _ ->
             {error, message_not_found}
     end.
 
@@ -115,7 +120,7 @@ mark_message_read(MessageId, ByUser) ->
                       <<"timestamp">> => erlang:system_time(second)},
             user_session:send_message(ByUser, FromId, ReadMsg),
             ok;
-        {error, not_found} ->
+        _ ->
             {error, message_not_found}
     end.
 
@@ -198,9 +203,14 @@ generate_message_id() ->
     <<Id:128>> = crypto:strong_rand_bytes(16),
     list_to_binary(integer_to_list(Id, 36)).
 
-%% @doc Obtém o remetente de uma mensagem (simplificado)
-get_message_sender(_MessageId) ->
-    {ok, <<"temp_sender">>}.
+%% @doc Obtém o remetente de uma mensagem
+get_message_sender(MessageId) ->
+    case catch binary_to_integer(MessageId) of
+        IdInt when is_integer(IdInt) ->
+            message_repo:get_message_sender(IdInt);
+        _ ->
+            {error, invalid_id}
+    end.
 
 %% @doc Obtém contatos de um usuário (simplificado)
 get_user_contacts(_UserId) ->
