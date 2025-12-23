@@ -1,6 +1,6 @@
 %% message_repo.erl - módulo correto
 -module(message_repo).
--export([save_message/3, get_user_messages/1, mark_message_delivered/1, mark_message_read/1, get_chat_history/2, get_chat_history/4, get_message_sender/1]).
+-export([save_message/3, get_user_messages/1, mark_message_delivered/1, mark_messages_as_delivered/1, get_undelivered_messages/1, mark_message_read/1, get_chat_history/2, get_chat_history/4, get_message_sender/1]).
 
 save_message(SenderId, ReceiverId, Content) ->
     db_pool:with_connection(fun(Conn) ->
@@ -27,6 +27,26 @@ mark_message_delivered(MessageId) ->
     db_pool:with_connection(fun(Conn) ->
         Sql = "UPDATE messages SET status = 'delivered' WHERE id = $1",
         epgsql:equery(Conn, Sql, [MessageId])
+    end).
+
+mark_messages_as_delivered([]) -> ok;
+mark_messages_as_delivered(MessageIds) ->
+    db_pool:with_connection(fun(Conn) ->
+        Sql = "UPDATE messages SET status = 'delivered' WHERE id = ANY($1)",
+        epgsql:equery(Conn, Sql, [MessageIds])
+    end).
+
+get_undelivered_messages(UserId) ->
+    db_pool:with_connection(fun(Conn) ->
+        UserIdInt = binary_to_integer_wrapper(UserId),
+        Sql = "SELECT id, sender_id, content, sent_at, status 
+               FROM messages 
+               WHERE receiver_id = $1 AND status = 'sent' 
+               ORDER BY sent_at ASC",
+        case epgsql:equery(Conn, Sql, [UserIdInt]) of
+            {ok, _, Rows} -> {ok, Rows};
+            {error, Error} -> {error, Error}
+        end
     end).
 
 mark_message_read(MessageId) ->

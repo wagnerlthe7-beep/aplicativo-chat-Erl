@@ -27,6 +27,7 @@ class _ChatPageState extends State<ChatPage> {
   StreamSubscription? _messageSubscription;
   StreamSubscription? _presenceSubscription;
   final Set<String> _pendingMessageIds = {};
+  final Map<String, String> _pendingStatusUpdates = {};
   final Uuid _uuid = Uuid();
   bool _hasMarkedAsRead = false;
   Timer? _markAsReadTimer;
@@ -279,12 +280,60 @@ class _ChatPageState extends State<ChatPage> {
               status: newStatus,
             );
           });
+        } else if (idx == -1 && dbMessageId != null && mounted) {
+          // ✅ FALLBACK HEURÍSTICO: Se não encontrou pelo ID (Ack perdido ou race condition),
+          // tenta encontrar uma mensagem "órfã" (minha, enviada, com UUID) para associar.
+          print(
+            '⚠️ Mensagem não encontrada por ID direto. Tentando pareamento heurístico...',
+          );
+
+          // Busca a primeira mensagem minha, com status 'sent' e ID não numérico (UUID)
+          final candidateIdx = _messages.indexWhere(
+            (m) =>
+                m.isMe &&
+                m.status == 'sent' &&
+                int.tryParse(m.id) == null, // Assume que UUID não é numérico
+          );
+
+          if (candidateIdx >= 0) {
+            final oldMsg = _messages[candidateIdx];
+            print(
+              '✅ Pareamento heurístico SUCESSO! Associando entrega $dbMessageId à mensagem local ${oldMsg.id}',
+            );
+
+            setState(() {
+              _messages[candidateIdx] = ChatMessage(
+                id: dbMessageId, // SWAP FORÇADO AGORA
+                text: oldMsg.text,
+                isMe: oldMsg.isMe,
+                timestamp: oldMsg.timestamp,
+                status: newStatus,
+              );
+            });
+
+            // Limpa pendências se houver
+            _pendingMessageIds.remove(oldMsg.id);
+          } else {
+            print(
+              '⚠️ Mensagem não encontrada para atualização de status (nem heurística). Armazenando pendência.',
+            );
+            print(
+              '   IDs buscados: messageId=$messageId, dbMessageId=$dbMessageId',
+            );
+            _pendingStatusUpdates[dbMessageId] = newStatus;
+            print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+          }
         } else {
-          print('❌ Mensagem não encontrada para atualização de status');
+          print(
+            '⚠️ Mensagem não encontrada para atualização de status. Armazenando pendência.',
+          );
           print(
             '   IDs buscados: messageId=$messageId, dbMessageId=$dbMessageId',
           );
-          // print('   IDs locais disponíveis: ${_messages.map((m) => "${m.id}").toList()}');
+          if (dbMessageId != null) {
+            _pendingStatusUpdates[dbMessageId] = newStatus;
+            print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+          }
         }
         _pendingMessageIds.remove(messageId);
       }
@@ -302,6 +351,46 @@ class _ChatPageState extends State<ChatPage> {
 
     if (isMessageForThisChat && mounted) {
       final isFromMe = fromUserId == _currentUserId;
+      final dbMessageId = message['db_message_id']?.toString();
+
+      // ✅ CORREÇÃO CRÍTICA: Atualizar ID temporário para ID do banco
+      // Relaxamos a verificação de _pendingMessageIds para garantir que o swap ocorra
+      // se a mensagem existir na lista local.
+      if (isFromMe && messageId != null && dbMessageId != null) {
+        final idx = _messages.indexWhere((m) => m.id == messageId);
+        if (idx >= 0) {
+          print('🔄 SWAP DETECTADO: Confirmando envio da mensagem');
+          print('   - ID Temporário: $messageId');
+          print('   - ID Banco: $dbMessageId');
+
+          setState(() {
+            final old = _messages[idx];
+            String statusToUse = 'sent';
+
+            // Verifica se há status pendente para este ID (ex: race condition onde delivered chegou antes)
+            if (_pendingStatusUpdates.containsKey(dbMessageId)) {
+              statusToUse = _pendingStatusUpdates[dbMessageId]!;
+              _pendingStatusUpdates.remove(dbMessageId);
+              print('🔄 Aplicando status pendente após SWAP: $statusToUse');
+            }
+
+            _messages[idx] = ChatMessage(
+              id: dbMessageId, // Atualiza para o ID oficial
+              text: old.text,
+              isMe: old.isMe,
+              timestamp: old.timestamp,
+              status: statusToUse,
+            );
+          });
+          _pendingMessageIds.remove(messageId);
+          print('   ✅ SWAP REALIZADO COM SUCESSO!');
+          return; // Mensagem atualizada, interrompe o processamento
+        } else {
+          print(
+            '⚠️ Tentativa de SWAP falhou: Mensagem $messageId não encontrada localmente.',
+          );
+        }
+      }
 
       final isPendingMessage = _pendingMessageIds.contains(messageId ?? '');
       final isDuplicate = _messages.any(
@@ -311,10 +400,13 @@ class _ChatPageState extends State<ChatPage> {
       if (!isDuplicate && !isPendingMessage) {
         final serverTimestamp = _parseRealTimeMessageTimestamp(message);
 
+        // Se vier o DB ID, use-o preferencialmente
+        final finalId = dbMessageId ?? messageId ?? _uuid.v4();
+
         setState(() {
           _messages.add(
             ChatMessage(
-              id: messageId ?? _uuid.v4(),
+              id: finalId,
               text: content,
               isMe: isFromMe,
               timestamp: serverTimestamp,
