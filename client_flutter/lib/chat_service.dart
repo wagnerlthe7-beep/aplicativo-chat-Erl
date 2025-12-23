@@ -155,10 +155,21 @@ class ChatService {
       print('📨 Received: $message');
 
       final messageId = message['message_id']?.toString();
+      final dbMessageId = message['db_message_id'];
+
+      // ✅ CORREÇÃO: Permitir passagem se for confirmação de envio (tem db_message_id)
+      // para que a UI possa atualizar o ID temporário pelo ID do banco.
       if (messageId != null && _sentMessageIds.contains(messageId)) {
-        print('🔄 Ignorando mensagem duplicada: $messageId');
-        _sentMessageIds.remove(messageId);
-        return;
+        if (dbMessageId != null) {
+          print(
+            '🔄 Confirmação de envio recebida (permitindo para SWAP): $messageId -> $dbMessageId',
+          );
+          _sentMessageIds.remove(messageId);
+        } else {
+          print('🔄 Ignorando mensagem duplicada (echo simples): $messageId');
+          _sentMessageIds.remove(messageId);
+          return;
+        }
       }
 
       switch (message['type']) {

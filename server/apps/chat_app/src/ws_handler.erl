@@ -58,6 +58,10 @@ websocket_init(State = #state{user_id = UserId}) ->
     presence_manager:user_online(UserId, self()),
     io:format("👤 Usuário ~p registado como online~n", [UserId]),
     
+    %% ✅ Processar mensagens pendentes (Offline -> Online)
+    %% Spawning process to avoid blocking init
+    spawn(fun() -> message_router:handle_user_online(UserId) end),
+
     WelcomeMsg = #{
         <<"type">> => <<"welcome">>,
         <<"user_id">> => UserId,
