@@ -244,6 +244,23 @@ handle_websocket_message(#{<<"type">> := <<"heartbeat">>}, #state{user_id = User
     presence_manager:user_online(UserId, self()),
     ok;
 
+%% ✅ PRESENCE UPDATE (Manual)
+handle_websocket_message(#{<<"type">> := <<"presence_update">>} = Data, #state{user_id = UserId}) ->
+    Status = maps:get(<<"status">>, Data, <<"online">>),
+    io:format("🔄 Atualização manual de presença para ~p: ~p~n", [UserId, Status]),
+    
+    case Status of
+        <<"online">> ->
+            %% Marca como online no presence_manager (broadcast)
+            presence_manager:user_online(UserId, self());
+        <<"offline">> ->
+            %% Marca como offline no presence_manager (broadcast),
+            %% MAS MANTÉM a sessão ativa em user_session para receber mensagens!
+            presence_manager:user_offline(UserId);
+        _ ->
+            ok
+    end;
+
 %% ✅ MENSAGEM DESCONHECIDA
 handle_websocket_message(Data, _State) ->
     io:format("❓ Mensagem desconhecida: ~p~n", [Data]),

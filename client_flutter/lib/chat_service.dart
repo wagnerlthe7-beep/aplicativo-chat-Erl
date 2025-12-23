@@ -904,6 +904,23 @@ class ChatService {
     });
   }
 
+  // ✅ ENVIAR PRESENÇA MANUALMENTE (Online/Offline)
+  static void sendPresence(String status) {
+    if (_channel == null) return;
+    
+    try {
+      final msg = json.encode({
+        'type': 'presence_update',
+        'status': status,
+        'timestamp': DateTime.now().millisecondsSinceEpoch ~/ 1000
+      });
+      _channel!.sink.add(msg);
+      print('📡 Presença manual enviada: $status');
+    } catch (e) {
+      print('❌ Erro ao enviar presença manual: $e');
+    }
+  }
+
   static void _stopHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
