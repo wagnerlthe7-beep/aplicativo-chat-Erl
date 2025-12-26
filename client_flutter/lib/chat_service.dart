@@ -21,6 +21,7 @@ class ChatService {
 
   static final Uuid _uuid = Uuid();
   static bool _isReconnecting = false;
+  static bool _isManualDisconnect = false;
   static int _reconnectAttempts = 0;
   static const int _maxReconnectAttempts = 5;
 
@@ -49,6 +50,7 @@ class ChatService {
   }
 
   static Future<bool> connect() async {
+    _isManualDisconnect = false;
     if (_channel != null && !_isReconnecting) {
       return true;
     }
@@ -102,6 +104,11 @@ class ChatService {
 
   static void _handleDisconnect() {
     _channel = null;
+
+    if (_isManualDisconnect) {
+      print('🔌 Desconexão manual - não reconectando automaticamente');
+      return;
+    }
 
     // ✅ Quando desconectar (perda de internet / WS fechado),
     // marcar TODOS os contatos locais como offline para o cliente atual.
@@ -875,13 +882,14 @@ class ChatService {
   }
 
   static void disconnect() {
+    _isManualDisconnect = true;
     _isReconnecting = false;
     _reconnectAttempts = 0;
     _sentMessageIds.clear();
     _stopHeartbeat();
     _channel?.sink.close();
     _channel = null;
-    print('🔌 WebSocket disconnected');
+    print('🔌 WebSocket disconnected manually');
   }
 
   // ✅ SISTEMA DE HEARTBEAT
@@ -907,12 +915,12 @@ class ChatService {
   // ✅ ENVIAR PRESENÇA MANUALMENTE (Online/Offline)
   static void sendPresence(String status) {
     if (_channel == null) return;
-    
+
     try {
       final msg = json.encode({
         'type': 'presence_update',
         'status': status,
-        'timestamp': DateTime.now().millisecondsSinceEpoch ~/ 1000
+        'timestamp': DateTime.now().millisecondsSinceEpoch ~/ 1000,
       });
       _channel!.sink.add(msg);
       print('📡 Presença manual enviada: $status');
