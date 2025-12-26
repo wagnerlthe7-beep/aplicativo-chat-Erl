@@ -15,12 +15,14 @@
 
 -export([
     send_message/3,
+    send_message/4,
     mark_message_delivered/2,
     mark_message_read/2, 
     send_typing_indicator/3,
     broadcast_presence/2,
     get_message_sender/1,
-    get_offline_messages/1
+    get_offline_messages/1,
+    handle_user_online/1
 ]).
 
 %%%-------------------------------------------------------------------
@@ -28,10 +30,17 @@
 %%% @end
 %%%-------------------------------------------------------------------
 send_message(FromId, ToId, Content) ->
-    MessageId = generate_message_id(),
+    send_message(FromId, ToId, Content, undefined).
+
+send_message(FromId, ToId, Content, ClientMsgId) ->
+    MessageId = case ClientMsgId of
+        undefined -> generate_message_id();
+        <<>> -> generate_message_id();
+        Id -> Id
+    end,
     Timestamp = erlang:system_time(second),
     
-    %% ✅ PRIMEIRO: SALVAR NA BD
+    %% ✅ PRIMEIRO: SALVAR NA BD (status inicial = 'sent')
     io:format("🎯🎯🎯 MESSAGE ROUTER: Salvando mensagem na BD 🎯🎯🎯~n", []),
     io:format("   FromId: ~p, ToId: ~p, Content: ~p~n", [FromId, ToId, Content]),
     
@@ -39,36 +48,38 @@ send_message(FromId, ToId, Content) ->
         {ok, DbMessageId} ->
             io:format("   ✅✅✅ Mensagem salva na BD com ID: ~p~n", [DbMessageId]),
             
-            %% ✅ APENAS UMA MENSAGEM: para o DESTINATÁRIO (COM unread)
+            %% ✅ MENSAGEM PARA O DESTINATÁRIO (status = delivered se online)
             MessageToReceiver = #{<<"type">> => <<"message">>,
-                                 <<"from">> => FromId,
-                                 <<"to">> => ToId,
-                                 <<"content">> => Content,
-                                 <<"timestamp">> => Timestamp,
-                                 <<"message_id">> => MessageId,
-                                 <<"db_message_id">> => DbMessageId,
-                                 <<"status">> => <<"received">>,
-                                 <<"should_increase_unread">> => true},
+                                <<"from">> => FromId,
+                                <<"to">> => ToId,
+                                <<"content">> => Content,
+                                <<"timestamp">> => Timestamp,
+                                <<"message_id">> => MessageId,
+                                <<"db_message_id">> => DbMessageId,
+                                <<"status">> => <<"delivered">>,  %% para o destinatário, já entregue
+                                <<"should_increase_unread">> => true},
             
-            %% ✅ Enviar APENAS para destinatário (COM unread)
+            %% ✅ Enviar para destinatário (online -> delivered; offline -> continua sent)
             case user_session:send_message(FromId, ToId, MessageToReceiver) of
                 ok ->
                     io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p~n", [ToId]),
                     
-                    %% ✅ Confirmação de entrega para o remetente
-                    DeliveryMsg = #{<<"type">> => <<"message_delivered">>,
-                                   <<"message_id">> => MessageId,
-                                   <<"db_message_id">> => DbMessageId,
-                                   <<"status">> => <<"delivered">>,
-                                   <<"delivered_at">> => erlang:system_time(second)},
-                    user_session:send_message(ToId, FromId, DeliveryMsg),
+                    %% ✅ ATUALIZAR BD: status = 'delivered'
+                    message_repo:mark_message_delivered(DbMessageId),
                     
-                    {ok, MessageToReceiver};
+                    %% ✅ Confirmação de entrega para o remetente (AGORA RETORNADA NA TUPLA)
+                    %% O chamador (ws_handler) deve enviar a notificação imediatamente.
+                    
+                    io:format("   ✅ Mensagem entregue para ~p. Retornando status 'delivered' para remetente.~n", [ToId]),
+                    
+                    {ok, MessageToReceiver, delivered};
                     
                 {error, user_offline} ->
-                    io:format("   💾 Usuário ~p offline - armazenando mensagem~n", [ToId]),
-                    store_offline_message(ToId, MessageToReceiver),
-                    {ok, MessageToReceiver};
+                    io:format("   💾 Usuário ~p offline - armazenando mensagem (status=sent)~n", [ToId]),
+                    store_offline_message(ToId, MessageToReceiver#{
+                      <<"status">> => <<"sent">>
+                    }),
+                    {ok, MessageToReceiver, sent};
                     
                 {error, Reason} ->
                     io:format("   ❌ Erro ao enviar mensagem: ~p~n", [Reason]),
@@ -93,7 +104,7 @@ mark_message_delivered(MessageId, ByUser) ->
                           <<"timestamp">> => erlang:system_time(second)},
             user_session:send_message(ByUser, FromId, DeliveryMsg),
             ok;
-        {error, not_found} ->
+        _ ->
             {error, message_not_found}
     end.
 
@@ -110,7 +121,7 @@ mark_message_read(MessageId, ByUser) ->
                       <<"timestamp">> => erlang:system_time(second)},
             user_session:send_message(ByUser, FromId, ReadMsg),
             ok;
-        {error, not_found} ->
+        _ ->
             {error, message_not_found}
     end.
 
@@ -185,6 +196,62 @@ get_offline_messages(UserId) ->
     {ok, Messages}.
 
 %%%-------------------------------------------------------------------
+%%% @doc Processa mensagens pendentes quando usuário fica online
+%%% @end
+%%%-------------------------------------------------------------------
+handle_user_online(UserId) ->
+    io:format("🚀 Processando mensagens pendentes para usuário: ~p~n", [UserId]),
+    case message_repo:get_undelivered_messages(UserId) of
+        {ok, Messages} ->
+            io:format("   📋 Encontradas ~p mensagens pendentes~n", [length(Messages)]),
+            
+            MessageIds = lists:map(fun({Id, _SenderId, _Content, _SentAt, _Status}) -> Id end, Messages),
+            
+            %% 1. Processar cada mensagem (notificar Sender e enviar para Receiver)
+            lists:foreach(fun({Id, SenderId, Content, SentAt, _Status}) ->
+                SenderIdBin = integer_to_binary(SenderId),
+                
+                %% Notificar remetente (status = delivered)
+                DeliveryMsg = #{
+                    <<"type">> => <<"message_delivered">>,
+                    <<"message_id">> => integer_to_binary(Id), %% Usando ID do banco como referência se não houver UUID
+                    <<"db_message_id">> => Id,
+                    <<"status">> => <<"delivered">>,
+                    <<"delivered_at">> => erlang:system_time(second)
+                },
+                %% Tenta enviar para o remetente se estiver online
+                user_session:send_message(UserId, SenderIdBin, DeliveryMsg),
+                
+                %% Enviar mensagem para o destinatário (UserId)
+                MsgForReceiver = #{
+                    <<"type">> => <<"message">>,
+                    <<"from">> => SenderIdBin,
+                    <<"to">> => UserId,
+                    <<"content">> => Content,
+                    <<"timestamp">> => erlang:system_time(second),
+                    <<"message_id">> => integer_to_binary(Id),
+                    <<"db_message_id">> => Id,
+                    <<"status">> => <<"delivered">>,
+                    <<"should_increase_unread">> => true
+                },
+                %% Envia para o próprio usuário que acabou de conectar
+                user_session:send_message(SenderIdBin, UserId, MsgForReceiver)
+                
+            end, Messages),
+            
+            %% 2. Atualizar status no banco em lote
+            if length(MessageIds) > 0 ->
+                message_repo:mark_messages_as_delivered(MessageIds),
+                io:format("   ✅ Mensagens marcadas como delivered no banco~n");
+            true ->
+                ok
+            end;
+            
+        {error, Error} ->
+            io:format("   ❌ Erro ao buscar mensagens pendentes: ~p~n", [Error])
+    end.
+
+%%%-------------------------------------------------------------------
 %%% FUNÇÕES AUXILIARES
 %%%-------------------------------------------------------------------
 
@@ -193,9 +260,14 @@ generate_message_id() ->
     <<Id:128>> = crypto:strong_rand_bytes(16),
     list_to_binary(integer_to_list(Id, 36)).
 
-%% @doc Obtém o remetente de uma mensagem (simplificado)
-get_message_sender(_MessageId) ->
-    {ok, <<"temp_sender">>}.
+%% @doc Obtém o remetente de uma mensagem
+get_message_sender(MessageId) ->
+    case catch binary_to_integer(MessageId) of
+        IdInt when is_integer(IdInt) ->
+            message_repo:get_message_sender(IdInt);
+        _ ->
+            {error, invalid_id}
+    end.
 
 %% @doc Obtém contatos de um usuário (simplificado)
 get_user_contacts(_UserId) ->
@@ -227,6 +299,8 @@ store_offline_message(UserId, Message) ->
 
 %% @doc Limpa mensagens offline de um usuário
 clear_offline_messages(UserId) ->
+    %% CORREÇÃO: Isso pode estar errado se o index não for receiver_id.
+    %% Mas deixamos como está pois estamos migrando para message_repo.
     F = fun() ->
         mnesia:delete({pending_messages, UserId})
     end,

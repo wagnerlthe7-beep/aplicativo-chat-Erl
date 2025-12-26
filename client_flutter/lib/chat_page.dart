@@ -27,11 +27,12 @@ class _ChatPageState extends State<ChatPage> {
   StreamSubscription? _messageSubscription;
   StreamSubscription? _presenceSubscription;
   final Set<String> _pendingMessageIds = {};
+  final Map<String, String> _pendingStatusUpdates = {};
   final Uuid _uuid = Uuid();
   bool _hasMarkedAsRead = false;
   Timer? _markAsReadTimer;
 
-  // ✅ Status de presença do contato
+  // Status de presença do contato
   String _contactPresenceStatus = 'offline'; // 'online', 'offline'
   Timer? _presenceOnlineTimer;
   Timer? _presenceOfflineTimer;
@@ -43,13 +44,13 @@ class _ChatPageState extends State<ChatPage> {
     ChatService.setActiveChat(widget.remoteUserId);
     _initializeChat();
 
-    // ✅ COMPORTAMENTO WHATSAPP: Marcar como lido ao abrir o chat
+    // Marcar como lido ao abrir o chat
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _markAsReadOnOpen();
     });
   }
 
-  // ✅✅✅ NOVO: Marcar como lido ao abrir (com pequeno delay)
+  // Marcar como lido ao abrir (com pequeno delay)
   void _markAsReadOnOpen() {
     if (_hasMarkedAsRead) return;
 
@@ -58,7 +59,7 @@ class _ChatPageState extends State<ChatPage> {
     // ✅ Pequeno delay para garantir que tudo foi carregado
     _markAsReadTimer = Timer(Duration(milliseconds: 500), () {
       if (!_hasMarkedAsRead && mounted) {
-        print('✅✅✅ WHATSAPP BEHAVIOR: Marcando chat como lido ao abrir');
+        print('Marcando chat como lido ao abrir');
         _markChatAsRead();
         _hasMarkedAsRead = true;
       }
@@ -71,7 +72,7 @@ class _ChatPageState extends State<ChatPage> {
     _presenceOnlineTimer?.cancel();
     _presenceOfflineTimer?.cancel();
 
-    // ✅ GARANTIR que marca como lido se ainda não marcou
+    // GARANTIR que marca como lido se ainda não marcou
     if (!_hasMarkedAsRead && mounted) {
       print('🚪 Saindo do chat - marcando como lido finalmente');
       _markChatAsRead();
@@ -86,7 +87,7 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
-  // ✅ Carregar status de presença do contato
+  // Carregar status de presença do contato
   Future<void> _loadContactPresence() async {
     try {
       print('🔍 Buscando presença para: ${widget.remoteUserId}');
@@ -120,27 +121,28 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
-  // ✅ Formatar status para exibição (estilo WhatsApp)
+  // Formatar status para exibição
   String _getPresenceText() {
     if (_contactPresenceStatus == 'online') {
       return 'online';
     }
 
-    // ✅ REQUISITO: quando offline, NÃO mostrar nada (campo vazio)
+    // REQUISITO: quando offline, NÃO mostrar nada (campo vazio)
     // Isso significa "offline" de forma silenciosa.
     return '';
   }
 
-  // ✅✅✅ MELHORADO: Marcar como lido com verificação
+  // MELHORADO: Marcar como lido com verificação
   void _markChatAsRead() {
     if (_hasMarkedAsRead) {
       print('⏳ Chat já foi marcado como lido nesta sessão');
       return;
     }
 
-    print('📖 Marcando chat como lido (Comportamento WhatsApp)');
-    // ✅ Usar versão IMEDIATA (sem cooldown) quando o usuário abre o chat
+    print('📖 Marcando chat como lido');
+    // Usar versão IMEDIATA (sem cooldown) quando o usuário abre o chat
     ChatService.markChatAsReadImmediate(widget.remoteUserId);
+    ChatService.markMessagesRead(widget.remoteUserId);
     _hasMarkedAsRead = true;
   }
 
@@ -176,7 +178,7 @@ class _ChatPageState extends State<ChatPage> {
         _handleIncomingMessage(message);
       });
 
-      // ✅ ESCUTAR EVENTOS DE PRESENÇA (com delay de 2s para aparecer/sumir)
+      // ESCUTAR EVENTOS DE PRESENÇA (com delay de 2s para aparecer/sumir)
       _presenceSubscription = ChatService.presenceStream.listen((presence) {
         final userId = presence['user_id']?.toString();
         final status = presence['status']?.toString();
@@ -189,7 +191,7 @@ class _ChatPageState extends State<ChatPage> {
           _presenceOfflineTimer?.cancel();
 
           if (status == 'online') {
-            // ✅ Esperar 2 segundos antes de mostrar "online"
+            // Esperar 2 segundos antes de mostrar "online"
             _presenceOnlineTimer = Timer(const Duration(seconds: 2), () {
               if (!mounted) return;
               setState(() {
@@ -198,7 +200,7 @@ class _ChatPageState extends State<ChatPage> {
               print('✅ Presença aplicada (ONLINE) após delay');
             });
           } else if (status == 'offline') {
-            // ✅ Esperar 2 segundos antes de remover o "online"
+            // Esperar 2 segundos antes de remover o "online"
             _presenceOfflineTimer = Timer(const Duration(seconds: 2), () async {
               if (!mounted) return;
 
@@ -213,7 +215,7 @@ class _ChatPageState extends State<ChatPage> {
         }
       });
 
-      // ✅ BUSCAR STATUS INICIAL COM DELAY DE 2s TAMBÉM
+      // BUSCAR STATUS INICIAL COM DELAY DE 2s TAMBÉM
       Future.delayed(const Duration(seconds: 2), () {
         if (mounted) {
           _loadContactPresence();
@@ -225,6 +227,119 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   void _handleIncomingMessage(Map<String, dynamic> message) {
+    print('📨 RAW MESSAGE RECEIVED: $message'); // LOG DETALHADO
+    final type = message['type']?.toString();
+
+    // ✅ TRATAMENTO ROBUSTO DE STATUS (SENT -> DELIVERED -> READ)
+    if (type == 'message_delivered' || type == 'message_read') {
+      final messageId = message['message_id']?.toString();
+      final dbMessageId = message['db_message_id']?.toString();
+
+      print('📥 Status Update: $type');
+      print('   - ID Evento: $messageId');
+      print('   - DB ID: $dbMessageId');
+
+      if (messageId != null) {
+        final newStatus = type == 'message_delivered' ? 'delivered' : 'read';
+
+        // Tenta encontrar por UUID (messageId) OU pelo ID de banco (dbMessageId)
+        // Isso resolve o problema de incompatibilidade entre UUID local e ID do banco
+        final idx = _messages.indexWhere((m) {
+          final matchesUuid = m.id == messageId;
+          final matchesDbId = dbMessageId != null && m.id == dbMessageId;
+          // Também verificar se o messageId do evento já é o ID numérico (caso do read)
+          final matchesIdDirectly = m.id == messageId;
+
+          return (matchesUuid || matchesDbId || matchesIdDirectly) && m.isMe;
+        });
+
+        if (idx >= 0 && mounted) {
+          final oldMsg = _messages[idx];
+
+          // Evitar downgrade de status (ex: read -> delivered)
+          if (oldMsg.status == 'read' && newStatus == 'delivered') {
+            print(
+              '⚠️ Ignorando status anterior ($newStatus) pois já está lida',
+            );
+            return;
+          }
+
+          print('✅ Atualizando mensagem ${oldMsg.id} para $newStatus');
+
+          setState(() {
+            // ✅ CRÍTICO: Se recebermos o ID do banco (dbMessageId),
+            // atualizamos o ID local para garantir que eventos futuros (ex: read)
+            // que usam o ID do banco consigam encontrar a mensagem.
+            final finalId = dbMessageId ?? oldMsg.id;
+
+            _messages[idx] = ChatMessage(
+              id: finalId,
+              text: oldMsg.text,
+              isMe: oldMsg.isMe,
+              timestamp: oldMsg.timestamp,
+              status: newStatus,
+            );
+          });
+        } else if (idx == -1 && dbMessageId != null && mounted) {
+          // ✅ FALLBACK HEURÍSTICO: Se não encontrou pelo ID (Ack perdido ou race condition),
+          // tenta encontrar uma mensagem "órfã" (minha, enviada, com UUID) para associar.
+          print(
+            '⚠️ Mensagem não encontrada por ID direto. Tentando pareamento heurístico...',
+          );
+
+          // Busca a primeira mensagem minha, com status 'sent' e ID não numérico (UUID)
+          final candidateIdx = _messages.indexWhere(
+            (m) =>
+                m.isMe &&
+                m.status == 'sent' &&
+                int.tryParse(m.id) == null, // Assume que UUID não é numérico
+          );
+
+          if (candidateIdx >= 0) {
+            final oldMsg = _messages[candidateIdx];
+            print(
+              '✅ Pareamento heurístico SUCESSO! Associando entrega $dbMessageId à mensagem local ${oldMsg.id}',
+            );
+
+            setState(() {
+              _messages[candidateIdx] = ChatMessage(
+                id: dbMessageId, // SWAP FORÇADO AGORA
+                text: oldMsg.text,
+                isMe: oldMsg.isMe,
+                timestamp: oldMsg.timestamp,
+                status: newStatus,
+              );
+            });
+
+            // Limpa pendências se houver
+            _pendingMessageIds.remove(oldMsg.id);
+          } else {
+            print(
+              '⚠️ Mensagem não encontrada para atualização de status (nem heurística). Armazenando pendência.',
+            );
+            print(
+              '   IDs buscados: messageId=$messageId, dbMessageId=$dbMessageId',
+            );
+            _pendingStatusUpdates[dbMessageId] = newStatus;
+            print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+          }
+        } else {
+          print(
+            '⚠️ Mensagem não encontrada para atualização de status. Armazenando pendência.',
+          );
+          print(
+            '   IDs buscados: messageId=$messageId, dbMessageId=$dbMessageId',
+          );
+          if (dbMessageId != null) {
+            _pendingStatusUpdates[dbMessageId] = newStatus;
+            print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+          }
+        }
+        _pendingMessageIds.remove(messageId);
+      }
+      return;
+    }
+
     final fromUserId = message['from']?.toString();
     final toUserId = message['to']?.toString();
     final messageId = message['message_id']?.toString();
@@ -236,6 +351,46 @@ class _ChatPageState extends State<ChatPage> {
 
     if (isMessageForThisChat && mounted) {
       final isFromMe = fromUserId == _currentUserId;
+      final dbMessageId = message['db_message_id']?.toString();
+
+      // ✅ CORREÇÃO CRÍTICA: Atualizar ID temporário para ID do banco
+      // Relaxamos a verificação de _pendingMessageIds para garantir que o swap ocorra
+      // se a mensagem existir na lista local.
+      if (isFromMe && messageId != null && dbMessageId != null) {
+        final idx = _messages.indexWhere((m) => m.id == messageId);
+        if (idx >= 0) {
+          print('🔄 SWAP DETECTADO: Confirmando envio da mensagem');
+          print('   - ID Temporário: $messageId');
+          print('   - ID Banco: $dbMessageId');
+
+          setState(() {
+            final old = _messages[idx];
+            String statusToUse = 'sent';
+
+            // Verifica se há status pendente para este ID (ex: race condition onde delivered chegou antes)
+            if (_pendingStatusUpdates.containsKey(dbMessageId)) {
+              statusToUse = _pendingStatusUpdates[dbMessageId]!;
+              _pendingStatusUpdates.remove(dbMessageId);
+              print('🔄 Aplicando status pendente após SWAP: $statusToUse');
+            }
+
+            _messages[idx] = ChatMessage(
+              id: dbMessageId, // Atualiza para o ID oficial
+              text: old.text,
+              isMe: old.isMe,
+              timestamp: old.timestamp,
+              status: statusToUse,
+            );
+          });
+          _pendingMessageIds.remove(messageId);
+          print('   ✅ SWAP REALIZADO COM SUCESSO!');
+          return; // Mensagem atualizada, interrompe o processamento
+        } else {
+          print(
+            '⚠️ Tentativa de SWAP falhou: Mensagem $messageId não encontrada localmente.',
+          );
+        }
+      }
 
       final isPendingMessage = _pendingMessageIds.contains(messageId ?? '');
       final isDuplicate = _messages.any(
@@ -245,10 +400,13 @@ class _ChatPageState extends State<ChatPage> {
       if (!isDuplicate && !isPendingMessage) {
         final serverTimestamp = _parseRealTimeMessageTimestamp(message);
 
+        // Se vier o DB ID, use-o preferencialmente
+        final finalId = dbMessageId ?? messageId ?? _uuid.v4();
+
         setState(() {
           _messages.add(
             ChatMessage(
-              id: messageId ?? _uuid.v4(),
+              id: finalId,
               text: content,
               isMe: isFromMe,
               timestamp: serverTimestamp,
@@ -261,9 +419,10 @@ class _ChatPageState extends State<ChatPage> {
         if (isFromMe && messageId != null) {
           _pendingMessageIds.remove(messageId);
         } else if (!isFromMe) {
-          // ✅ Mensagem recebida enquanto o chat está aberto:
+          // Mensagem recebida enquanto o chat está aberto:
           // marcar como lida imediatamente para não aumentar unread na lista.
           ChatService.markChatAsReadImmediate(widget.remoteUserId);
+          ChatService.markMessagesRead(widget.remoteUserId);
         }
       }
     }
@@ -368,7 +527,7 @@ class _ChatPageState extends State<ChatPage> {
         }
       }
 
-      // ✅ CORREÇÃO: ADICIONAR 2 HORAS
+      // CORREÇÃO: ADICIONAR 2 HORAS
       final correctedDateTime = parsedDateTime.add(const Duration(hours: 2));
       return correctedDateTime;
     } catch (e) {
@@ -435,7 +594,7 @@ class _ChatPageState extends State<ChatPage> {
     _scrollToBottom();
 
     try {
-      // ✅ Envia efetivamente (com verificação de internet)
+      // Envia efetivamente (com verificação de internet)
       await ChatService.sendMessage(
         widget.remoteUserId,
         text,
@@ -444,7 +603,6 @@ class _ChatPageState extends State<ChatPage> {
     } catch (e) {
       print('❌ Falha ao enviar mensagem: $e');
 
-      // ❌ Sem internet / WS desconectado: remover bolha e devolver texto
       setState(() {
         _messages.removeWhere((m) => m.id == tempMessageId);
       });
@@ -459,8 +617,6 @@ class _ChatPageState extends State<ChatPage> {
         );
       }
     }
-
-    // ❌ REMOVIDO: ChatService.updateChatContact - já é feito automaticamente no ChatService
   }
 
   void _scrollToBottom() {
@@ -475,7 +631,7 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  // ✅ SISTEMA DE DATAS ESTILO WHATSAPP
+  // SISTEMA DE DATAS
   List<MessageGroup> _groupMessagesByDate() {
     if (_messages.isEmpty) return [];
 

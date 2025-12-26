@@ -7,6 +7,7 @@ import 'otp_page.dart';
 import 'name_input_page.dart';
 import 'permissions_page.dart';
 import 'chat_list_page.dart';
+import 'chat_service.dart'; // Import necessário
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,8 +28,50 @@ void main() async {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    // ✅ Registrar observador de ciclo de vida
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    // ✅ Remover observador
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    print('🔄 App Lifecycle State changed to: $state');
+
+    if (state == AppLifecycleState.paused) {
+      // 🌑 App em background:
+      // - Enviar presença "offline"
+      // - Desconectar WebSocket para economizar bateria e evitar conflitos
+      print('🌑 App em Background -> Enviando presença offline e desconectando');
+      ChatService.sendPresence('offline');
+      ChatService.disconnect();
+    } else if (state == AppLifecycleState.resumed) {
+      // ☀️ App em foreground:
+      // - Reconectar WebSocket
+      // - Enviar presença "online"
+      print('☀️ App em Foreground -> Reconectando e enviando presença online');
+      // Primeiro conectar (se necessário), depois enviar presença
+      ChatService.connect().then((_) {
+         ChatService.sendPresence('online');
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

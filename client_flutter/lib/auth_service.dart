@@ -83,7 +83,7 @@ class AuthService {
         smsCode: smsCode,
       );
       final userCredential = await _auth.signInWithCredential(credential);
-      // ✅✅✅ REMOVIDO: await afterFirebaseSignInBackend(userCredential: userCredential);
+      // REMOVIDO: await afterFirebaseSignInBackend(userCredential: userCredential);
       // Agora o backend será chamado apenas quando necessário
       return true;
     } catch (e) {
@@ -199,7 +199,7 @@ class AuthService {
   }
 
   /// -----------------------------
-  /// 8) Revogar outras sessões (CORRIGIDA) - ✅✅✅
+  /// 8) Revogar outras sessões
   /// -----------------------------
   static Future<bool> revokeOtherSessions() async {
     final accessToken = await _storage.read(key: 'access_token');
@@ -213,7 +213,7 @@ class AuthService {
     try {
       print('🚫 Revogando outras sessões...');
 
-      // ✅ USAR O ENDPOINT CORRETO: /auth/revoke-others
+      // USAR O ENDPOINT CORRETO: /auth/revoke-others
       final url = Uri.parse('$backendUrl/auth/revoke-others');
       final res = await http.post(
         url,
@@ -228,7 +228,7 @@ class AuthService {
 
       if (res.statusCode == 200) {
         print('✅ Outras sessões revogadas com sucesso!');
-        // ✅ NÃO limpa o storage - mantém a sessão ATUAL
+        // NÃO limpa o storage - mantém a sessão ATUAL
         return true;
       } else {
         print('❌ Falha ao revogar outras sessões: ${res.statusCode}');
@@ -241,7 +241,7 @@ class AuthService {
   }
 
   /// -----------------------------
-  /// 9) ✅✅✅ NOVA: Validar sessão com backend
+  /// 9) NOVA: Validar sessão com backend
   /// -----------------------------
   static Future<bool> validateCurrentSession() async {
     final accessToken = await _storage.read(key: 'access_token');
@@ -270,7 +270,7 @@ class AuthService {
           final error = body['error']?.toString();
 
           if (error == 'session_revoked' || error == 'session_not_found') {
-            // ✅ Apenas aqui consideramos a sessão inválida de verdade
+            // Apenas aqui consideramos a sessão inválida de verdade
             return false;
           }
         } catch (_) {
@@ -285,14 +285,14 @@ class AuthService {
       );
       return true;
     } catch (e) {
-      // ❌ Importante: erro de rede NÃO deve matar a sessão.
+      // Importante: erro de rede NÃO deve matar a sessão.
       print('❌ Error validating session (mantendo sessão): $e');
       return true;
     }
   }
 
   /// -----------------------------
-  /// 10) ✅✅✅ NOVA: Limpar sessão localmente
+  /// 10) NOVA: Limpar sessão localmente
   /// -----------------------------
   static Future<void> clearLocalSession() async {
     await _storage.delete(key: 'access_token');
@@ -301,7 +301,7 @@ class AuthService {
   }
 
   /// -----------------------------
-  /// 11) ✅✅✅ NOVA: Verificar se é usuário novo
+  /// 11) NOVA: Verificar se é usuário novo
   /// -----------------------------
   static Future<bool> isNewUser() async {
     final user = _auth.currentUser;
@@ -345,7 +345,7 @@ class AuthService {
   }
 
   /// -----------------------------
-  /// 12) ✅✅✅ NOVA: Completar login de usuário existente
+  /// 12) Completar login de usuário existente
   /// -----------------------------
   static Future<bool> completeExistingUserLogin() async {
     final user = _auth.currentUser;
@@ -397,7 +397,7 @@ class AuthService {
   }
 
   /// -----------------------------
-  /// 13) ✅✅✅ NOVA: Finalizar cadastro com nome do usuário
+  /// 13) Finalizar cadastro com nome do usuário
   /// -----------------------------
   static Future<bool> completeRegistrationWithName(String userName) async {
     final user = _auth.currentUser;
@@ -425,7 +425,7 @@ class AuthService {
           'phone': user.phoneNumber,
           'device_uuid': deviceId,
           'device_info': deviceInfo,
-          'user_name': userName, // ✅✅✅ NOVO: Nome do usuário
+          'user_name': userName,
         }),
       );
 
@@ -457,6 +457,6 @@ class AuthService {
   }
 
   static Future<String?> getAccessToken() async {
-    return await _storage.read(key: 'access_token'); // ✅ SecureStorage
+    return await _storage.read(key: 'access_token'); // SecureStorage
   }
 }

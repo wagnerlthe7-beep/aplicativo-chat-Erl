@@ -21,6 +21,7 @@ class ChatService {
 
   static final Uuid _uuid = Uuid();
   static bool _isReconnecting = false;
+  static bool _isManualDisconnect = false;
   static int _reconnectAttempts = 0;
   static const int _maxReconnectAttempts = 5;
 
@@ -49,6 +50,7 @@ class ChatService {
   }
 
   static Future<bool> connect() async {
+    _isManualDisconnect = false;
     if (_channel != null && !_isReconnecting) {
       return true;
     }
@@ -80,7 +82,8 @@ class ChatService {
       );
 
       _isReconnecting = false;
-      _reconnectAttempts = 0;
+      // NÃO resetar tentativas aqui, apenas após receber 'welcome' ou conexão estável
+      // _reconnectAttempts = 0;
       print('✅ WebSocket connected for user $_currentUserId');
 
       // ✅ INICIAR SISTEMA DE HEARTBEAT
@@ -101,6 +104,11 @@ class ChatService {
 
   static void _handleDisconnect() {
     _channel = null;
+
+    if (_isManualDisconnect) {
+      print('🔌 Desconexão manual - não reconectando automaticamente');
+      return;
+    }
 
     // ✅ Quando desconectar (perda de internet / WS fechado),
     // marcar TODOS os contatos locais como offline para o cliente atual.
@@ -154,15 +162,28 @@ class ChatService {
       print('📨 Received: $message');
 
       final messageId = message['message_id']?.toString();
+      final dbMessageId = message['db_message_id'];
+
+      // ✅ CORREÇÃO: Permitir passagem se for confirmação de envio (tem db_message_id)
+      // para que a UI possa atualizar o ID temporário pelo ID do banco.
       if (messageId != null && _sentMessageIds.contains(messageId)) {
-        print('🔄 Ignorando mensagem duplicada: $messageId');
-        _sentMessageIds.remove(messageId);
-        return;
+        if (dbMessageId != null) {
+          print(
+            '🔄 Confirmação de envio recebida (permitindo para SWAP): $messageId -> $dbMessageId',
+          );
+          _sentMessageIds.remove(messageId);
+        } else {
+          print('🔄 Ignorando mensagem duplicada (echo simples): $messageId');
+          _sentMessageIds.remove(messageId);
+          return;
+        }
       }
 
       switch (message['type']) {
         case 'welcome':
           print('✅ Authenticated with chat server');
+          // ✅ Conexão estabelecida com sucesso - resetar contador de tentativas
+          _reconnectAttempts = 0;
           break;
         case 'message':
           _messageController.add(message);
@@ -730,7 +751,7 @@ class ChatService {
 
     _lastMarkAsReadCall[contactId] = now;
 
-    print('📖📖📖 MARK CHAT AS READ (WHATSAPP STYLE) 📖📖📖');
+    print('📖📖📖 MARK CHAT AS READ 📖📖📖');
     print('   ContactId: $contactId');
     print('   Razão: Chat aberto pelo usuário');
 
@@ -774,6 +795,25 @@ class ChatService {
       }
     } else {
       print('   ❌ Chat não encontrado (immediate): $contactId');
+    }
+  }
+
+  static Future<void> markMessagesRead(String contactId) async {
+    try {
+      final meId = await _secureStorage.read(key: 'user_id');
+      final token = await _secureStorage.read(key: 'access_token');
+      if (meId == null || token == null) return;
+      final url = Uri.parse(
+        'http://10.0.2.2:4000/api/messages/mark_read/$meId/$contactId',
+      );
+      final headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      };
+      final res = await http.post(url, headers: headers);
+      print('📡 markMessagesRead response: ${res.statusCode}');
+    } catch (e) {
+      print('❌ markMessagesRead error: $e');
     }
   }
 
@@ -842,13 +882,14 @@ class ChatService {
   }
 
   static void disconnect() {
+    _isManualDisconnect = true;
     _isReconnecting = false;
     _reconnectAttempts = 0;
     _sentMessageIds.clear();
     _stopHeartbeat();
     _channel?.sink.close();
     _channel = null;
-    print('🔌 WebSocket disconnected');
+    print('🔌 WebSocket disconnected manually');
   }
 
   // ✅ SISTEMA DE HEARTBEAT
@@ -869,6 +910,23 @@ class ChatService {
         _stopHeartbeat();
       }
     });
+  }
+
+  // ✅ ENVIAR PRESENÇA MANUALMENTE (Online/Offline)
+  static void sendPresence(String status) {
+    if (_channel == null) return;
+
+    try {
+      final msg = json.encode({
+        'type': 'presence_update',
+        'status': status,
+        'timestamp': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      });
+      _channel!.sink.add(msg);
+      print('📡 Presença manual enviada: $status');
+    } catch (e) {
+      print('❌ Erro ao enviar presença manual: $e');
+    }
   }
 
   static void _stopHeartbeat() {
@@ -951,6 +1009,14 @@ class ChatService {
     final token = await _secureStorage.read(key: 'access_token');
     var userId = await _secureStorage.read(key: 'user_id');
 
+    if (userId == null && token != null) {
+      final extracted = _tryExtractUserIdFromJwt(token);
+      if (extracted != null) {
+        await _secureStorage.write(key: 'user_id', value: extracted);
+        userId = extracted;
+      }
+    }
+
     if (token == null || userId == null) {
       final prefs = await SharedPreferences.getInstance();
       final legacyToken = prefs.getString('access_token');
@@ -964,5 +1030,29 @@ class ChatService {
     }
 
     return {'token': token, 'userId': userId};
+  }
+
+  static String? _tryExtractUserIdFromJwt(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length < 2) return null;
+      final payloadB64 = parts[1];
+      final normalized = _normalizeBase64Url(payloadB64);
+      final payloadBytes = base64Url.decode(normalized);
+      final payload = json.decode(utf8.decode(payloadBytes));
+      final uid = payload['user_id'];
+      if (uid == null) return null;
+      return uid.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static String _normalizeBase64Url(String input) {
+    final rem = input.length % 4;
+    if (rem == 2) return '$input==';
+    if (rem == 3) return '$input=';
+    if (rem == 1) return '$input===';
+    return input;
   }
 }

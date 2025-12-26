@@ -10,8 +10,6 @@ Aqui está a tabela completa com as funcionalidades que faltam desenvolver:
 | Sessão sem expiração                            | ✅ Funcional   |
 | Lista de contactos completa do dispositivo      | ✅ Funcional   |
 | Pesquisa inteligente por nome e número          | ✅ Funcional   |
-| Interface limpa com transições suaves           | ✅ Funcional   |
-| Experiência do usuário intuitiva                | ✅ Funcional   |
 | Usar Pool de Conexoes ao Inves de OnePerTime    | ✅ Funcional
 |TESTE DE CONCORRENCIA                            | ❌             |
 | **Envio e receção de mensagens de texto**       | ✅ Funcional   |
@@ -35,53 +33,20 @@ Aqui está a tabela completa com as funcionalidades que faltam desenvolver:
 | **Stories/Status (como WhatsApp)**              | ❌ Por Desenvolver |
 | **um dispositivo perde conexao (do nada)**      | ❌ Por Acertar     |
 
-14/10/2025 -  O QUE FUNCIONOU NA ULTIMA VEZ QUE MEXI NO SISTEMA
-✅ Resumo do que está funcionando:
-
-    ✅ Autenticação JWT - WebSocket autenticado com sucesso
-
-    ✅ Registro de usuário online - Usuário 123 registrado como online
-
-    ✅ Recebimento de mensagens - JSON decodificado corretamente
-
-    ✅ Salvamento no banco - Mensagem salva no PostgreSQL
-
-    ✅ Roteamento inteligente - Detectou que usuário 456 está offline
-
-    ✅ Armazenamento offline - Mensagem guardada no Mnesia para entrega posterior
-
-    ✅ Confirmação ao remetente - Mensagem de confirmação enviada de volta  
-
-    
-    ✅ O que acabou de acontecer:
-
-    ✅ Usuário 123 conectado - Recebeu mensagem de boas-vindas
-
-    ✅ Usuário 456 conectado - Recebeu mensagem de boas-vindas
-
-    ✅ Indicador de digitação funcionando - Usuário 123 enviou "typing" para 456
-
-    ✅ Mensagem entregue em tempo real - Usuário 456 recebeu o indicador instantaneamente
-
 ---- FIM 14/10/2025
     ✅ FUNCIONALIDADES IMPLEMENTADAS no dia 20.11.2025:
     ✅ Autenticação segura com Firebase + JWT
     ✅ WebSocket em tempo real com reconexão automática
     ✅ Histórico de mensagens persistente
-    ✅ Interface fluida e responsiva
-    ✅ 7 mensagens enviadas → Destinatário vê bolinha verde com "7"
-    ✅ Destinatário ABRE o chat → Marca como lido automaticamente
-    ✅ Bolinha desaparece → Mostra apenas última mensagem e hora 
-
+    ✅ Destinatário ABRE o chat → Marca como lido automaticamente 
 
 🚀 PRÓXIMOS PASSOS SUGERIDOS:
 
-      Status OnLine/OffLine           -> 26/11/2025   (adicionou-se o ficheiro presence_manager.erl)
+      
     🔔 Notificações Push - Para quando o app estiver em background
     📸 Envio de imagens - Implementar upload de mídia
     🎤 Mensagens de áudio - Gravação e envio
     👥 Grupos de chat - Criação e gestão
-    📱 Status online/offline - Indicadores em tempo real
 
 
 

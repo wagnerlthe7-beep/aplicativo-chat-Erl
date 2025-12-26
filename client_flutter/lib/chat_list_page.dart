@@ -44,15 +44,15 @@ class _ChatListPageState extends State<ChatListPage>
     super.dispose();
   }
 
-  // ✅ INICIALIZAR CHATS REAIS - CORRIGIDO
+  // INICIALIZAR CHATS REAIS - CORRIGIDO
   void _initializeRealChats() {
     print('🚀 Inicializando chats reais...');
 
-    // ✅ CONECTAR AO WEBSOCKET PRIMEIRO
+    // CONECTAR AO WEBSOCKET PRIMEIRO
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await ChatService.connect();
 
-      // ✅ DEPOIS CARREGAR CHATS DO STORAGE
+      // DEPOIS CARREGAR CHATS DO STORAGE
       final currentChats = ChatService.currentChatList;
       if (mounted) {
         setState(() {
@@ -62,17 +62,17 @@ class _ChatListPageState extends State<ChatListPage>
 
       print('📊 Chats iniciais carregados: ${_chats.length}');
 
-      // ✅ SE NÃO HOUVER CHATS, TENTAR RECONSTRUIR
+      // SE NÃO HOUVER CHATS, TENTAR RECONSTRUIR
       if (_chats.isEmpty) {
         print('🔄 Nenhum chat encontrado, reconstruindo...');
         await ChatService.rebuildChatsFromHistory();
       }
 
-      // ✅ INICIAR TIMER DE VERIFICAÇÃO
+      // INICIAR TIMER DE VERIFICAÇÃO
       _startChatRefreshTimer();
     });
 
-    // ✅ OUVIR ATUALIZAÇÕES EM TEMPO REAL
+    // OUVIR ATUALIZAÇÕES EM TEMPO REAL
     _chatSubscription = ChatService.chatListStream.listen((chats) {
       print('📡 Lista de chats atualizada: ${chats.length} chats');
       if (mounted) {
@@ -83,7 +83,7 @@ class _ChatListPageState extends State<ChatListPage>
     });
   }
 
-  // ✅ VERIFICAR E RECARREGAR CHATS PERIODICAMENTE
+  // VERIFICAR E RECARREGAR CHATS PERIODICAMENTE
   void _startChatRefreshTimer() {
     _chatRefreshTimer = Timer.periodic(Duration(seconds: 3), (timer) {
       if (_chats.isEmpty && mounted) {
@@ -129,13 +129,13 @@ class _ChatListPageState extends State<ChatListPage>
     Navigator.pushNamedAndRemoveUntil(context, '/welcome', (route) => false);
   }
 
-  // ✅ BOTÃO PARA RECARREGAR CONVERSAS
+  // BOTÃO PARA RECARREGAR CONVERSAS
   Future<void> _reloadChats() async {
     setState(() => _isLoading = true);
 
     print('🔄 Recarregando conversas...');
 
-    // ✅ FORÇAR RECONSTRUÇÃO DOS CHATS
+    // FORÇAR RECONSTRUÇÃO DOS CHATS
     await ChatService.rebuildChatsFromHistory();
 
     if (mounted) {
@@ -143,7 +143,7 @@ class _ChatListPageState extends State<ChatListPage>
     }
   }
 
-  // ✅ ABRIR LISTA DE CONTATOS
+  // ABRIR LISTA DE CONTATOS
   Future<void> _openContactsList() async {
     final contactPermission = await Permission.contacts.status;
 
@@ -172,7 +172,7 @@ class _ChatListPageState extends State<ChatListPage>
     }
   }
 
-  // ✅ DIÁLOGO DE SELEÇÃO DE CONTATOS (mantido igual)
+  // DIÁLOGO DE SELEÇÃO DE CONTATOS (mantido igual)
   void _showContactsSelectionDialog(List<Contact> contacts) {
     final searchController = TextEditingController();
     List<Contact> filteredContacts = List.from(contacts);
@@ -511,7 +511,7 @@ class _ChatListPageState extends State<ChatListPage>
           ),
         ),
         actions: [
-          // ✅ BOTÃO DE RECARREGAR CHATS
+          // BOTÃO DE RECARREGAR CHATS
           IconButton(
             icon: _isLoading
                 ? SizedBox(
@@ -666,7 +666,7 @@ class _ChatListPageState extends State<ChatListPage>
     );
   }
 
-  // ✅ CHATS TAB COM DADOS REAIS
+  // CHATS TAB COM DADOS REAIS
   Widget _buildChatsTab() {
     final filteredChats = _getFilteredChats();
 
@@ -681,7 +681,7 @@ class _ChatListPageState extends State<ChatListPage>
     );
   }
 
-  // ✅ ITEM DE CHAT REAL
+  // ITEM DE CHAT REAL
   Widget _buildRealChatItem(ChatContact chat) {
     return Container(
       decoration: BoxDecoration(
@@ -740,10 +740,10 @@ class _ChatListPageState extends State<ChatListPage>
             '👆 Clicado no chat: ${chat.name} (Unread: ${chat.unreadCount})',
           );
 
-          // ✅✅✅ MARCAR COMO LIDO ANTES DE ABRIR O CHAT
+          // MARCAR COMO LIDO ANTES DE ABRIR O CHAT
           //ChatService.markChatAsRead(chat.contactId);
 
-          // ✅ CRIAR CONTATO TEMPORÁRIO PARA NAVEGAÇÃO
+          // CRIAR CONTATO TEMPORÁRIO PARA NAVEGAÇÃO
           final contact = Contact()
             ..displayName = chat.name
             ..phones = [Phone(chat.phoneNumber ?? '')]
@@ -762,7 +762,7 @@ class _ChatListPageState extends State<ChatListPage>
     );
   }
 
-  // ✅ FILTRAR CHATS POR PESQUISA
+  // FILTRAR CHATS POR PESQUISA
   List<ChatContact> _getFilteredChats() {
     if (_searchQuery.isEmpty) return _chats;
 
@@ -772,7 +772,7 @@ class _ChatListPageState extends State<ChatListPage>
     }).toList();
   }
 
-  // ✅ ESTADO VAZIO PARA CHATS
+  // ESTADO VAZIO PARA CHATS
   Widget _buildEmptyChatsState() {
     return Center(
       child: Column(
@@ -804,7 +804,7 @@ class _ChatListPageState extends State<ChatListPage>
     );
   }
 
-  // ✅ FORMATAR HORA
+  // FORMATAR HORA
   String _formatTime(DateTime timestamp) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);

@@ -7,10 +7,10 @@
 -export([
     verify_firebase_token/1,
     get_or_create_user/2,
-    get_or_create_user/3, %% ✅✅✅ NOVO: Versão com nome do usuário
+    get_or_create_user/3, %% Versão com nome do usuário
     create_session_token/1,
     select_or_insert_user/3,
-    select_or_insert_user/4, %% ✅✅✅ NOVO: Versão com nome do usuário
+    select_or_insert_user/4, %% Versão com nome do usuário
     maybe_update_firebase_uid/3,
     %% Multi-device / Refresh logic
     create_session_for_user/3,
@@ -66,7 +66,7 @@ get_or_create_user(Phone, FirebaseUid) ->
         select_or_insert_user(Conn, Phone, FirebaseUid)
     end).
 
-%% ✅✅✅ NOVO: Versão com nome do usuário
+%% Versão com nome do usuário
 get_or_create_user(Phone, FirebaseUid, UserName) ->
     ?LOG_INFO("🔍 Getting or creating user for phone: ~s, name: ~p", [Phone, UserName]),
     db_util:with_connection(fun(Conn) ->
@@ -85,7 +85,7 @@ select_or_insert_user(Conn, Phone, FirebaseUid) ->
             _ = epgsql:equery(Conn, "UPDATE users SET last_login = now() WHERE id = $1", [Id]),
             {ok, #{id => Id, name => Name, phone => PhoneDb, is_active => IsActive, profile_picture => ProfilePic}};
         {ok, _, []} ->
-            %% ✅✅✅ CORREÇÃO DEFINITIVA: Sem caracteres especiais
+            %% CORREÇÃO DEFINITIVA: Sem caracteres especiais
             SqlIns = "INSERT INTO users (name, phone, is_active, created_at, firebase_uid)
                       VALUES ($1, $2, true, now(), $3)
                       RETURNING id, name, phone, is_active",
@@ -98,7 +98,7 @@ select_or_insert_user(Conn, Phone, FirebaseUid) ->
         Err -> {error, {select_failed, Err}}
     end.
 
-%% ✅✅✅ NOVO: Versão com nome do usuário
+%% Versão com nome do usuário
 select_or_insert_user(Conn, Phone, FirebaseUid, UserName) ->
     PhoneBin = ensure_binary_utf8(Phone),
     FirebaseUidBin = ensure_binary_utf8(FirebaseUid),
@@ -115,12 +115,12 @@ select_or_insert_user(Conn, Phone, FirebaseUid, UserName) ->
     SqlSel = "SELECT id, name, phone, is_active, profile_picture FROM users WHERE phone = $1",
     case epgsql:equery(Conn, SqlSel, [PhoneBin]) of
         {ok, _, [Row | _]} ->
-            %% ✅✅✅ Usuário existente: atualizar nome se fornecido e diferente
+            %% Usuário existente: atualizar nome se fornecido e diferente
             {Id, NameFromDb, PhoneDb, IsActive, ProfilePic} = Row,
             _ = maybe_update_firebase_uid(Conn, Id, FirebaseUidBin),
             _ = epgsql:equery(Conn, "UPDATE users SET last_login = now() WHERE id = $1", [Id]),
             
-            %% ✅✅✅ Atualizar nome se fornecido e diferente do atual
+            %% Atualizar nome se fornecido e diferente do atual
             case UserName of
                 undefined -> ok; %% Não atualizar se não fornecido
                 null -> ok; %% Não atualizar se null
@@ -133,7 +133,7 @@ select_or_insert_user(Conn, Phone, FirebaseUid, UserName) ->
             {ok, #{id => Id, name => NameToUse, phone => PhoneDb, is_active => IsActive, profile_picture => ProfilePic}};
             
         {ok, _, []} ->
-            %% ✅✅✅ Usuário novo: criar com nome fornecido
+            %% Usuário novo: criar com nome fornecido
             SqlIns = "INSERT INTO users (name, phone, is_active, created_at, firebase_uid)
                       VALUES ($1, $2, true, now(), $3)
                       RETURNING id, name, phone, is_active",
@@ -168,7 +168,7 @@ create_session_token(UserMap) ->
             Iat = erlang:system_time(second),
             Exp = Iat + 31536000,  % 365 dias
             
-            %% ✅✅✅ CORREÇÃO: Incluir session_id nas claims
+            %% CORREÇÃO: Incluir session_id nas claims
             BaseClaims = #{
                 <<"user_id">> => ensure_binary_utf8(maps:get(id, UserMap, <<"unknown">>)),
                 <<"phone">>   => ensure_binary_utf8(maps:get(phone, UserMap, <<"unknown">>)),
@@ -177,7 +177,7 @@ create_session_token(UserMap) ->
                 <<"exp">>     => Exp
             },
             
-            %% ✅ Adicionar session_id se estiver presente no UserMap
+            %% Adicionar session_id se estiver presente no UserMap
             Claims = case maps:get(session_id, UserMap, undefined) of
                 undefined -> BaseClaims;
                 SessionId -> BaseClaims#{<<"session_id">> => ensure_binary_utf8(SessionId)}
@@ -246,7 +246,7 @@ revoke_other_sessions(UserId, KeepId) ->
         KeepIdInt = safe_to_integer(KeepId),
         
         db_util:with_connection(fun(Conn) ->
-            %% ✅✅✅ VERIFICAÇÃO EXTRA: Confirmar que a sessão a ser mantida pertence ao usuário
+            %% VERIFICAÇÃO EXTRA: Confirmar que a sessão a ser mantida pertence ao usuário
             SqlVerify = "SELECT user_id FROM sessions WHERE id = $1",
             case epgsql:equery(Conn, SqlVerify, [KeepIdInt]) of
                 {ok, _, [{SessionUserId}]} when SessionUserId =:= UserIdInt ->
@@ -295,7 +295,7 @@ revoke_session_by_token(RefreshPlain) ->
     Hash = crypto:hash(sha256, RefreshPlain),
     db_util:with_connection(fun(Conn) ->
         case epgsql:equery(Conn, "UPDATE sessions SET revoked=true WHERE refresh_token_hash=$1", [Hash]) of
-            {ok, Count} ->  % ✅ CORREÇÃO: {ok, Count} em vez de {ok, _, Count}
+            {ok, Count} ->  % CORREÇÃO: {ok, Count} em vez de {ok, _, Count}
                 ?LOG_INFO("✅ Revoked ~p sessions by token", [Count]),
                 ok;
             {error, Reason} ->
