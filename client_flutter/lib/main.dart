@@ -56,21 +56,20 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
     if (state == AppLifecycleState.paused) {
       // 🌑 App em background:
-      // - Enviar presença "offline" para que os outros vejam que saí
-      // - MAS NÃO DESCONECTAR O WEBSOCKET! Assim recebo mensagens e envio Ack.
-      print('🌑 App em Background -> Enviando presença offline (mantendo conexão)');
+      // - Enviar presença "offline"
+      // - Desconectar WebSocket para economizar bateria e evitar conflitos
+      print('🌑 App em Background -> Enviando presença offline e desconectando');
       ChatService.sendPresence('offline');
+      ChatService.disconnect();
     } else if (state == AppLifecycleState.resumed) {
       // ☀️ App em foreground:
+      // - Reconectar WebSocket
       // - Enviar presença "online"
-      print('☀️ App em Foreground -> Enviando presença online');
-      ChatService.sendPresence('online');
-      
-      // Opcional: Verificar conexão se caiu
-      if (!ChatService.isConnected) {
-         print('⚠️ WebSocket desconectado ao voltar. Tentando reconectar...');
-         ChatService.connect();
-      }
+      print('☀️ App em Foreground -> Reconectando e enviando presença online');
+      // Primeiro conectar (se necessário), depois enviar presença
+      ChatService.connect().then((_) {
+         ChatService.sendPresence('online');
+      });
     }
   }
 
