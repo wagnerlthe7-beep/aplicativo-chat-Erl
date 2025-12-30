@@ -117,9 +117,8 @@ init([]) ->
 
 handle_call({get_user_status, UserId}, _From, State) ->
     case ets:lookup(user_presence, UserId) of
-        [#user_presence{is_connected = true, last_heartbeat = Heartbeat, ws_pid = WsPid}] ->
-            Now = erlang:system_time(second),
-            %% ✅ Verificar se WebSocket ainda está vivo
+        [#user_presence{is_connected = true, ws_pid = WsPid}] ->
+            %% ✅ VERIFICAÇÃO MELHORADA: Priorizar WebSocket vivo sobre heartbeat
             case WsPid of
                 undefined ->
                     %% Sem WebSocket - offline
@@ -132,15 +131,10 @@ handle_call({get_user_status, UserId}, _From, State) ->
                 Pid when is_pid(Pid) ->
                     case is_process_alive(Pid) of
                         true ->
-                            %% ✅ WebSocket está vivo - verificar heartbeat
-                            case (Now - Heartbeat) < 90 of
-                                true ->
-                                    {reply, {ok, online, null}, State};
-                                false ->
-                                    %% Heartbeat expirado mas WebSocket vivo (background)
-                                    %% Retornar offline SEM last_seen (não deve mostrar nada)
-                                    {reply, {ok, offline, null}, State}
-                            end;
+                            %% ✅ WebSocket está vivo - considerar ONLINE mesmo com heartbeat antigo
+                            %% (app pode estar em background/minimizada)
+                            io:format("   📱 WebSocket vivo para ~p - considerando ONLINE (app可能在background)~n", [UserId]),
+                            {reply, {ok, online, null}, State};
                         false ->
                             %% WebSocket morto - offline com last_seen
                             case get_last_seen_internal(UserId) of
@@ -201,7 +195,7 @@ handle_cast({user_online, UserId, WsPid}, State) ->
         _ -> false
     end,
     
-    %% ✅ ATUALIZAR como CONECTADO
+    %% ✅ ATUALIZAR como CONECTADO com timestamp de "visto recentemente"
     ets:insert(user_presence, #user_presence{
         user_id = UserId,
         ws_pid = WsPid,
@@ -222,18 +216,18 @@ handle_cast({user_online, UserId, WsPid}, State) ->
     {noreply, State};
 
 handle_cast({user_offline, UserId}, State) ->
-    %% FORÇAR offline imediato (evita depender de is_process_alive)
+    %% FORÇAR offline imediato com timestamp atual para grace period
     Now = erlang:system_time(second),
 
     ets:insert(user_presence, #user_presence{
         user_id = UserId,
         ws_pid = undefined,
-        last_heartbeat = Now,
+        last_heartbeat = Now,  % Timestamp atual para grace period
         is_connected = false
     }),
 
     save_last_seen(UserId, Now),
-    io:format("🔌🔌🔌 Usuário ~p ficou OFFLINE (forçado)~n", [UserId]),
+    io:format("🔌🔌🔌 Usuário ~p ficou OFFLINE (forçado) - Grace period iniciado~n", [UserId]),
     broadcast_presence_change(UserId, offline, Now),
 
     {noreply, State};

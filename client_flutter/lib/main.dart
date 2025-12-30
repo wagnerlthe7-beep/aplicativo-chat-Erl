@@ -8,6 +8,7 @@ import 'name_input_page.dart';
 import 'permissions_page.dart';
 import 'chat_list_page.dart';
 import 'chat_service.dart'; // Import necessário
+import 'websocket_foreground_service.dart'; // Foreground service
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,6 +18,10 @@ void main() async {
   try {
     await Firebase.initializeApp();
     print('✅ Firebase inicializado');
+
+    // ✅ INICIALIZAR FOREGROUND SERVICE
+    await WebSocketForegroundService.initialize();
+    print('✅ Foreground Service inicializado');
 
     // ✅ INICIALIZAR SISTEMA DE CHATS
     //await ChatService.initializeChatList();
@@ -36,17 +41,21 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+  final AppLifecycleManager _lifecycleManager = AppLifecycleManager();
+
   @override
   void initState() {
     super.initState();
-    // ✅ Registrar observador de ciclo de vida
+    // ✅ Registrar observador de ciclo de vida E gerenciador de foreground service
     WidgetsBinding.instance.addObserver(this);
+    _lifecycleManager.initialize();
   }
 
   @override
   void dispose() {
-    // ✅ Remover observador
+    // ✅ Remover observador e limpar gerenciador
     WidgetsBinding.instance.removeObserver(this);
+    _lifecycleManager.dispose();
     super.dispose();
   }
 
@@ -54,23 +63,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     print('🔄 App Lifecycle State changed to: $state');
 
-    if (state == AppLifecycleState.paused) {
-      // 🌑 App em background:
-      // - Enviar presença "offline"
-      // - Desconectar WebSocket para economizar bateria e evitar conflitos
-      print('🌑 App em Background -> Enviando presença offline e desconectando');
-      ChatService.sendPresence('offline');
-      ChatService.disconnect();
-    } else if (state == AppLifecycleState.resumed) {
-      // ☀️ App em foreground:
-      // - Reconectar WebSocket
-      // - Enviar presença "online"
-      print('☀️ App em Foreground -> Reconectando e enviando presença online');
-      // Primeiro conectar (se necessário), depois enviar presença
-      ChatService.connect().then((_) {
-         ChatService.sendPresence('online');
-      });
-    }
+    // Delegar para o AppLifecycleManager do foreground service
+    // Ele vai cuidar de iniciar/parar o serviço automaticamente
   }
 
   @override

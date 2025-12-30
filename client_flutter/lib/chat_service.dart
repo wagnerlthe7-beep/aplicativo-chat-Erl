@@ -892,24 +892,50 @@ class ChatService {
     print('🔌 WebSocket disconnected manually');
   }
 
-  // ✅ SISTEMA DE HEARTBEAT
+  // ✅ SISTEMA DE HEARTBEAT - OTIMIZADO PARA BACKGROUND
   static void _startHeartbeat() {
     _stopHeartbeat(); // Garantir que não há múltiplos timers
 
-    // Enviar heartbeat a cada 25 segundos
-    _heartbeatTimer = Timer.periodic(Duration(seconds: 25), (timer) {
+    // Enviar heartbeat a cada 20 segundos (mais frequente para garantir em background)
+    _heartbeatTimer = Timer.periodic(Duration(seconds: 20), (timer) {
       if (_channel != null) {
         try {
           final heartbeatMsg = json.encode({'type': 'heartbeat'});
           _channel!.sink.add(heartbeatMsg);
-          print('💓 Heartbeat enviado');
+          print('💓 Heartbeat enviado (background/foreground)');
         } catch (e) {
           print('❌ Erro ao enviar heartbeat: $e');
+          // Se falhar, tentar reconectar
+          if (!_isManualDisconnect) {
+            print('🔄 Tentando reconectar após falha de heartbeat...');
+            connect();
+          }
         }
       } else {
+        print('💓 WebSocket null, parando heartbeat');
         _stopHeartbeat();
       }
     });
+  }
+
+  // ✅ ENVIAR HEARTBEAT MANUALMENTE (para background manager)
+  static Future<bool> sendHeartbeat() async {
+    if (_channel == null) return false;
+
+    try {
+      final heartbeatMsg = json.encode({'type': 'heartbeat'});
+      _channel!.sink.add(heartbeatMsg);
+      print('💓 Heartbeat enviado manualmente');
+      return true;
+    } catch (e) {
+      print('❌ Erro ao enviar heartbeat manual: $e');
+      return false;
+    }
+  }
+
+  // ✅ VERIFICAR SE ESTÁ CONECTADO
+  static bool isWebSocketConnected() {
+    return _channel != null;
   }
 
   // ✅ ENVIAR PRESENÇA MANUALMENTE (Online/Offline)
