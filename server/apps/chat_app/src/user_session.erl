@@ -1,7 +1,7 @@
 -module(user_session).
 -behaviour(gen_server).
 
--export([start_link/1, user_online/2, user_offline/1, get_status/1, send_message/3, get_online_users/0]).
+-export([start_link/1, user_online/2, user_offline/1, get_status/1, send_message/3, get_online_users/0, is_websocket_alive/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(state, {
@@ -45,6 +45,18 @@ send_message(FromId, ToId, Message) ->
             catch
                 exit:{timeout, _} -> {error, timeout};
                 exit:{noproc, _} -> {error, user_offline}
+            end
+    end.
+
+is_websocket_alive(UserId) ->
+    case whereis(get_process_name(UserId)) of
+        undefined -> false;
+        Pid ->
+            try gen_server:call(Pid, get_websocket_pid, 3000) of
+                WsPid when is_pid(WsPid) -> is_process_alive(WsPid);
+                _ -> false
+            catch
+                _ -> false
             end
     end.
 
@@ -92,11 +104,14 @@ handle_call({send_message, FromId, Message}, _From, State = #state{ws_pid = WsPi
     {reply, ok, State};
 
 handle_call({send_message, _FromId, _Message}, _From, State = #state{status = offline}) ->
-    io:format("💾 Usuário ~p offline (status=offline) - retornando erro~n", [State#state.user_id]),
+    io:format(" Usuário ~p offline (status=offline) - retornando erro~n", [State#state.user_id]),
     {reply, {error, user_offline}, State};
 
 handle_call(get_status, _From, State) ->
-    {reply, {ok, State#state.status}, State}.
+    {reply, {ok, State#state.status}, State};
+
+handle_call(get_websocket_pid, _From, State) ->
+    {reply, State#state.ws_pid, State}.
 
 handle_info(_Info, State) ->
     {noreply, State}.
