@@ -52,6 +52,9 @@ dependencies:
   permission_handler: ^11.0.1
   image_picker: ^1.0.4
   flutter_foreground_task: ^9.2.0
+  # Notificações locais
+  flutter_local_notifications: ^19.5.0
+  timezone: ^0.10.0
   #contacts_service: ^0.6.3
 
   # The following adds the Cupertino Icons font to your application.

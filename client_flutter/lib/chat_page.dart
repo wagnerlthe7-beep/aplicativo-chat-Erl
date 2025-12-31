@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:uuid/uuid.dart';
-import 'chat_service.dart';
-import 'auth_service.dart';
+import 'package:image_picker/image_picker.dart';
 import 'dart:async';
+import 'dart:io';
+import 'auth_service.dart';
+import 'chat_service.dart';
+import 'notification_service.dart';
 
 class ChatPage extends StatefulWidget {
   final Contact contact;
@@ -16,10 +19,11 @@ class ChatPage extends StatefulWidget {
   _ChatPageState createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final TextEditingController _messageController = TextEditingController();
   final List<ChatMessage> _messages = [];
   final ScrollController _scrollController = ScrollController();
+  final ImagePicker _imagePicker = ImagePicker();
 
   String? _currentUserId;
   bool _isConnected = false;
@@ -31,6 +35,164 @@ class _ChatPageState extends State<ChatPage> {
   final Uuid _uuid = Uuid();
   bool _hasMarkedAsRead = false;
   Timer? _markAsReadTimer;
+  bool _isAppInBackground = false; // Nova variável para controlar background
+
+  // Controles para áudio e emojis
+  bool _isRecording = false;
+  bool _showEmojiPicker = false;
+
+  // Controles para edição e seleção de mensagens
+  String? _selectedMessageId;
+  String? _editingMessageId;
+  TextEditingController _editController = TextEditingController();
+
+  // Lista de emojis comuns
+  static const List<String> _commonEmojis = [
+    '😀',
+    '😃',
+    '😄',
+    '😁',
+    '😅',
+    '😂',
+    '🤣',
+    '😊',
+    '😇',
+    '🙂',
+    '🙃',
+    '😉',
+    '😌',
+    '😍',
+    '🥰',
+    '😘',
+    '😗',
+    '😙',
+    '😚',
+    '😋',
+    '😛',
+    '😜',
+    '🤪',
+    '😝',
+    '🤑',
+    '🤗',
+    '🤭',
+    '🤫',
+    '🤥�',
+    '😶',
+    '😐',
+    '😑',
+    '😬',
+    '🙄',
+    '😯',
+    '😦',
+    '😧',
+    '😮',
+    '😲',
+    '🥱',
+    '😴',
+    '🤤',
+    '😪',
+    '😵',
+    '🤐',
+    '🥴',
+    '🤢',
+    '🤮',
+    '🤧',
+    '😷',
+    '🤒',
+    '🤕',
+    '🤥',
+    '🤡',
+    '👍',
+    '👎',
+    '👌',
+    '✌️',
+    '🤞',
+    '🤟',
+    '🤘',
+    '🤙',
+    '👈',
+    '👉',
+    '👆',
+    '🖕',
+    '👇',
+    '☝️',
+    '✋',
+    '🤚',
+    '🖐',
+    '🖖',
+    '👋',
+    '🤙',
+    '💪',
+    '🦾',
+    '🦿',
+    '🦶',
+    '🦵',
+    '🦴',
+    '🦷',
+    '❤️',
+    '🧡',
+    '💛',
+    '💚',
+    '💙',
+    '💜',
+    '🖤',
+    '🤍',
+    '🤎',
+    '💔',
+    '❣️',
+    '💕',
+    '💞',
+    '💓',
+    '💗',
+    '💖',
+    '💘',
+    '💝',
+    '🎉',
+    '🎊',
+    '🎈',
+    '🎁',
+    '🎀',
+    '🎗',
+    '🎟',
+    '🎫',
+    '🎖',
+    '🏆',
+    '🥇',
+    '🥈',
+    '🥉',
+    '⚽',
+    '🏀',
+    '🏈',
+    '⚾',
+    '🎾',
+    '🎱',
+    '🏐',
+    '🏓',
+    '🥏',
+    '🥅',
+    '🎳',
+    '🏏',
+    '🎯',
+    '🎪',
+    '🎨',
+    '🖌',
+    '🖍',
+    '🖌',
+    '🖍',
+    '📝',
+    '✏️',
+    '✒️',
+    '🖊',
+    '🖋',
+    '🖌',
+    '🖍',
+    '📎',
+    '📌',
+    '📍',
+    '📎',
+    '📌',
+    '📍',
+  ];
 
   // Status de presença do contato
   String _contactPresenceStatus = 'offline'; // 'online', 'offline'
@@ -40,6 +202,9 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    // Registrar observer para detectar background
+    WidgetsBinding.instance.addObserver(this);
+
     // Informar ao ChatService qual chat está ativo (para controle de unread)
     ChatService.setActiveChat(widget.remoteUserId);
     _initializeChat();
@@ -68,6 +233,9 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    // Remover observer
+    WidgetsBinding.instance.removeObserver(this);
+
     _markAsReadTimer?.cancel();
     _presenceOnlineTimer?.cancel();
     _presenceOfflineTimer?.cancel();
@@ -87,7 +255,37 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
-  // Carregar status de presença do contato
+  // Detectar mudanças no ciclo de vida da app
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    print('🔄 ChatPage Lifecycle State changed to: $state');
+
+    switch (state) {
+      case AppLifecycleState.paused:
+        print('🌑 App foi para background - resetando marcação de lido');
+        _isAppInBackground = true;
+        // Resetar para permitir marcar como lido quando voltar
+        _hasMarkedAsRead = false;
+        break;
+      case AppLifecycleState.resumed:
+        print('☀️ App voltou para foreground - marcando mensagens como lidas');
+        _isAppInBackground = false;
+        // Se voltou para foreground, marcar mensagens como lidas imediatamente
+        if (!_hasMarkedAsRead) {
+          print('📖 Marcando mensagens como lidas ao voltar para foreground');
+          _markChatAsRead();
+          _hasMarkedAsRead = true;
+        }
+        break;
+      case AppLifecycleState.detached:
+        print('💀 App sendo destruída');
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Carregar status de presença do contacto
   Future<void> _loadContactPresence() async {
     try {
       print('🔍 Buscando presença para: ${widget.remoteUserId}');
@@ -350,6 +548,7 @@ class _ChatPageState extends State<ChatPage> {
         (fromUserId == _currentUserId && toUserId == widget.remoteUserId);
 
     if (isMessageForThisChat && mounted) {
+      print('📨 Mensagem para este chat: $message');
       final isFromMe = fromUserId == _currentUserId;
       final dbMessageId = message['db_message_id']?.toString();
 
@@ -393,11 +592,20 @@ class _ChatPageState extends State<ChatPage> {
       }
 
       final isPendingMessage = _pendingMessageIds.contains(messageId ?? '');
-      final isDuplicate = _messages.any(
-        (msg) => msg.text == content && msg.isMe == isFromMe,
-      );
+      print('   - isPendingMessage: $isPendingMessage');
+      print('   - messageId: $messageId');
 
-      if (!isDuplicate && !isPendingMessage) {
+      // ✅ VERIFICAÇÃO MELHORADA: só bloqueia se o ID já existe
+      final existingMessage = _messages.any(
+        (msg) =>
+            (messageId != null && msg.id == messageId) ||
+            (dbMessageId != null && msg.id == dbMessageId),
+      );
+      print('   - existingMessage: $existingMessage');
+      print('   - current messages count: ${_messages.length}');
+
+      if (!existingMessage && !isPendingMessage) {
+        print('✅ ADICIONANDO MENSAGEM NOVA');
         final serverTimestamp = _parseRealTimeMessageTimestamp(message);
 
         // Se vier o DB ID, use-o preferencialmente
@@ -413,6 +621,9 @@ class _ChatPageState extends State<ChatPage> {
               status: message['status']?.toString() ?? 'sent',
             ),
           );
+
+          // ✅ ORDENAR MENSAGENS POR TIMESTAMP APÓS ADICIONAR
+          _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
         });
         _scrollToBottom();
 
@@ -420,11 +631,44 @@ class _ChatPageState extends State<ChatPage> {
           _pendingMessageIds.remove(messageId);
         } else if (!isFromMe) {
           // Mensagem recebida enquanto o chat está aberto:
-          // marcar como lida imediatamente para não aumentar unread na lista.
-          ChatService.markChatAsReadImmediate(widget.remoteUserId);
-          ChatService.markMessagesRead(widget.remoteUserId);
+          // marcar como lida APENAS se app está em foreground
+          if (!_isAppInBackground) {
+            print('📖 Mensagem recebida em foreground - marcando como lida');
+            ChatService.markChatAsReadImmediate(widget.remoteUserId);
+            ChatService.markMessagesRead(widget.remoteUserId);
+          } else {
+            print(
+              '🌑 Mensagem recebida em background - NÃO marcando como lida',
+            );
+
+            // 🔔 ENVIAR NOTIFICAÇÃO QUANDO EM BACKGROUND
+            _sendNewMessageNotification(content);
+          }
         }
+      } else {
+        print(
+          '❌ MENSAGEM BLOQUEADA: existingMessage=$existingMessage, isPendingMessage=$isPendingMessage',
+        );
       }
+    } else {
+      print('❌ Mensagem não é para este chat');
+    }
+  }
+
+  // 🔔 ENVIAR NOTIFICAÇÃO DE NOVA MENSAGEM
+  void _sendNewMessageNotification(String messageContent) async {
+    try {
+      final senderName = _getContactName();
+
+      await NotificationService().showNewMessageNotification(
+        senderName: senderName,
+        messageContent: messageContent,
+        chatId: widget.remoteUserId,
+      );
+
+      print('🔔 Notificação enviada para: $senderName');
+    } catch (e) {
+      print('❌ Erro ao enviar notificação: $e');
     }
   }
 
@@ -588,6 +832,9 @@ class _ChatPageState extends State<ChatPage> {
           status: 'sent', // ícone de enviado só se realmente for ao servidor
         ),
       );
+
+      // ✅ ORDENAR MENSAGENS POR TIMESTAMP APÓS ADICIONAR
+      _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
     });
 
     _messageController.clear();
@@ -893,64 +1140,390 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  Widget _buildMessageInput() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      color: Colors.grey[50],
-      child: Row(
-        children: [
-          IconButton(
-            icon: Icon(Icons.attach_file, color: Colors.grey[600]),
-            onPressed: () {},
-          ),
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(25),
-                border: Border.all(color: Colors.grey[300]!),
-              ),
+  // 🔔 MENU DE ANEXOS
+  void _showAttachmentMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header
+            Container(
+              padding: EdgeInsets.all(16),
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _messageController,
-                      decoration: const InputDecoration(
-                        hintText: 'Digite uma mensagem...',
-                        hintStyle: TextStyle(color: Colors.grey),
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                      ),
-                      onSubmitted: (_) => _sendMessage(),
-                    ),
+                  Text(
+                    'Anexar',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
                   ),
                   IconButton(
-                    icon: Icon(
-                      Icons.emoji_emotions_outlined,
-                      color: Colors.grey[600],
-                    ),
-                    onPressed: () {},
+                    icon: Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
             ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            decoration: BoxDecoration(
-              color: _isConnected ? Colors.green : Colors.grey,
-              shape: BoxShape.circle,
+            Divider(height: 1),
+
+            // Opções de anexo
+            Container(
+              padding: EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  // Galeria
+                  _buildAttachmentOption(
+                    icon: Icons.photo_library,
+                    label: 'Galeria',
+                    color: Colors.blue,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickFromGallery();
+                    },
+                  ),
+
+                  // Câmera
+                  _buildAttachmentOption(
+                    icon: Icons.camera_alt,
+                    label: 'Câmera',
+                    color: Colors.green,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickFromCamera();
+                    },
+                  ),
+
+                  // Documento
+                  _buildAttachmentOption(
+                    icon: Icons.insert_drive_file,
+                    label: 'Documento',
+                    color: Colors.orange,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickDocument();
+                    },
+                  ),
+
+                  // Arquivo de Áudio
+                  _buildAttachmentOption(
+                    icon: Icons.audio_file,
+                    label: 'Áudio',
+                    color: Colors.red,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickAudioFile();
+                    },
+                  ),
+                ],
+              ),
             ),
-            child: IconButton(
-              icon: const Icon(Icons.send, color: Colors.white),
-              onPressed: _isConnected ? _sendMessage : null,
-            ),
-          ),
-        ],
+
+            SizedBox(height: 20),
+          ],
+        ),
       ),
+    );
+  }
+
+  Widget _buildAttachmentOption({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 32, color: color),
+            SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey[700],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 📷 MÉTODOS PARA SELECIONAR ANEXOS
+  Future<void> _pickFromGallery() async {
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 80,
+      );
+
+      if (image != null) {
+        print('📷 Imagem selecionada da galeria: ${image.path}');
+        // TODO: Implementar envio de imagem
+        _showComingSoonSnackBar('Envio de imagens em breve!');
+      }
+    } catch (e) {
+      print('❌ Erro ao selecionar imagem da galeria: $e');
+    }
+  }
+
+  Future<void> _pickFromCamera() async {
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 80,
+      );
+
+      if (image != null) {
+        print('📷 Foto tirada com a câmera: ${image.path}');
+        // TODO: Implementar envio de imagem
+        _showComingSoonSnackBar('Envio de fotos em breve!');
+      }
+    } catch (e) {
+      print('❌ Erro ao tirar foto: $e');
+    }
+  }
+
+  Future<void> _pickDocument() async {
+    try {
+      // TODO: Implementar seleção de documentos
+      print('📄 Selecionar documento');
+      _showComingSoonSnackBar('Envio de documentos em breve!');
+    } catch (e) {
+      print('❌ Erro ao selecionar documento: $e');
+    }
+  }
+
+  Future<void> _pickAudioFile() async {
+    try {
+      // TODO: Implementar seleção de arquivos de áudio (MP3, etc)
+      print('🎵 Selecionar arquivo de áudio');
+      _showComingSoonSnackBar('Envio de arquivos de áudio em breve!');
+    } catch (e) {
+      print('❌ Erro ao selecionar arquivo de áudio: $e');
+    }
+  }
+
+  Future<void> _recordAudio() async {
+    try {
+      // TODO: Implementar gravação de mensagem de voz
+      print('🎤 Gravar mensagem de voz');
+      _showComingSoonSnackBar('Gravação de mensagem de voz em breve!');
+    } catch (e) {
+      print('❌ Erro ao gravar mensagem de voz: $e');
+    }
+  }
+
+  // 🎤 CONTROLES DE ÁUDIO E EMOJIS
+  void _toggleEmojiPicker() {
+    setState(() {
+      _showEmojiPicker = !_showEmojiPicker;
+    });
+  }
+
+  void _insertEmoji(String emoji) {
+    final text = _messageController.text;
+    final cursorPosition = _messageController.selection.baseOffset;
+
+    // Inserir emoji na posição do cursor
+    final newText =
+        text.substring(0, cursorPosition) +
+        emoji +
+        text.substring(cursorPosition);
+    _messageController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: cursorPosition + emoji.length),
+    );
+
+    // Fechar emoji picker após inserir
+    setState(() {
+      _showEmojiPicker = false;
+    });
+  }
+
+  void _toggleVoiceRecording() {
+    setState(() {
+      _isRecording = !_isRecording;
+    });
+
+    if (_isRecording) {
+      print('🎤 Iniciando gravação de mensagem de voz...');
+      // TODO: Implementar gravação real
+      _showComingSoonSnackBar('Gravação de mensagem de voz em breve!');
+    } else {
+      print('⏹️ Parando gravação de mensagem de voz');
+      // TODO: Parar gravação e enviar
+    }
+  }
+
+  void _showComingSoonSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.grey[700],
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Widget _buildMessageInput() {
+    return Column(
+      children: [
+        // Emoji Picker (mostra quando ativado)
+        if (_showEmojiPicker)
+          Container(
+            height: 250,
+            padding: EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border(top: BorderSide(color: Colors.grey[300]!)),
+            ),
+            child: Column(
+              children: [
+                // Header do emoji picker
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Emojis',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close),
+                      onPressed: _toggleEmojiPicker,
+                    ),
+                  ],
+                ),
+                Divider(height: 1),
+                // Grid de emojis simples
+                Expanded(
+                  child: GridView.builder(
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 8,
+                      childAspectRatio: 1.0,
+                    ),
+                    itemCount: _commonEmojis.length,
+                    itemBuilder: (context, index) {
+                      return GestureDetector(
+                        onTap: () {
+                          _insertEmoji(_commonEmojis[index]);
+                        },
+                        child: Container(
+                          alignment: Alignment.center,
+                          child: Text(
+                            _commonEmojis[index],
+                            style: TextStyle(fontSize: 24),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+        // Campo de mensagem
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: Colors.grey[50],
+          child: Row(
+            children: [
+              IconButton(
+                icon: Icon(Icons.attach_file, color: Colors.grey[600]),
+                onPressed: _showAttachmentMenu,
+              ),
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(25),
+                    border: Border.all(color: Colors.grey[300]!),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _messageController,
+                          decoration: const InputDecoration(
+                            hintText: 'Digite uma mensagem...',
+                            hintStyle: TextStyle(color: Colors.grey),
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 12,
+                            ),
+                          ),
+                          onChanged: (value) {
+                            // Atualizar UI quando usuário digita
+                            setState(() {});
+                          },
+                          onSubmitted: (_) => _sendMessage(),
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          Icons.emoji_emotions_outlined,
+                          color: Colors.grey[600],
+                        ),
+                        onPressed: _toggleEmojiPicker,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: _isConnected ? Colors.green : Colors.grey,
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: Icon(
+                    _messageController.text.trim().isEmpty
+                        ? (_isRecording ? Icons.stop : Icons.mic)
+                        : Icons.send,
+                    color: Colors.white,
+                  ),
+                  onPressed: _isConnected
+                      ? () {
+                          if (_messageController.text.trim().isEmpty) {
+                            _toggleVoiceRecording();
+                          } else {
+                            _sendMessage();
+                          }
+                        }
+                      : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 

@@ -9,6 +9,7 @@ import 'permissions_page.dart';
 import 'chat_list_page.dart';
 import 'chat_service.dart'; // Import necessário
 import 'websocket_foreground_service.dart'; // Foreground service
+import 'notification_service.dart'; // Serviço de notificações
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,6 +23,11 @@ void main() async {
     // ✅ INICIALIZAR FOREGROUND SERVICE
     await WebSocketForegroundService.initialize();
     print('✅ Foreground Service inicializado');
+
+    // ✅ INICIALIZAR SERVIÇO DE NOTIFICAÇÕES
+    await NotificationService().initialize();
+    await NotificationService().requestPermission();
+    print('✅ Serviço de notificações inicializado');
 
     // ✅ INICIALIZAR SISTEMA DE CHATS
     //await ChatService.initializeChatList();

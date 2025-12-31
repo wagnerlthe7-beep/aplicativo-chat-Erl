@@ -67,6 +67,7 @@ class ChatService {
       }
 
       final url = 'ws://10.0.2.2:4000/ws?token=$token';
+      //final url = 'ws://192.168.100.17:4000/ws?token=$token';
       _channel = WebSocketChannel.connect(Uri.parse(url));
 
       _channel!.stream.listen(
@@ -155,6 +156,9 @@ class ChatService {
       _activeChatContactId = null;
     }
   }
+
+  // ✅ Getter para obter o chat ativo
+  static String? get activeChatContactId => _activeChatContactId;
 
   static void _handleIncomingMessage(dynamic data) {
     try {
@@ -338,6 +342,7 @@ class ChatService {
 
       // ✅ ENDPOINT CORRETO: /api/users/:user_id (AGORA FUNCIONA)
       final url = Uri.parse('http://10.0.2.2:4000/api/users/$contactId');
+      //final url = Uri.parse('http://192.168.100.17:4000/api/users/$contactId');
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $accessToken',
@@ -653,6 +658,10 @@ class ChatService {
         'http://10.0.2.2:4000/api/messages/history/$currentUserId/$contactUserId',
       );
 
+      //final url = Uri.parse(
+      //  'http://192.168.100.17:4000/api/messages/history/$currentUserId/$contactUserId',
+      //);
+
       print('📨 Carregando histórico: $currentUserId -> $contactUserId');
 
       final accessToken = await _secureStorage.read(key: 'access_token');
@@ -806,6 +815,10 @@ class ChatService {
       final url = Uri.parse(
         'http://10.0.2.2:4000/api/messages/mark_read/$meId/$contactId',
       );
+      //final url = Uri.parse(
+      //  'http://192.168.100.17:4000/api/messages/mark_read/$meId/$contactId',
+      //);
+
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
@@ -982,6 +995,8 @@ class ChatService {
       }
 
       final url = Uri.parse('http://10.0.2.2:4000/api/presence/$userId');
+      //final url = Uri.parse('http://192.168.100.17:4000/api/presence/$userId');
+
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $accessToken',

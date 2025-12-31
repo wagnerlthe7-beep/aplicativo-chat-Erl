@@ -86,12 +86,12 @@ handle_cast(user_offline, State) ->
     io:format("🔌 User ~p is now offline~n", [State#state.user_id]),
     {noreply, State#state{ws_pid = undefined, status = offline}}.
 
-%% REMOVIDO ANTIGO HANDLE_CAST SEND_MESSAGE POIS AGORA É CALL
-
 handle_call({send_message, FromId, Message}, _From, State = #state{ws_pid = WsPid, status = online}) ->
     io:format("🎯🎯🎯 DEBUG USER_SESSION (CALL) 🎯🎯🎯~n", []),
     io:format("   FromId: ~p~n", [FromId]),
     io:format("   State UserId: ~p~n", [State#state.user_id]),
+    io:format("   WebSocket PID: ~p~n", [WsPid]),
+    io:format("   WebSocket Alive: ~p~n", [is_process_alive(WsPid)]),
     
     %% Adicionar remetente à mensagem se não existir
     EnhancedMessage = case maps:get(<<"from">>, Message, undefined) of
@@ -99,9 +99,16 @@ handle_call({send_message, FromId, Message}, _From, State = #state{ws_pid = WsPi
         _ -> Message
     end,
     
-    WsPid ! {send_message, EnhancedMessage},
-    io:format("📤 Enviando mensagem de ~p para ~p~n", [FromId, State#state.user_id]),
-    {reply, ok, State};
+    %% VERIFICAÇÃO CRÍTICA: WebSocket ainda está vivo?
+    case is_process_alive(WsPid) of
+        true ->
+            WsPid ! {send_message, EnhancedMessage},
+            io:format("📤 Enviando mensagem de ~p para ~p (WS vivo)~n", [FromId, State#state.user_id]),
+            {reply, ok, State};
+        false ->
+            io:format("❌ WebSocket morto para usuário ~p - retornando erro~n", [State#state.user_id]),
+            {reply, {error, user_offline}, State}
+    end;
 
 handle_call({send_message, _FromId, _Message}, _From, State = #state{status = offline}) ->
     io:format(" Usuário ~p offline (status=offline) - retornando erro~n", [State#state.user_id]),
