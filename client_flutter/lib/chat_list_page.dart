@@ -5,6 +5,7 @@ import 'auth_service.dart';
 import 'chat_page.dart';
 import 'chat_service.dart';
 import 'chat_model.dart';
+import 'notification_service.dart';
 import 'dart:async';
 import 'contacts_helper.dart';
 
@@ -24,6 +25,7 @@ class _ChatListPageState extends State<ChatListPage>
 
   // ✅ SISTEMA DE CHATS REAL
   StreamSubscription<List<ChatContact>>? _chatSubscription;
+  StreamSubscription<Map<String, dynamic>>? _messageSubscription;
   List<ChatContact> _chats = [];
 
   @override
@@ -39,9 +41,65 @@ class _ChatListPageState extends State<ChatListPage>
     _sessionTimer?.cancel();
     _chatRefreshTimer?.cancel();
     _chatSubscription?.cancel();
+    _messageSubscription?.cancel();
     _tabController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  // 🔔 TRATAR MENSAGENS GLOBAIS PARA NOTIFICAÇÕES
+  void _handleGlobalMessage(Map<String, dynamic> message) async {
+    final type = message['type']?.toString();
+
+    // Ignorar eventos de status (delivered, read)
+    if (type == 'message_delivered' || type == 'message_read') {
+      return;
+    }
+
+    final fromUserId = message['from']?.toString();
+    final toUserId = message['to']?.toString();
+    final content = message['content']?.toString() ?? '';
+
+    // Verificar se é uma mensagem recebida (não enviada por mim)
+    if (fromUserId != null && toUserId != null && content.isNotEmpty) {
+      final currentUserId = await AuthService.getCurrentUserId();
+
+      // Se eu sou o destinatário e não estou no chat do remetente
+      if (toUserId == currentUserId &&
+          ChatService.activeChatContactId != fromUserId) {
+        _sendNotificationForMessage(fromUserId, content);
+      }
+    }
+  }
+
+  // 🔔 ENVIAR NOTIFICAÇÃO DE MENSAGEM
+  void _sendNotificationForMessage(
+    String senderId,
+    String messageContent,
+  ) async {
+    try {
+      // Buscar informações do remetente
+      final senderChat = _chats.firstWhere(
+        (chat) => chat.contactId == senderId,
+        orElse: () => ChatContact(
+          contactId: senderId,
+          name: 'Desconhecido',
+          lastMessage: '',
+          lastMessageTime: DateTime.now(),
+          unreadCount: 0,
+        ),
+      );
+
+      await NotificationService().showNewMessageNotification(
+        senderName: senderChat.name,
+        messageContent: messageContent,
+        chatId: senderId,
+      );
+
+      print('🔔 Notificação enviada: ${senderChat.name} - $messageContent');
+    } catch (e) {
+      print('❌ Erro ao enviar notificação: $e');
+    }
   }
 
   // INICIALIZAR CHATS REAIS - CORRIGIDO
@@ -80,6 +138,11 @@ class _ChatListPageState extends State<ChatListPage>
           _chats = chats;
         });
       }
+    });
+
+    // 🔔 OUVIR MENSAGENS GLOBAIS PARA NOTIFICAÇÕES
+    _messageSubscription = ChatService.messageStream.listen((message) {
+      _handleGlobalMessage(message);
     });
   }
 
