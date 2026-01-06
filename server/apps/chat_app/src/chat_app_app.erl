@@ -48,6 +48,12 @@ start(_StartType, _StartArgs) ->
             {"/users/lookup", users_lookup_handler, []}, 
             {"/api/messages/history/:user_id/:contact_id", message_history_handler, []},
             {"/api/messages/mark_read/:user_id/:contact_id", message_mark_read_handler, []},
+            %% Rotas para operações avançadas de mensagens
+            {"/api/messages/:messageId/edit", message_operations_handler, edit},
+            {"/api/messages/:messageId/delete", message_operations_handler, delete},
+            {"/api/messages/:messageId/reply", message_operations_handler, reply},
+            {"/api/admin/messages/:messageId/recover", message_operations_handler, recover},
+            {"/api/messages/:messageId/history", message_operations_handler, history},
             {"/api/users/:user_id", user_info_handler, []},
             {"/api/presence/:user_id", presence_handler, []},  % ✅ NOVO: Status de presença
             {"/ws", ws_handler, []}  % Permite qualquer path após /ws   %% WebSocket handler

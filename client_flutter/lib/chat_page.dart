@@ -1,15 +1,51 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:uuid/uuid.dart';
 import 'package:image_picker/image_picker.dart';
-import 'dart:async';
-import 'dart:io';
-import 'auth_service.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'chat_model.dart';
 import 'chat_service.dart';
+import 'message_operations_service.dart';
+import 'auth_service.dart';
 import 'notification_service.dart';
 
+class ChatMessage {
+  final String id;
+  final String text;
+  final bool isMe;
+  final DateTime timestamp;
+  final String status; // 'sent', 'delivered', 'read'
+  final String? replyToId; // ID da mensagem respondida
+  final String? replyToText; // Texto da mensagem respondida
+  final String? replyToSenderName; // Nome de quem enviou a mensagem respondida
+  final String? replyToSenderId; // ID de quem enviou a mensagem respondida
+
+  ChatMessage({
+    required this.id,
+    required this.text,
+    required this.isMe,
+    required this.timestamp,
+    required this.status,
+    this.replyToId,
+    this.replyToText,
+    this.replyToSenderName,
+    this.replyToSenderId,
+  });
+}
+
+class MessageGroup {
+  final DateTime date;
+  final List<ChatMessage> messages;
+
+  MessageGroup({required this.date, required this.messages});
+}
+
 class ChatPage extends StatefulWidget {
-  final Contact contact;
+  final ChatContact contact;
   final String remoteUserId;
 
   const ChatPage({Key? key, required this.contact, required this.remoteUserId})
@@ -76,7 +112,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     '🤗',
     '🤭',
     '🤫',
-    '🤥�',
+    '🤥',
     '😶',
     '😐',
     '😑',
@@ -100,7 +136,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     '😷',
     '🤒',
     '🤕',
-    '🤥',
     '🤡',
     '👍',
     '👎',
@@ -121,7 +156,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     '🖐',
     '🖖',
     '👋',
-    '🤙',
     '💪',
     '🦾',
     '🦿',
@@ -177,18 +211,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     '🎨',
     '🖌',
     '🖍',
-    '🖌',
-    '🖍',
     '📝',
     '✏️',
     '✒️',
     '🖊',
     '🖋',
-    '🖌',
-    '🖍',
-    '📎',
-    '📌',
-    '📍',
     '📎',
     '📌',
     '📍',
@@ -427,6 +454,24 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void _handleIncomingMessage(Map<String, dynamic> message) {
     print('📨 RAW MESSAGE RECEIVED: $message'); // LOG DETALHADO
     final type = message['type']?.toString();
+    print('🔍 MESSAGE TYPE: $type'); // DEBUG DO TIPO
+
+    // ✅ ADICIONADO: Handlers para operações avançadas
+    switch (type) {
+      case 'message_edited':
+        _handleEditedMessage(message);
+        return;
+      case 'message_deleted':
+        _handleDeletedMessage(message);
+        return;
+      case 'message_reply':
+        print('🔍 ENTRANDO NO message_reply');
+        _handleReplyMessage(message);
+        return;
+      default:
+        print('🔍 MENSAGEM NORMAL - TIPO: $type');
+        break;
+    }
 
     // ✅ TRATAMENTO ROBUSTO DE STATUS (SENT -> DELIVERED -> READ)
     if (type == 'message_delivered' || type == 'message_read') {
@@ -606,6 +651,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
       if (!existingMessage && !isPendingMessage) {
         print('✅ ADICIONANDO MENSAGEM NOVA');
+        print('🔍 CAMPOS DE RESPOSTA NA MENSAGEM:');
+        print('   - reply_to_id: ${message['reply_to_id']}');
+        print('   - reply_to_text: ${message['reply_to_text']}');
+        print('   - reply_to_sender_name: ${message['reply_to_sender_name']}');
+
         final serverTimestamp = _parseRealTimeMessageTimestamp(message);
 
         // Se vier o DB ID, use-o preferencialmente
@@ -619,6 +669,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               isMe: isFromMe,
               timestamp: serverTimestamp,
               status: message['status']?.toString() ?? 'sent',
+              // ✅ INFORMAÇÕES DE RESPOSTA (SE HOUVER)
+              replyToId: message['reply_to_id']?.toString(),
+              replyToText: message['reply_to_text']?.toString(),
+              replyToSenderName: message['reply_to_sender_name']?.toString(),
+              replyToSenderId: message['reply_to_sender_id']?.toString(),
             ),
           );
 
@@ -655,6 +710,96 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
+  // ✅ NOVOS HANDLERS PARA WEBSOCKET
+
+  // Handler para mensagens editadas recebidas via WebSocket
+  void _handleEditedMessage(Map<String, dynamic> message) {
+    final messageId = message['message_id']?.toString();
+    final newContent = message['content']?.toString();
+
+    if (messageId != null && newContent != null) {
+      final index = _messages.indexWhere((msg) => msg.id == messageId);
+      if (index != -1) {
+        setState(() {
+          final oldMessage = _messages[index];
+          _messages[index] = ChatMessage(
+            id: oldMessage.id,
+            text: newContent,
+            isMe: oldMessage.isMe,
+            timestamp: oldMessage.timestamp,
+            status: 'edited',
+          );
+        });
+      }
+    }
+  }
+
+  // Handler para mensagens deletadas recebidas via WebSocket
+  void _handleDeletedMessage(Map<String, dynamic> message) {
+    final messageId = message['message_id']?.toString();
+
+    if (messageId != null) {
+      setState(() {
+        _messages.removeWhere((msg) => msg.id == messageId);
+      });
+    }
+  }
+
+  // Handler para mensagens de resposta recebidas via WebSocket
+  void _handleReplyMessage(Map<String, dynamic> message) {
+    print('🔍 DEBUG _handleReplyMessage: ${message.keys}');
+    print('🔍 reply_to_id: ${message['reply_to_id']}');
+    print('🔍 reply_to_text: ${message['reply_to_text']}');
+    print('🔍 reply_to_sender_name: ${message['reply_to_sender_name']}');
+
+    final replyContent = message['content']?.toString();
+    final senderId = message['sender_id']?.toString();
+    final originalId = message['original_message_id']?.toString();
+
+    if (replyContent != null && senderId != null) {
+      final isFromMe = senderId == _currentUserId;
+      final serverTimestamp = _parseRealTimeMessageTimestamp(message);
+
+      // ✅ ENCONTRAR MENSAGEM ORIGINAL PARA OBTER TEXTO E NOME
+      String? originalText;
+      String? originalSenderName;
+
+      final originalMessage = _messages.firstWhere(
+        (msg) => msg.id == originalId,
+        orElse: () => ChatMessage(
+          id: originalId ?? '',
+          text: 'Mensagem não encontrada',
+          isMe: false,
+          timestamp: DateTime.now(),
+          status: 'sent',
+        ),
+      );
+
+      originalText = originalMessage.text;
+      originalSenderName = originalMessage.isMe ? 'Eu' : widget.contact.name;
+
+      final replyMessage = ChatMessage(
+        id: message['message_id']?.toString() ?? _uuid.v4(),
+        text: replyContent,
+        isMe: isFromMe,
+        timestamp: serverTimestamp,
+        status: message['status']?.toString() ?? 'sent',
+        // ✅ INFORMAÇÕES DA RESPOSTA
+        replyToId: originalId,
+        replyToText: originalText,
+        replyToSenderName: originalSenderName,
+        replyToSenderId: message['reply_to_sender_id']?.toString(),
+      );
+
+      setState(() {
+        _messages.add(replyMessage);
+        _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      });
+
+      _scrollToBottom();
+    }
+  }
+
   // 🔔 ENVIAR NOTIFICAÇÃO DE NOVA MENSAGEM
   void _sendNewMessageNotification(String messageContent) async {
     try {
@@ -673,14 +818,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   String _getContactName() {
-    return widget.contact.displayName.isEmpty
-        ? (_getContactPhone() ?? 'Sem nome')
-        : widget.contact.displayName;
+    return widget.contact.name.isNotEmpty
+        ? widget.contact.name
+        : (_getContactPhone() ?? 'Sem nome');
   }
 
   String? _getContactPhone() {
-    return widget.contact.phones.isNotEmpty
-        ? widget.contact.phones.first.number
+    return widget.contact.phoneNumber?.isNotEmpty == true
+        ? widget.contact.phoneNumber
         : null;
   }
 
@@ -726,6 +871,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 isMe: _isMessageFromMe(msg),
                 timestamp: serverTimestamp,
                 status: (msg['status']?.toString() ?? 'sent'),
+                // ✅ INFORMAÇÕES DE RESPOSTA DO HISTÓRICO
+                replyToId: msg['reply_to_id']?.toString(),
+                replyToText: msg['reply_to_text']?.toString(),
+                replyToSenderName: msg['reply_to_sender_name']?.toString(),
               );
             }).toList(),
           );
@@ -1377,6 +1526,378 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
+  // 📝 MÉTODOS AUXILIARES
+  String _getReplyPreviewText(String messageId) {
+    try {
+      final message = _messages.firstWhere((msg) => msg.id == messageId);
+
+      // Limitar texto para não quebrar layout
+      String preview = message.text;
+      if (preview.length > 30) {
+        preview = preview.substring(0, 27) + '...';
+      }
+
+      return preview;
+    } catch (e) {
+      return 'mensagem não encontrada';
+    }
+  }
+
+  // 📝 MÉTODOS PARA GERENCIAR MENSAGENS
+  void _showMessageOptions(ChatMessage message) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header
+            Container(
+              padding: EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Opções da Mensagem',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1),
+
+            // ✅ ADICIONADO: Verificação de tempo para edição
+            if (message.isMe) ...[
+              if (_canEditMessage(message)) // ✅ VERIFICAÇÃO DE TEMPO
+                ListTile(
+                  leading: Icon(Icons.edit, color: Colors.blue),
+                  title: Text('Editar mensagem'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _startEditingMessage(message);
+                  },
+                ),
+
+              // Apagar (sempre permitido para mensagens próprias)
+              ListTile(
+                leading: Icon(Icons.delete, color: Colors.red),
+                title: Text('Apagar mensagem'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _deleteMessage(message);
+                },
+              ),
+            ],
+
+            // Opções para todas as mensagens
+            // Responder
+            ListTile(
+              leading: Icon(Icons.reply, color: Colors.green),
+              title: Text('Responder'),
+              onTap: () {
+                Navigator.pop(context);
+                _startReplyingToMessage(message);
+              },
+            ),
+
+            // Copiar texto
+            ListTile(
+              leading: Icon(Icons.content_copy, color: Colors.grey),
+              title: Text('Copiar texto'),
+              onTap: () {
+                Navigator.pop(context);
+                _copyMessageText(message);
+              },
+            ),
+
+            // Encaminhar
+            ListTile(
+              leading: Icon(Icons.forward, color: Colors.orange),
+              title: Text('Encaminhar'),
+              onTap: () {
+                Navigator.pop(context);
+                _forwardMessage(message);
+              },
+            ),
+
+            SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _startEditingMessage(ChatMessage message) {
+    setState(() {
+      _editingMessageId = message.id;
+      _editController.text = message.text;
+      _messageController.text = message.text;
+    });
+
+    // Focar no campo de edição
+    FocusScope.of(context).requestFocus(FocusNode());
+  }
+
+  void _cancelEditing() {
+    setState(() {
+      _editingMessageId = null;
+      _editController.clear();
+      _messageController.clear();
+    });
+  }
+
+  void _updateMessage() async {
+    if (_editingMessageId != null &&
+        _messageController.text.trim().isNotEmpty) {
+      try {
+        print(
+          '✏️ Atualizando mensagem $_editingMessageId: ${_messageController.text}',
+        );
+
+        // Chamar backend para editar mensagem
+        final result = await MessageOperationsService.editMessage(
+          _editingMessageId!,
+          _messageController.text.trim(),
+        );
+
+        if (result['success'] == true) {
+          // Atualizar localmente com dados do backend
+          setState(() {
+            final messageIndex = _messages.indexWhere(
+              (msg) => msg.id == _editingMessageId,
+            );
+            if (messageIndex != -1) {
+              final updatedMessage = result['edited_message'];
+              _messages[messageIndex] = ChatMessage(
+                id: updatedMessage['id'].toString(),
+                text: updatedMessage['content'],
+                isMe: _messages[messageIndex].isMe,
+                timestamp: DateTime.parse(updatedMessage['sent_at']),
+                status: updatedMessage['status'],
+              );
+            }
+            _editingMessageId = null;
+            _editController.clear();
+            _messageController.clear();
+          });
+
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Mensagem editada com sucesso'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      } catch (e) {
+        print('❌ Erro ao editar mensagem: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao editar mensagem: $e'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  void _deleteMessage(ChatMessage message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Apagar mensagem'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Deseja apagar esta mensagem?'),
+            SizedBox(height: 8),
+            Text(
+              message.text.length > 50
+                  ? '${message.text.substring(0, 47)}...'
+                  : message.text,
+              style: TextStyle(
+                fontStyle: FontStyle.italic,
+                color: Colors.grey[600],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _confirmDeleteMessage(message);
+            },
+            child: Text('Apagar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDeleteMessage(ChatMessage message) async {
+    try {
+      print('🗑️ Apagando mensagem ${message.id}');
+
+      // Chamar backend para deletar mensagem
+      final result = await MessageOperationsService.deleteMessage(message.id);
+
+      if (result['success'] == true) {
+        // Remover mensagem localmente
+        setState(() {
+          _messages.removeWhere((msg) => msg.id == message.id);
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Mensagem apagada com sucesso'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      print('❌ Erro ao apagar mensagem: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro ao apagar mensagem: $e'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  void _startReplyingToMessage(ChatMessage message) {
+    setState(() {
+      _selectedMessageId = message.id;
+    });
+
+    // Focar no campo de mensagem
+    FocusScope.of(context).requestFocus(FocusNode());
+  }
+
+  void _cancelReply() {
+    setState(() {
+      _selectedMessageId = null;
+    });
+  }
+
+  void _sendReply() async {
+    if (_selectedMessageId != null &&
+        _messageController.text.trim().isNotEmpty) {
+      try {
+        print(
+          '💬 Respondendo à mensagem $_selectedMessageId: ${_messageController.text}',
+        );
+
+        // Chamar backend para responder mensagem
+        final result = await MessageOperationsService.replyToMessage(
+          _selectedMessageId!,
+          _messageController.text.trim(),
+          receiverId: widget.remoteUserId,
+        );
+
+        if (result['success'] == true) {
+          // Adicionar mensagem de resposta localmente
+          final replyMessage = result['reply_message'];
+
+          // ✅ OBTER INFORMAÇÕES DA MENSAGEM ORIGINAL
+          final originalMessage = _messages.firstWhere(
+            (msg) => msg.id == _selectedMessageId,
+            orElse: () => ChatMessage(
+              id: _selectedMessageId!,
+              text: 'Mensagem não encontrada',
+              isMe: false,
+              timestamp: DateTime.now(),
+              status: 'sent',
+            ),
+          );
+
+          setState(() {
+            _messages.add(
+              ChatMessage(
+                id: replyMessage['id'].toString(),
+                text: replyMessage['content'],
+                isMe: true,
+                timestamp: DateTime.parse(replyMessage['sent_at']),
+                status: replyMessage['status'],
+                // ✅ INFORMAÇÕES DA RESPOSTA
+                replyToId: _selectedMessageId,
+                replyToText: originalMessage.text,
+                replyToSenderName: originalMessage.isMe
+                    ? 'Eu'
+                    : widget.contact.name,
+              ),
+            );
+
+            // Ordenar mensagens
+            _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+            // Limpar seleção
+            _selectedMessageId = null;
+            _messageController.clear();
+          });
+
+          // ✅ ATUALIZAR CHAT LIST PAGE (como nas mensagens normais)
+          ChatService.updateChatAfterReply(
+            widget.remoteUserId,
+            replyMessage['content'],
+          );
+
+          // Scroll para baixo
+          _scrollToBottom();
+        }
+      } catch (e) {
+        print('❌ Erro ao responder mensagem: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao responder mensagem: $e'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+  }
+
+  // ✅ NOVAS FUNÇÕES AUXILIARES
+
+  void _copyMessageText(ChatMessage message) {
+    // TODO: Implementar lógica de cópia usando Clipboard
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Texto copiado para a área de transferência'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _forwardMessage(ChatMessage message) {
+    // TODO: Implementar lógica de encaminhamento
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Funcionalidade de encaminhamento em breve'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   void _showComingSoonSnackBar(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -1447,6 +1968,78 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             ),
           ),
 
+        // Reply Preview (mostra quando respondendo)
+        if (_selectedMessageId != null)
+          Container(
+            padding: EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.green[50],
+              border: Border(left: BorderSide(color: Colors.green, width: 3)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.reply, color: Colors.green, size: 16),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Respondendo a:',
+                        style: TextStyle(
+                          color: Colors.green[700],
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        _getReplyPreviewText(_selectedMessageId!),
+                        style: TextStyle(
+                          color: Colors.green[600],
+                          fontSize: 13,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(Icons.close, size: 16),
+                  onPressed: _cancelReply,
+                ),
+              ],
+            ),
+          ),
+
+        // Edit Preview (mostra quando editando)
+        if (_editingMessageId != null)
+          Container(
+            padding: EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.blue[50],
+              border: Border(left: BorderSide(color: Colors.blue, width: 3)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.edit, color: Colors.blue, size: 16),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Editando mensagem...',
+                    style: TextStyle(color: Colors.blue[700]),
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(Icons.close, size: 16),
+                  onPressed: _cancelEditing,
+                ),
+              ],
+            ),
+          ),
+
         // Campo de mensagem
         Container(
           padding: const EdgeInsets.all(16),
@@ -1469,8 +2062,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       Expanded(
                         child: TextField(
                           controller: _messageController,
-                          decoration: const InputDecoration(
-                            hintText: 'Digite uma mensagem...',
+                          decoration: InputDecoration(
+                            hintText: _editingMessageId != null
+                                ? 'Editando mensagem...'
+                                : (_selectedMessageId != null
+                                      ? 'Sua resposta...'
+                                      : 'Digite uma mensagem...'),
                             hintStyle: TextStyle(color: Colors.grey),
                             border: InputBorder.none,
                             contentPadding: EdgeInsets.symmetric(
@@ -1482,7 +2079,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                             // Atualizar UI quando usuário digita
                             setState(() {});
                           },
-                          onSubmitted: (_) => _sendMessage(),
+                          onSubmitted: (_) {
+                            if (_editingMessageId != null) {
+                              _updateMessage();
+                            } else if (_selectedMessageId != null) {
+                              _sendReply();
+                            } else {
+                              _sendMessage();
+                            }
+                          },
                         ),
                       ),
                       IconButton(
@@ -1511,7 +2116,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   ),
                   onPressed: _isConnected
                       ? () {
-                          if (_messageController.text.trim().isEmpty) {
+                          if (_editingMessageId != null) {
+                            _updateMessage();
+                          } else if (_selectedMessageId != null) {
+                            _sendReply();
+                          } else if (_messageController.text.trim().isEmpty) {
                             _toggleVoiceRecording();
                           } else {
                             _sendMessage();
@@ -1527,63 +2136,149 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildMessageBubble(ChatMessage message) {
+  Widget _buildReplyPreview(ChatMessage message) {
+    if (message.replyToText == null || message.replyToText!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    // ✅ LÓGICA: Se a mensagem original foi enviada pelo usuário atual, mostrar "Eu"
+    final replySenderName =
+        (message.replyToSenderId == _currentUserId.toString())
+        ? 'Eu'
+        : message.replyToSenderName;
+
+    print('🔍 DEBUG _buildReplyPreview:');
+    print('   - replyToSenderName: ${message.replyToSenderName}');
+    print('   - _currentUserId: $_currentUserId');
+    print('   - replySenderName final: $replySenderName');
+
     return Container(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: message.isMe
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: message.isMe ? Colors.white.withOpacity(0.2) : Colors.grey[300],
+        borderRadius: BorderRadius.circular(8),
+        border: Border(
+          left: BorderSide(
+            color: message.isMe ? Colors.white70 : Colors.grey[600]!,
+            width: 3,
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!message.isMe) ...[
-            widget.contact.photo != null
-                ? CircleAvatar(
-                    radius: 16,
-                    backgroundImage: MemoryImage(widget.contact.photo!),
-                  )
-                : CircleAvatar(
-                    radius: 16,
-                    backgroundColor: Colors.green[100],
-                    child: Icon(Icons.person, color: Colors.green, size: 16),
-                  ),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: message.isMe ? Colors.green : Colors.grey[200],
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    message.text,
-                    style: TextStyle(
-                      color: message.isMe ? Colors.white : Colors.grey[800],
-                      fontSize: 16,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _formatTime(message.timestamp),
-                    style: TextStyle(
-                      color: message.isMe
-                          ? Colors.white.withOpacity(0.7)
-                          : Colors.grey[500],
-                      fontSize: 10,
-                    ),
-                  ),
-                  if (message.isMe) ...[
-                    const SizedBox(width: 4),
-                    _buildStatusIcon(message.status),
-                  ],
-                ],
+          if (replySenderName != null) ...[
+            Text(
+              replySenderName,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: message.isMe ? Colors.white70 : Colors.grey[700],
               ),
             ),
+            const SizedBox(height: 2),
+          ],
+          Text(
+            message.replyToText!,
+            style: TextStyle(
+              fontSize: 12,
+              color: message.isMe ? Colors.white70 : Colors.grey[700],
+              fontStyle: FontStyle.italic,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMessageBubble(ChatMessage message) {
+    return GestureDetector(
+      onLongPress: () => _showMessageOptions(message),
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          mainAxisAlignment: message.isMe
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: [
+            if (!message.isMe) ...[
+              widget.contact.photo != null
+                  ? CircleAvatar(
+                      radius: 16,
+                      backgroundImage: MemoryImage(widget.contact.photo!),
+                    )
+                  : CircleAvatar(
+                      radius: 16,
+                      backgroundColor: Colors.green[100],
+                      child: Icon(Icons.person, color: Colors.green, size: 16),
+                    ),
+              const SizedBox(width: 8),
+            ],
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: message.isMe ? Colors.green : Colors.grey[200],
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ✅ PREVIEW DA MENSAGEM RESPONDIDA
+                    _buildReplyPreview(message),
+
+                    // ✅ TEXTO DA MENSAGEM
+                    Text(
+                      message.text,
+                      style: TextStyle(
+                        color: message.isMe ? Colors.white : Colors.grey[800],
+                        fontSize: 16,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _formatTime(message.timestamp),
+                          style: TextStyle(
+                            color: message.isMe
+                                ? Colors.white.withOpacity(0.7)
+                                : Colors.grey[500],
+                            fontSize: 10,
+                          ),
+                        ),
+                        if (message.status == 'edited') ...[
+                          SizedBox(width: 4),
+                          Text(
+                            'editada',
+                            style: TextStyle(
+                              color: message.isMe
+                                  ? Colors.white.withOpacity(0.7)
+                                  : Colors.grey[500],
+                              fontSize: 9,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                        if (message.isMe) ...[
+                          SizedBox(width: 4),
+                          _buildStatusIcon(message.status),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1615,27 +2310,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     return Icon(icon, size: 14, color: color);
   }
-}
 
-class ChatMessage {
-  final String id;
-  final String text;
-  final bool isMe;
-  final DateTime timestamp;
-  final String status; // 'sent', 'delivered', 'read'
+  // ✅ NOVA FUNÇÃO: Verificar se mensagem pode ser editada
+  bool _canEditMessage(ChatMessage message) {
+    if (!message.isMe) return false;
 
-  ChatMessage({
-    required this.id,
-    required this.text,
-    required this.isMe,
-    required this.timestamp,
-    required this.status,
-  });
-}
+    final now = DateTime.now();
+    final difference = now.difference(message.timestamp);
 
-class MessageGroup {
-  final DateTime date;
-  final List<ChatMessage> messages;
-
-  MessageGroup({required this.date, required this.messages});
+    // Permitir edição por até 15 minutos
+    return difference.inMinutes <= 15;
+  }
 }
