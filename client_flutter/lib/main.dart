@@ -76,7 +76,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'WhaClone',
+      title: 'SpeekJoy',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primaryColor: Colors.green,

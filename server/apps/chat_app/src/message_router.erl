@@ -30,7 +30,15 @@
     broadcast_presence/2,
     get_message_sender/1,
     get_offline_messages/1,
-    handle_user_online/1
+    handle_user_online/1,
+    % Funções para notificações (que não estão sendo usadas ainda, mas serão)
+    notify_message_edited/4,
+    notify_message_deleted/4,
+    notify_message_reply/5,
+    
+    % Funções auxiliares
+    get_message_details/1,
+    get_message_replies/1
 ]).
 
 %%%-------------------------------------------------------------------
@@ -83,6 +91,9 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                             %% ✅ ATUALIZAR BD: status = 'delivered'
                             message_repo:mark_message_delivered(DbMessageId),
                             
+                            %% ✅ ENVIAR ATUALIZAÇÃO PARA CHAT LIST PAGE
+                            send_chat_list_update(FromId, ToId, Content, DbMessageId),
+                            
                             io:format("   ✅ Mensagem entregue para ~p. Retornando status 'delivered' para remetente.~n", [ToId]),
                             
                             {ok, MessageToReceiver, delivered};
@@ -100,6 +111,10 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                             case user_session:send_message(FromId, ToId, MessageToReceiver) of
                                 ok ->
                                     message_repo:mark_message_delivered(DbMessageId),
+                                    
+                                    %% ✅ ENVIAR ATUALIZAÇÃO PARA CHAT LIST PAGE
+                                    send_chat_list_update(FromId, ToId, Content, DbMessageId),
+                                    
                                     io:format("   ✅ Delivery bem-sucedido em grace period~n"),
                                     {ok, MessageToReceiver, delivered};
                                 {error, _} ->
@@ -372,3 +387,199 @@ clear_offline_messages(UserId) ->
     end,
     mnesia:transaction(F),
     io:format("🧹 Cleared offline messages for user: ~p~n", [UserId]).
+
+
+%%%===================================================================
+%%% Funções para operações avançadas de mensagens
+%%%===================================================================
+
+%% @doc Notificar edição de mensagem
+notify_message_edited(MessageId, UpdatedContent, SenderId, ReceiverId) ->
+    try
+        Notification = #{
+            <<"type">> => <<"message_edited">>,
+            <<"message_id">> => MessageId,
+            <<"sender_id">> => SenderId,
+            <<"receiver_id">> => ReceiverId,
+            <<"content">> => UpdatedContent,
+            <<"timestamp">> => erlang:system_time(second)
+        },
+        
+        user_session:send_message(SenderId, ReceiverId, Notification),
+        io:format("📡 Notificação de edição enviada: ~p -> ~p~n", [SenderId, ReceiverId]),
+        ok
+    catch
+        Error:Reason ->
+            io:format("❌ Erro ao notificar edição: ~p:~p~n", [Error, Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Notificar deleção de mensagem
+notify_message_deleted(MessageId, SenderId, ReceiverId, Reason) ->
+    try
+        Notification = #{
+            <<"type">> => <<"message_deleted">>,
+            <<"message_id">> => MessageId,
+            <<"sender_id">> => SenderId,
+            <<"receiver_id">> => ReceiverId,
+            <<"reason">> => Reason,
+            <<"timestamp">> => erlang:system_time(second)
+        },
+        
+        user_session:send_message(SenderId, ReceiverId, Notification),
+        io:format("📡 Notificação de deleção enviada: ~p -> ~p~n", [SenderId, ReceiverId]),
+        ok
+    catch
+        Error:Reason ->
+            io:format("❌ Erro ao notificar deleção: ~p:~p~n", [Error, Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Notificar resposta a mensagem
+notify_message_reply(ReplyMessageId, OriginalMessageId, SenderId, ReceiverId, Content) ->
+    try
+        Notification = #{
+            <<"type">> => <<"message_reply">>,
+            <<"message_id">> => ReplyMessageId,
+            <<"original_message_id">> => OriginalMessageId,
+            <<"sender_id">> => SenderId,
+            <<"receiver_id">> => ReceiverId,
+            <<"content">> => Content,
+            <<"timestamp">> => erlang:system_time(second)
+        },
+        
+        user_session:send_message(SenderId, ReceiverId, Notification),
+        io:format("📡 Notificação de resposta enviada: ~p -> ~p~n", [SenderId, ReceiverId]),
+        ok
+    catch
+        Error:Reason ->
+            io:format("❌ Erro ao notificar resposta: ~p:~p~n", [Error, Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Obter informações completas da mensagem
+get_message_details(MessageId) ->
+    db_pool:with_connection(fun(Conn) ->
+        try
+            MsgIdInt = binary_to_integer_wrapper(MessageId),
+            
+            Sql = "SELECT m.id, m.sender_id, m.receiver_id, m.content, 
+                          m.sent_at, m.status, m.is_edited, m.edit_count,
+                          m.reply_to_id, m.is_deleted, m.deleted_by,
+                          m.delete_reason, m.deleted_at,
+                          u1.name as sender_name, u2.name as receiver_name
+                   FROM messages m
+                   LEFT JOIN users u1 ON m.sender_id = u1.id
+                   LEFT JOIN users u2 ON m.receiver_id = u2.id
+                   WHERE m.id = $1",
+            
+            case epgsql:equery(Conn, Sql, [MsgIdInt]) of
+                {ok, _, [Row]} ->
+                    {Id, SenderId, ReceiverId, Content, SentAt, Status, 
+                     IsEdited, EditCount, ReplyToId, IsDeleted, DeletedBy,
+                     DeleteReason, DeletedAt, SenderName, ReceiverName} = Row,
+                    
+                    MessageDetails = #{
+                        id => Id,
+                        sender_id => SenderId,
+                        receiver_id => ReceiverId,
+                        content => Content,
+                        sent_at => SentAt,
+                        status => Status,
+                        is_edited => IsEdited,
+                        edit_count => EditCount,
+                        reply_to_id => ReplyToId,
+                        is_deleted => IsDeleted,
+                        deleted_by => DeletedBy,
+                        delete_reason => DeleteReason,
+                        deleted_at => DeletedAt,
+                        sender_name => SenderName,
+                        receiver_name => ReceiverName
+                    },
+                    {ok, MessageDetails};
+                {ok, _, []} ->
+                    {error, not_found};
+                {error, Error} ->
+                    {error, Error}
+            end
+        catch
+            _:_ -> {error, invalid_id}
+        end
+    end).
+
+%% @doc Buscar mensagens respondidas
+get_message_replies(MessageId) ->
+    db_pool:with_connection(fun(Conn) ->
+        try
+            MsgIdInt = binary_to_integer_wrapper(MessageId),
+            
+            Sql = "SELECT m.id, m.sender_id, m.receiver_id, m.content, 
+                          m.sent_at, m.status, u.name as sender_name
+                   FROM messages m
+                   JOIN users u ON m.sender_id = u.id
+                   WHERE m.reply_to_id = $1
+                   ORDER BY m.sent_at ASC",
+            
+            case epgsql:equery(Conn, Sql, [MsgIdInt]) of
+                {ok, _, Rows} ->
+                    Replies = lists:map(fun(Row) ->
+                        {Id, SenderId, ReceiverId, Content, SentAt, Status, SenderName} = Row,
+                        #{
+                            id => Id,
+                            sender_id => SenderId,
+                            receiver_id => ReceiverId,
+                            content => Content,
+                            sent_at => SentAt,
+                            status => Status,
+                            sender_name => SenderName
+                        }
+                    end, Rows),
+                    {ok, Replies};
+                {ok, _, []} ->
+                    {ok, []};
+                {error, Error} ->
+                    {error, Error}
+            end
+        catch
+            _:_ -> {error, invalid_id}
+        end
+    end).
+
+%% Helper para conversão
+binary_to_integer_wrapper(Binary) when is_binary(Binary) ->
+    list_to_integer(binary_to_list(Binary));
+binary_to_integer_wrapper(Integer) when is_integer(Integer) ->
+    Integer.
+
+%% @doc Enviar atualização para chat list page
+send_chat_list_update(FromId, ToId, Content, MessageId) ->
+    try
+        %% Notificação para o remetente (atualizar chat list dele)
+        SenderUpdate = #{
+            <<"type">> => <<"chat_list_update">>,
+            <<"message_id">> => integer_to_binary(MessageId),
+            <<"from">> => FromId,
+            <<"to">> => ToId,
+            <<"content">> => Content,
+            <<"timestamp">> => erlang:system_time(second),
+            <<"action">> => <<"new_message">>
+        },
+        user_session:send_message(ToId, FromId, SenderUpdate),
+        
+        %% Notificação para o destinatário (atualizar chat list dele)
+        ReceiverUpdate = #{
+            <<"type">> => <<"chat_list_update">>,
+            <<"message_id">> => integer_to_binary(MessageId),
+            <<"from">> => FromId,
+            <<"to">> => ToId,
+            <<"content">> => Content,
+            <<"timestamp">> => erlang:system_time(second),
+            <<"action">> => <<"new_message">>
+        },
+        user_session:send_message(FromId, ToId, ReceiverUpdate),
+        
+        io:format("   📋 Chat list update sent for message ~p~n", [MessageId])
+    catch
+        _:_ ->
+            io:format("   ❌ Error sending chat list update~n")
+    end.

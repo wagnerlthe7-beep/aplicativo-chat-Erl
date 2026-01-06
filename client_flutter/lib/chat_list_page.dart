@@ -475,8 +475,21 @@ class _ChatListPageState extends State<ChatListPage>
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) =>
-              ChatPage(contact: contact, remoteUserId: remoteUserId),
+          builder: (context) => ChatPage(
+            contact: ChatContact(
+              contactId: remoteUserId,
+              name: contact.displayName.isEmpty
+                  ? 'Sem nome'
+                  : contact.displayName,
+              phoneNumber: contact.phones.isNotEmpty
+                  ? contact.phones.first.number
+                  : null,
+              lastMessage: '',
+              lastMessageTime: DateTime.now(),
+              unreadCount: 0,
+            ),
+            remoteUserId: remoteUserId,
+          ),
         ),
       );
     } catch (e) {
@@ -744,7 +757,7 @@ class _ChatListPageState extends State<ChatListPage>
     );
   }
 
-  // ITEM DE CHAT REAL
+  // ITEM DE CHAT REAL atualizado
   Widget _buildRealChatItem(ChatContact chat) {
     return Container(
       decoration: BoxDecoration(
@@ -765,11 +778,22 @@ class _ChatListPageState extends State<ChatListPage>
           chat.name,
           style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16),
         ),
-        subtitle: Text(
-          chat.lastMessage,
-          style: TextStyle(color: Colors.grey[600], fontSize: 14),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        subtitle: Row(
+          children: [
+            if (chat.lastMessageIsReply)
+              Icon(Icons.reply, size: 12, color: Colors.green),
+            if (chat.lastMessageEdited)
+              Icon(Icons.edit, size: 12, color: Colors.blue),
+            SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                chat.lastMessage,
+                style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -804,20 +828,14 @@ class _ChatListPageState extends State<ChatListPage>
           );
 
           // MARCAR COMO LIDO ANTES DE ABRIR O CHAT
-          //ChatService.markChatAsRead(chat.contactId);
-
-          // CRIAR CONTATO TEMPORÁRIO PARA NAVEGAÇÃO
-          final contact = Contact()
-            ..displayName = chat.name
-            ..phones = [Phone(chat.phoneNumber ?? '')]
-            ..photo = chat.photo;
+          ChatService.markChatAsRead(chat.contactId);
 
           // NAVEGAR PARA O CHAT
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) =>
-                  ChatPage(contact: contact, remoteUserId: chat.contactId),
+                  ChatPage(contact: chat, remoteUserId: chat.contactId),
             ),
           );
         },

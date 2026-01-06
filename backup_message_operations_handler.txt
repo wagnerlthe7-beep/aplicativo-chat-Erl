@@ -1,0 +1,402 @@
+%%%-------------------------------------------------------------------
+%%% message_operations_handler.erl - Handler corrigido
+%%%-------------------------------------------------------------------
+-module(message_operations_handler).
+-behaviour(cowboy_handler).
+
+-export([init/2]).
+
+-include_lib("kernel/include/logger.hrl").
+
+init(Req0, State) ->
+    Method = cowboy_req:method(Req0),
+    Path = cowboy_req:path(Req0),
+    
+    ?LOG_INFO("🔄 Message Operations Handler: ~p ~s", [Method, Path]),
+    
+    try
+        handle_request(Method, Path, Req0, State)
+    catch
+        Error:Reason ->
+            ?LOG_ERROR("❌ Exception in message_operations_handler: ~p:~p", [Error, Reason]),
+            send_json(Req0, 500, #{error => <<"internal_server_error">>}, State)
+    end.
+
+handle_request(<<"PATCH">>, <<"/api/messages/", _/binary>> = Path, Req0, State) ->
+    MessageId = extract_message_id(Path),
+    handle_edit_message(MessageId, Req0, State);
+
+handle_request(<<"DELETE">>, <<"/api/messages/", _/binary>> = Path, Req0, State) ->
+    MessageId = extract_message_id(Path),
+    handle_delete_message(MessageId, Req0, State);
+
+handle_request(<<"POST">>, <<"/api/messages/", _/binary>> = Path, Req0, State) ->
+    MessageId = extract_message_id(Path),
+    case binary:match(Path, <<"/reply">>) of
+        nomatch ->
+            send_json(Req0, 404, #{error => <<"route_not_found">>}, State);
+        _ ->
+            handle_reply_message(MessageId, Req0, State)
+    end;
+
+handle_request(<<"GET">>, <<"/api/messages/", _/binary>> = Path, Req0, State) ->
+    MessageId = extract_message_id(Path),
+    case binary:match(Path, <<"/history">>) of
+        nomatch ->
+            send_json(Req0, 404, #{error => <<"route_not_found">>}, State);
+        _ ->
+            handle_get_edit_history(MessageId, Req0, State)
+    end;
+
+handle_request(<<"POST">>, <<"/api/admin/messages/", _/binary>> = Path, Req0, State) ->
+    MessageId = extract_message_id(Path),
+    case binary:match(Path, <<"/recover">>) of
+        nomatch ->
+            send_json(Req0, 404, #{error => <<"route_not_found">>}, State);
+        _ ->
+            handle_admin_recover(MessageId, Req0, State)
+    end;
+
+handle_request(Method, Path, Req0, State) ->
+    ?LOG_WARNING("❌ Route not found: ~p ~s", [Method, Path]),
+    send_json(Req0, 404, #{error => <<"route_not_found">>}, State).
+
+%% ======================
+%% 1. EDITAR MENSAGEM (PATCH /api/messages/:messageId/edit)
+%% ======================
+handle_edit_message(MessageId, Req0, State) ->
+    try
+        {ok, Body, Req1} = cowboy_req:read_body(Req0),
+        Data = jsx:decode(Body, [return_maps]),
+        
+        Content = maps:get(<<"content">>, Data, <<>>),
+        UserId = maps:get(<<"user_id">>, Data, undefined),
+        
+        if
+            Content =:= <<>> -> 
+                send_json(Req1, 400, #{error => <<"content_required">>}, State);
+            UserId =:= undefined ->
+                send_json(Req1, 401, #{error => <<"user_id_required">>}, State);
+            true ->
+                case edit_message_db(MessageId, UserId, Content) of
+                    {ok, UpdatedMessage} ->
+                        ?LOG_INFO("✅ Message edited: ~p by user ~p", [MessageId, UserId]),
+                        
+                        % Notificar destinatário via WebSocket
+                        notify_message_edited(UpdatedMessage),
+                        
+                        send_json(Req1, 200, #{
+                            success => true,
+                            message => <<"Message edited successfully">>,
+                            edited_message => UpdatedMessage
+                        }, State);
+                    {error, not_found} ->
+                        send_json(Req1, 404, #{error => <<"message_not_found">>}, State);
+                    {error, not_authorized} ->
+                        send_json(Req1, 403, #{error => <<"not_authorized_to_edit">>}, State);
+                    {error, already_deleted} ->
+                        send_json(Req1, 410, #{error => <<"message_already_deleted">>}, State);
+                    {error, _Reason} ->
+                        send_json(Req1, 500, #{error => <<"internal_error">>}, State)
+                end
+        end
+    catch
+        _:Error ->
+            ?LOG_ERROR("❌ Exception in edit_message: ~p", [Error]),
+            send_json(Req0, 400, #{error => <<"invalid_request">>}, State)
+    end.
+
+%% ======================
+%% 2. APAGAR MENSAGEM (DELETE /api/messages/:messageId/delete)
+%% ======================
+handle_delete_message(MessageId, Req0, State) ->
+    try
+        {ok, Body, Req1} = cowboy_req:read_body(Req0),
+        Data = jsx:decode(Body, [return_maps]),
+        
+        UserId = maps:get(<<"user_id">>, Data, undefined),
+        Reason = maps:get(<<"reason">>, Data, <<"user_deleted">>),
+        
+        if
+            UserId =:= undefined ->
+                send_json(Req1, 401, #{error => <<"user_id_required">>}, State);
+            true ->
+                case delete_message_db(MessageId, UserId, Reason) of
+                    {ok, DeletedMessage} ->
+                        ?LOG_INFO("✅ Message deleted: ~p by user ~p", [MessageId, UserId]),
+                        
+                        % Notificar destinatário via WebSocket
+                        notify_message_deleted(DeletedMessage),
+                        
+                        send_json(Req1, 200, #{
+                            success => true,
+                            message => <<"Message deleted successfully">>,
+                            deleted_message => DeletedMessage
+                        }, State);
+                    {error, not_found} ->
+                        send_json(Req1, 404, #{error => <<"message_not_found">>}, State);
+                    {error, not_authorized} ->
+                        send_json(Req1, 403, #{error => <<"not_authorized_to_delete">>}, State);
+                    {error, already_deleted} ->
+                        send_json(Req1, 410, #{error => <<"message_already_deleted">>}, State);
+                    {error, _Reason} ->
+                        send_json(Req1, 500, #{error => <<"internal_error">>}, State)
+                end
+        end
+    catch
+        _:Error ->
+            ?LOG_ERROR("❌ Exception in delete_message: ~p", [Error]),
+            send_json(Req0, 400, #{error => <<"invalid_request">>}, State)
+    end.
+
+%% ======================
+%% 3. RESPONDER MENSAGEM (POST /api/messages/:messageId/reply)
+%% ======================
+handle_reply_message(MessageId, Req0, State) ->
+    try
+        {ok, Body, Req1} = cowboy_req:read_body(Req0),
+        Data = jsx:decode(Body, [return_maps]),
+        
+        Content = maps:get(<<"content">>, Data, <<>>),
+        SenderId = maps:get(<<"sender_id">>, Data, undefined),
+        ReceiverId = maps:get(<<"receiver_id">>, Data, undefined),
+        GroupId = maps:get(<<"group_id">>, Data, undefined),
+        
+        if
+            Content =:= <<>> -> 
+                send_json(Req1, 400, #{error => <<"content_required">>}, State);
+            SenderId =:= undefined ->
+                send_json(Req1, 401, #{error => <<"sender_id_required">>}, State);
+            true ->
+                case reply_to_message_db(MessageId, Content, SenderId, ReceiverId, GroupId) of
+                    {ok, ReplyMessage} ->
+                        ?LOG_INFO("✅ Reply created to message ~p by user ~p", 
+                                 [MessageId, SenderId]),
+                        
+                        % Notificar via WebSocket
+                        notify_message_reply(ReplyMessage),
+                        
+                        send_json(Req1, 201, #{
+                            success => true,
+                            message => <<"Reply sent successfully">>,
+                            reply_message => ReplyMessage
+                        }, State);
+                    {error, not_found} ->
+                        send_json(Req1, 404, #{error => <<"original_message_not_found">>}, State);
+                    {error, original_deleted} ->
+                        send_json(Req1, 410, #{error => <<"original_message_deleted">>}, State);
+                    {error, _Reason} ->
+                        send_json(Req1, 500, #{error => <<"internal_error">>}, State)
+                end
+        end
+    catch
+        _:Error ->
+            ?LOG_ERROR("❌ Exception in reply_message: ~p", [Error]),
+            send_json(Req0, 400, #{error => <<"invalid_request">>}, State)
+    end.
+
+%% ======================
+%% 4. HISTÓRICO DE EDIÇÕES (GET /api/messages/:messageId/history)
+%% ======================
+handle_get_edit_history(MessageId, Req0, State) ->
+    try
+        Token = cowboy_req:header(<<"authorization">>, Req0),
+        
+        case Token of
+            undefined ->
+                send_json(Req0, 401, #{error => <<"unauthorized">>}, State);
+            _ ->
+                case get_edit_history_db(MessageId) of
+                    {ok, History} ->
+                        send_json(Req0, 200, #{
+                            message_id => MessageId,
+                            edit_history => History
+                        }, State);
+                    {error, not_found} ->
+                        send_json(Req0, 404, #{error => <<"message_not_found">>}, State);
+                    {error, _Reason} ->
+                        send_json(Req0, 500, #{error => <<"internal_error">>}, State)
+                end
+        end
+    catch
+        _:Error ->
+            ?LOG_ERROR("❌ Exception in get_edit_history: ~p", [Error]),
+            send_json(Req0, 400, #{error => <<"invalid_request">>}, State)
+    end.
+
+%% ======================
+%% 5. RECUPERAR MENSAGEM (ADMIN) (POST /api/admin/messages/:messageId/recover)
+%% ======================
+handle_admin_recover(MessageId, Req0, State) ->
+    try
+        {ok, Body, Req1} = cowboy_req:read_body(Req0),
+        Data = jsx:decode(Body, [return_maps]),
+        
+        AdminId = maps:get(<<"admin_id">>, Data, undefined),
+        
+        if
+            AdminId =:= undefined ->
+                send_json(Req1, 401, #{error => <<"admin_id_required">>}, State);
+            true ->
+                case is_admin(AdminId) of
+                    true ->
+                        case recover_message_db(MessageId, AdminId) of
+                            {ok, RecoveredMessage} ->
+                                ?LOG_INFO("✅ Message recovered by admin ~p: ~p", 
+                                         [AdminId, MessageId]),
+                                
+                                send_json(Req1, 200, #{
+                                    success => true,
+                                    message => <<"Message recovered successfully">>,
+                                    recovered_message => RecoveredMessage
+                                }, State);
+                            {error, not_found} ->
+                                send_json(Req1, 404, #{error => <<"message_not_found">>}, State);
+                            {error, not_deleted} ->
+                                send_json(Req1, 400, #{error => <<"message_not_deleted">>}, State);
+                            {error, _Reason} ->
+                                send_json(Req1, 500, #{error => <<"internal_error">>}, State)
+                        end;
+                    false ->
+                        send_json(Req1, 403, #{error => <<"admin_required">>}, State)
+                end
+        end
+    catch
+        _:Error ->
+            ?LOG_ERROR("❌ Exception in admin_recover: ~p", [Error]),
+            send_json(Req0, 400, #{error => <<"invalid_request">>}, State)
+    end.
+
+%% ======================
+%% FUNÇÕES AUXILIARES
+%% ======================
+
+%% Extrai o messageId do path
+extract_message_id(<<"/api/messages/", Rest/binary>>) ->
+    case binary:split(Rest, <<"/">>) of
+        [MessageId, _] -> MessageId;
+        [MessageId] -> MessageId
+    end;
+extract_message_id(<<"/api/admin/messages/", Rest/binary>>) ->
+    case binary:split(Rest, <<"/">>) of
+        [MessageId, _] -> MessageId;
+        [MessageId] -> MessageId
+    end;
+extract_message_id(_) ->
+    <<>>.
+
+%% ======================
+%% FUNÇÕES DE BANCO DE DADOS (SIMPLIFICADAS - IMPLEMENTAR COM message_repo)
+%% ======================
+
+edit_message_db(MessageId, UserId, NewContent) ->
+    ?LOG_INFO("📝 Editando mensagem ~p, usuário ~p", [MessageId, UserId]),
+    % TODO: Implementar usando message_repo:can_edit_message/2 e salvar edição
+    {ok, #{
+        id => MessageId,
+        sender_id => UserId,
+        receiver_id => <<"user2">>,
+        content => NewContent,
+        sent_at => erlang:system_time(second),
+        status => <<"sent">>,
+        is_edited => true,
+        edit_count => 1
+    }}.
+
+delete_message_db(MessageId, UserId, Reason) ->
+    ?LOG_INFO("🗑️ Deletando mensagem ~p, usuário ~p, motivo: ~p", 
+              [MessageId, UserId, Reason]),
+    % TODO: Implementar usando message_repo:can_delete_message/2
+    {ok, #{
+        id => MessageId,
+        sender_id => UserId,
+        receiver_id => <<"user2">>,
+        content => <<"Mensagem deletada">>,
+        deleted_by => UserId,
+        delete_reason => Reason,
+        deleted_at => erlang:system_time(second)
+    }}.
+
+reply_to_message_db(OriginalMessageId, Content, SenderId, ReceiverId, _GroupId) ->
+    ?LOG_INFO("💬 Respondendo à mensagem ~p, remetente ~p", 
+              [OriginalMessageId, SenderId]),
+    % TODO: Implementar usando message_repo
+    {ok, #{
+        id => <<"new_reply_id">>,
+        sender_id => SenderId,
+        receiver_id => ReceiverId,
+        content => Content,
+        sent_at => erlang:system_time(second),
+        status => <<"sent">>,
+        reply_to_id => OriginalMessageId,
+        original_message_id => OriginalMessageId
+    }}.
+
+get_edit_history_db(MessageId) ->
+    ?LOG_INFO("📚 Obtendo histórico da mensagem ~p", [MessageId]),
+    % TODO: Implementar usando message_repo:get_edit_history/1
+    History = [
+        #{
+            id => 1,
+            original_content => <<"Mensagem original">>,
+            edited_content => <<"Mensagem editada">>,
+            edited_by => <<"user1">>,
+            editor_name => <<"Usuário 1">>,
+            edited_at => erlang:system_time(second) - 3600
+        }
+    ],
+    {ok, History}.
+
+recover_message_db(MessageId, AdminId) ->
+    ?LOG_INFO("🔄 Recuperando mensagem ~p por admin ~p", [MessageId, AdminId]),
+    % TODO: Implementar
+    {ok, #{
+        id => MessageId,
+        sender_id => <<"user1">>,
+        receiver_id => <<"user2">>,
+        content => <<"Mensagem recuperada">>,
+        sent_at => erlang:system_time(second),
+        status => <<"sent">>,
+        is_deleted => false,
+        recovered_by => AdminId,
+        recovered_at => erlang:system_time(second)
+    }}.
+
+%% ======================
+%% FUNÇÕES DE NOTIFICAÇÃO (SIMPLIFICADAS)
+%% ======================
+
+notify_message_edited(Message) ->
+    ?LOG_INFO("📡 Enviando notificação de edição: ~p", [Message]),
+    % TODO: Implementar usando message_router:notify_message_edited/4
+    ok.
+
+notify_message_deleted(Message) ->
+    ?LOG_INFO("📡 Enviando notificação de deleção: ~p", [Message]),
+    % TODO: Implementar usando message_router:notify_message_deleted/4
+    ok.
+
+notify_message_reply(ReplyMessage) ->
+    ?LOG_INFO("📡 Enviando notificação de resposta: ~p", [ReplyMessage]),
+    % TODO: Implementar usando message_router:notify_message_reply/5
+    ok.
+
+%% ======================
+%% FUNÇÕES AUXILIARES
+%% ======================
+
+is_admin(UserId) ->
+    ?LOG_INFO("👑 Verificando se ~p é admin", [UserId]),
+    % Simulação - ajustar conforme sua lógica
+    case UserId of
+        <<"admin">> -> true;
+        <<"1">> -> true; % Para testes
+        _ -> false
+    end.
+
+send_json(Req, Status, Map, State) ->
+    Json = jsx:encode(Map),
+    Req2 = cowboy_req:reply(Status, #{
+        <<"content-type">> => <<"application/json">>
+    }, Json, Req),
+    {ok, Req2, State}.

@@ -261,7 +261,44 @@ handle_websocket_message(#{<<"type">> := <<"presence_update">>} = Data, #state{u
             ok
     end;
 
-%% ✅ MENSAGEM DESCONHECIDA
+%% ✅ MENSAGENS EDITADAS (NOVO)
+handle_websocket_message(#{<<"type">> := <<"message_edited">>} = Data, #state{user_id = UserId}) ->
+    MessageId = maps:get(<<"message_id">>, Data),
+    SenderId = maps:get(<<"sender_id">>, Data),
+    NewContent = maps:get(<<"content">>, Data),
+    
+    io:format("✏️ Mensagem editada recebida: ~p -> ~p~n", [SenderId, UserId]),
+    
+    % Atualizar mensagem localmente se necessário
+    % (O frontend irá atualizar via WebSocket)
+    ok;
+
+%% ✅ MENSAGENS DELETADAS (NOVO)
+handle_websocket_message(#{<<"type">> := <<"message_deleted">>} = Data, #state{user_id = UserId}) ->
+    MessageId = maps:get(<<"message_id">>, Data),
+    SenderId = maps:get(<<"sender_id">>, Data),
+    Reason = maps:get(<<"reason">>, Data, <<"user_deleted">>),
+    
+    io:format("🗑️ Mensagem deletada recebida: ~p -> ~p~n", [SenderId, UserId]),
+    
+    % Remover mensagem localmente
+    % (O frontend irá remover via WebSocket)
+    ok;
+
+%% ✅ RESPOSTAS (NOVO)
+handle_websocket_message(#{<<"type">> := <<"message_reply">>} = Data, #state{user_id = UserId}) ->
+    MessageId = maps:get(<<"message_id">>, Data),
+    OriginalId = maps:get(<<"original_message_id">>, Data),
+    SenderId = maps:get(<<"sender_id">>, Data),
+    Content = maps:get(<<"content">>, Data),
+    
+    io:format("💬 Resposta recebida: ~p -> ~p~n", [SenderId, UserId]),
+    
+    % Processar resposta
+    % (O frontend irá adicionar via WebSocket)
+    ok;
+
+%% ✅ MENSAGEM DESCONHECIDA (ESSE DEVE SER O ÚLTIMO!)
 handle_websocket_message(Data, _State) ->
     io:format("❓ Mensagem desconhecida: ~p~n", [Data]),
     

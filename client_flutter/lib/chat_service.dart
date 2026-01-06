@@ -201,6 +201,26 @@ class ChatService {
         case 'message_read':
           _messageController.add(message);
           break;
+        case 'message_edited':
+          _messageController.add(message);
+          print('✏️ Mensagem editada recebida: $message');
+          break;
+        case 'message_deleted':
+          _messageController.add(message);
+          print('🗑️ Mensagem deletada recebida: $message');
+          break;
+        case 'message_reply':
+          _messageController.add(message);
+          print('💬 Resposta recebida: $message');
+          final shouldIncreaseUnread =
+              message['should_increase_unread'] ?? true;
+          _updateChatOnMessageReceived(message, shouldIncreaseUnread);
+          break;
+        case 'chat_list_update':
+          print('📋 Chat list update recebido: $message');
+          final shouldIncreaseUnread = false; // Não aumenta unread para updates
+          _updateChatOnMessageReceived(message, shouldIncreaseUnread);
+          break;
         case 'presence':
           final userId = message['user_id']?.toString();
           final status = message['status']?.toString();
@@ -625,8 +645,13 @@ class ChatService {
         photo: contactInfo['photo'],
       );
     } catch (e) {
-      print('❌ Erro ao atualizar chat enviado: $e');
+      print('❌ Erro ao atualizar chat após enviar mensagem: $e');
     }
+  }
+
+  // ✅ MÉTODO PÚBLICO PARA ATUALIZAR CHAT (USADO POR RESPOSTAS)
+  static void updateChatAfterReply(String toUserId, String content) {
+    _updateChatOnMessageSent(toUserId, content);
   }
 
   static void sendTypingIndicator(String toUserId, bool isTyping) {
