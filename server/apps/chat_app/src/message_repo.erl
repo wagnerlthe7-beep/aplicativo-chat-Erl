@@ -1,5 +1,8 @@
 %% message_repo.erl - módulo correto
 -module(message_repo).
+
+-include_lib("kernel/include/logger.hrl").
+
 -export([
     save_message/3, 
     get_user_messages/1, 
@@ -18,7 +21,8 @@
     can_edit_message/2,
     can_delete_message/2,
     binary_to_integer_wrapper/1,
-    get_user_name/1
+    get_user_name/1,
+    save_reply_message/4
 ]).
 
 save_message(SenderId, ReceiverId, Content) ->
@@ -58,12 +62,43 @@ mark_messages_as_delivered(MessageIds) ->
 get_undelivered_messages(UserId) ->
     db_pool:with_connection(fun(Conn) ->
         UserIdInt = binary_to_integer_wrapper(UserId),
-        Sql = "SELECT id, sender_id, content, sent_at, status 
-               FROM messages 
-               WHERE receiver_id = $1 AND status = 'sent' 
-               ORDER BY sent_at ASC",
+        Sql = "
+            SELECT m.id,
+                   m.sender_id,
+                   m.receiver_id,
+                   m.content,
+                   m.sent_at,
+                   m.status,
+                   m.reply_to_id,
+                   m_original.content as reply_to_text,
+                   m_original.sender_id as reply_to_sender_id,
+                   u1.name as reply_to_sender_name
+            FROM messages m
+            LEFT JOIN messages m_original ON m.reply_to_id = m_original.id
+            LEFT JOIN users u1 ON m_original.sender_id = u1.id
+            WHERE m.receiver_id = $1
+              AND m.status = 'sent'
+            ORDER BY m.sent_at ASC",
         case epgsql:equery(Conn, Sql, [UserIdInt]) of
-            {ok, _, Rows} -> {ok, Rows};
+            {ok, _, Rows} ->
+                Messages = lists:map(fun({
+                    Id, SenderId, ReceiverId, Content, SentAt, Status,
+                    ReplyToId, ReplyToText, ReplyToSenderId, ReplyToSenderName
+                }) ->
+                    #{
+                        <<"id">> => Id,
+                        <<"sender_id">> => SenderId,
+                        <<"receiver_id">> => ReceiverId,
+                        <<"content">> => Content,
+                        <<"sent_at">> => SentAt,
+                        <<"status">> => Status,
+                        <<"reply_to_id">> => ReplyToId,
+                        <<"reply_to_text">> => ReplyToText,
+                        <<"reply_to_sender_id">> => ReplyToSenderId,
+                        <<"reply_to_sender_name">> => ReplyToSenderName
+                    }
+                end, Rows),
+                {ok, Messages};
             {error, Error} -> {error, Error}
         end
     end).
@@ -219,8 +254,6 @@ get_message_replies(MessageId) ->
                         }
                     end, Rows),
                     {ok, Replies};
-                {ok, _, []} ->
-                    {ok, []};
                 {error, Error} ->
                     {error, Error}
             end
@@ -256,8 +289,6 @@ get_edit_history(MessageId) ->
                         }
                     end, Rows),
                     {ok, History};
-                {ok, _, []} ->
-                    {ok, []};
                 {error, Error} ->
                     {error, Error}
             end
@@ -373,5 +404,29 @@ get_user_name(UserId) ->
             end
         catch
             _:_ -> {error, invalid_id}
+        end
+    end).
+
+%% @doc Salvar mensagem de resposta com reply_to_id
+save_reply_message(SenderId, ReceiverId, Content, ReplyToId) ->
+    db_pool:with_connection(fun(Conn) ->
+        try
+            SenderIdInt = binary_to_integer_wrapper(SenderId),
+            ReceiverIdInt = binary_to_integer_wrapper(ReceiverId),
+            ReplyToInt = binary_to_integer_wrapper(ReplyToId),
+            
+            Sql = "INSERT INTO messages (sender_id, receiver_id, content, message_type, status, sent_at, reply_to_id) 
+                    VALUES ($1, $2, $3, 'text', 'sent', NOW(), $4) RETURNING id",
+            
+            case epgsql:equery(Conn, Sql, [SenderIdInt, ReceiverIdInt, Content, ReplyToInt]) of
+                {ok, _, _, [{MessageId}]} -> {ok, MessageId};
+                {error, Error} -> 
+                    ?LOG_ERROR("❌ Error saving reply message: ~p", [Error]),
+                    {error, Error}
+            end
+        catch
+            Exception:Reason ->
+                ?LOG_ERROR("❌ Exception in save_reply_message: ~p", [Exception, Reason]),
+                {error, invalid_parameters}
         end
     end).

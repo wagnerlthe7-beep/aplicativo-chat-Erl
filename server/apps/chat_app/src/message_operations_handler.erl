@@ -2,6 +2,9 @@
 %%% message_operations_handler.erl - Handler corrigido
 %%%-------------------------------------------------------------------
 -module(message_operations_handler).
+-compile([{nowarn_function, update_reply_to_id, 2},
+          {nowarn_function, send_reply_notification, 4},
+          {nowarn_function, format_reply_message, 2}]).
 -behaviour(cowboy_handler).
 
 -export([init/2]).
@@ -72,6 +75,10 @@ handle_reply_message(MessageId, Req0, State) ->
         
         Content = maps:get(<<"content">>, Data, <<>>),
         SenderId = maps:get(<<"sender_id">>, Data, undefined),
+        ReceiverId = maps:get(<<"receiver_id">>, Data, undefined),
+        
+        ?LOG_INFO("📨 Recebendo reply: messageId=~p, senderId=~p, receiverId=~p, content=~p", 
+                 [MessageId, SenderId, ReceiverId, Content]),
         
         if
             Content =:= <<>> -> 
@@ -82,62 +89,170 @@ handle_reply_message(MessageId, Req0, State) ->
                 %% 1. VERIFICAR SE MENSAGEM ORIGINAL EXISTE
                 case message_repo:get_message_details(MessageId) of
                     {ok, OriginalMessage} ->
-                        %% 2. DETERMINAR RECEIVER ID
+                        %% 2. DETERMINAR RECEIVER ID (CORREÇÃO CRÍTICA)
                         OriginalSenderId = maps:get(sender_id, OriginalMessage),
                         OriginalReceiverId = maps:get(receiver_id, OriginalMessage),
                         
-                        %% Lógica corrigida: 
-                        %% - Se eu sou o receiver da mensagem original, respondo para o sender original
-                        %% - Se eu sou o sender da mensagem original, respondo para o receiver original
                         SenderIdInt = binary_to_integer(SenderId),
-                        ReceiverId = if
-                            SenderIdInt =:= OriginalReceiverId ->
-                                %% Eu recebi a mensagem, respondo para quem enviou
-                                integer_to_binary(OriginalSenderId);
-                            SenderIdInt =:= OriginalSenderId ->
-                                %% Eu enviei a mensagem original, respondo para o receiver original
-                                integer_to_binary(OriginalReceiverId);
-                            true ->
-                                %% Caso especial (admin/moderador respondendo)
-                                integer_to_binary(OriginalReceiverId)
+                        
+                        %% LÓGICA SIMPLIFICADA E CORRETA:
+                        FinalReceiverId = case ReceiverId of
+                            undefined ->
+                                %% Se receiver não foi especificado, determinar baseado na mensagem original
+                                if
+                                    SenderIdInt =:= OriginalReceiverId ->
+                                        integer_to_binary(OriginalSenderId);
+                                    SenderIdInt =:= OriginalSenderId ->
+                                        integer_to_binary(OriginalReceiverId);
+                                    true ->
+                                        %% Fallback
+                                        integer_to_binary(OriginalReceiverId)
+                                end;
+                            _ ->
+                                %% Usar o receiver especificado
+                                ReceiverId
                         end,
                         
-                        %% 3. CRIAR RESPOSTA USANDO MESSAGE ROUTER (fluxo normal)
-                        case message_router:send_message(SenderId, ReceiverId, Content) of
-                            {ok, MessageToReceiver, DeliveryStatus} ->
-                                ?LOG_INFO(" Reply sent via message_router: ~p -> ~p (status: ~p)", 
-                                         [SenderId, ReceiverId, DeliveryStatus]),
+                        ?LOG_INFO("   Original: sender=~p, receiver=~p", 
+                                 [OriginalSenderId, OriginalReceiverId]),
+                        ?LOG_INFO("   Reply: sender=~p, receiver=~p", 
+                                 [SenderId, FinalReceiverId]),
+                        
+                        %% 3. SALVAR MENSAGEM COM reply_to_id
+                        case message_repo:save_reply_message(SenderId, FinalReceiverId, Content, MessageId) of
+                            {ok, DbMessageId} ->
+                                ?LOG_INFO("✅ Reply saved in DB: ~p", [DbMessageId]),
                                 
-                                %% 4. OBTER ID DA MENSAGEM CRIADA PELO ROUTER
-                                DbMessageId = maps:get(<<"db_message_id">>, MessageToReceiver),
-                                
-                                %% 5. ATUALIZAR REPLY_TO_ID DA NOVA MENSAGEM
-                                case update_reply_to_id(DbMessageId, MessageId) of
-                                    ok ->
-                                        %% 6. OBTER MENSAGEM COMPLETA
-                                        case message_repo:get_message_details(integer_to_binary(DbMessageId)) of
-                                            {ok, ReplyMessage} ->
-                                                ?LOG_INFO(" Reply created: ~p -> ~p (original: ~p)", 
-                                                         [SenderId, ReceiverId, MessageId]),
+                                %% 4. BUSCAR DADOS COMPLETOS DA RESPOSTA
+                                case message_repo:get_message_details(integer_to_binary(DbMessageId)) of
+                                    {ok, ReplyMessage} ->
+                                        %% 5. OBTER DADOS DA MENSAGEM ORIGINAL PARA INCLUIR NO REPLY
+                                        OriginalText = maps:get(content, OriginalMessage, <<"Mensagem original">>),
+                                        OriginalSenderIdBin = integer_to_binary(OriginalSenderId),
+                                        
+                                        %% Determinar nome do remetente original
+                                        {ok, OriginalSenderName} = case message_repo:get_user_name(OriginalSenderIdBin) of
+                                            {ok, Name} -> {ok, Name};
+                                            _ -> {ok, <<"Usuário">>}
+                                        end,
+                                        
+                                        ReplyToSenderName = if
+                                            SenderIdInt =:= OriginalSenderId -> <<"Eu">>;
+                                            true -> OriginalSenderName
+                                        end,
+                                        
+                                        %% 6. CRIAR ESTRUTURA DE DADOS PARA O REPLY
+                                        ReplyData = #{
+                                            <<"id">> => integer_to_binary(DbMessageId),
+                                            <<"sender_id">> => SenderId,
+                                            <<"receiver_id">> => FinalReceiverId,
+                                            <<"content">> => Content,
+                                            <<"sent_at">> => maps:get(sent_at, ReplyMessage),
+                                            <<"status">> => <<"sent">>,
+                                            <<"reply_to_id">> => MessageId,
+                                            <<"reply_to_text">> => OriginalText,
+                                            <<"reply_to_sender_name">> => ReplyToSenderName,
+                                            <<"reply_to_sender_id">> => OriginalSenderIdBin
+                                        },
+                                        
+                                        %% 7. ENVIAR PARA O DESTINATÁRIO (STATUS = delivered)
+                                        MessageToReceiver = #{
+                                            <<"type">> => <<"message">>, %% Tipo normal!
+                                            <<"from">> => SenderId,
+                                            <<"to">> => FinalReceiverId,
+                                            <<"content">> => Content,
+                                            <<"timestamp">> => erlang:system_time(second),
+                                            <<"message_id">> => integer_to_binary(DbMessageId),
+                                            <<"db_message_id">> => integer_to_binary(DbMessageId),
+                                            <<"status">> => <<"delivered">>,
+                                            %% INFORMAÇÕES DE REPLY
+                                            <<"reply_to_id">> => MessageId,
+                                            <<"reply_to_text">> => OriginalText,
+                                            <<"reply_to_sender_name">> => ReplyToSenderName,
+                                            <<"reply_to_sender_id">> => OriginalSenderIdBin,
+                                            <<"should_increase_unread">> => true
+                                        },
+                                        
+                                        ?LOG_INFO("   Enviando para receiver ~p", [FinalReceiverId]),
+                                        
+                                        case user_session:send_message(SenderId, FinalReceiverId, MessageToReceiver) of
+                                            ok ->
+                                                %% Atualizar status no banco
+                                                message_repo:mark_message_delivered(DbMessageId),
                                                 
-                                                %% 7. ENVIAR NOTIFICAÇÃO ESPECÍFICA DE RESPOSTA
-                                                send_reply_notification(ReplyMessage, MessageId, SenderId, ReceiverId),
+                                                %% 8. ENVIAR CONFIRMAÇÃO PARA O REMETENTE (STATUS = sent)
+                                                MessageToSender = #{
+                                                    <<"type">> => <<"message">>,
+                                                    <<"from">> => SenderId,
+                                                    <<"to">> => FinalReceiverId,
+                                                    <<"content">> => Content,
+                                                    <<"timestamp">> => erlang:system_time(second),
+                                                    <<"message_id">> => integer_to_binary(DbMessageId),
+                                                    <<"db_message_id">> => integer_to_binary(DbMessageId),
+                                                    <<"status">> => <<"sent">>,
+                                                    %% MESMAS INFORMAÇÕES DE REPLY
+                                                    <<"reply_to_id">> => MessageId,
+                                                    <<"reply_to_text">> => OriginalText,
+                                                    <<"reply_to_sender_name">> => ReplyToSenderName,
+                                                    <<"reply_to_sender_id">> => OriginalSenderIdBin,
+                                                    <<"should_increase_unread">> => false
+                                                },
                                                 
-                                                %% 8. RETORNAR RESPOSTA
+                                                ?LOG_INFO("   Enviando confirmação para sender ~p", [SenderId]),
+                                                user_session:send_message(SenderId, SenderId, MessageToSender),
+                                                
+                                                %% 9. ATUALIZAR CHAT LIST
+                                                send_chat_list_update(SenderId, FinalReceiverId, Content, DbMessageId),
+                                                
+                                                ?LOG_INFO("✅ Reply processado com sucesso"),
+                                                
+                                                %% 10. RETORNAR RESPOSTA
                                                 send_json(Req1, 201, #{
                                                     success => true,
                                                     message => <<"Reply sent successfully">>,
-                                                    reply_message => format_reply_message(ReplyMessage, MessageId)
+                                                    reply_message => ReplyData
                                                 }, State);
-                                            {error, _} ->
-                                                send_json(Req1, 500, #{error => <<"failed_to_get_reply">>}, State)
+                                            {error, user_offline} ->
+                                                %% Destinatário offline: não falhar. Guardar offline com metadados de reply.
+                                                ?LOG_WARNING("ℹ️ Receiver ~p offline ao enviar reply. Guardando como 'sent' e respondendo sucesso.", [FinalReceiverId]),
+                                                MessageOffline = MessageToReceiver#{
+                                                    <<"status">> => <<"sent">>,
+                                                    <<"should_increase_unread">> => true
+                                                },
+                                                message_router:store_offline_message(FinalReceiverId, MessageOffline),
+
+                                                MessageToSender2 = #{
+                                                    <<"type">> => <<"message">>,
+                                                    <<"from">> => SenderId,
+                                                    <<"to">> => FinalReceiverId,
+                                                    <<"content">> => Content,
+                                                    <<"timestamp">> => erlang:system_time(second),
+                                                    <<"message_id">> => integer_to_binary(DbMessageId),
+                                                    <<"db_message_id">> => integer_to_binary(DbMessageId),
+                                                    <<"status">> => <<"sent">>,
+                                                    <<"reply_to_id">> => MessageId,
+                                                    <<"reply_to_text">> => OriginalText,
+                                                    <<"reply_to_sender_name">> => ReplyToSenderName,
+                                                    <<"reply_to_sender_id">> => OriginalSenderIdBin,
+                                                    <<"should_increase_unread">> => false
+                                                },
+                                                user_session:send_message(SenderId, SenderId, MessageToSender2),
+                                                send_chat_list_update(SenderId, FinalReceiverId, Content, DbMessageId),
+                                                send_json(Req1, 201, #{
+                                                    success => true,
+                                                    message => <<"Reply queued (receiver offline)">>,
+                                                    reply_message => ReplyData
+                                                }, State);
+                                            {error, Error} ->
+                                                ?LOG_ERROR("❌ Failed to send reply: ~p", [Error]),
+                                                send_json(Req1, 500, #{error => <<"failed_to_send_reply">>}, State)
                                         end;
                                     {error, _} ->
-                                        send_json(Req1, 500, #{error => <<"failed_to_set_reply_to">>}, State)
+                                        send_json(Req1, 500, #{error => <<"failed_to_get_reply">>}, State)
                                 end;
                             {error, Error} ->
-                                ?LOG_ERROR(" Error sending reply via message_router: ~p", [Error]),
-                                send_json(Req1, 500, #{error => <<"failed_to_send_reply">>}, State)
+                                ?LOG_ERROR("❌ Error saving reply: ~p", [Error]),
+                                send_json(Req1, 500, #{error => <<"failed_to_save_reply">>}, State)
                         end;
                     {error, not_found} ->
                         send_json(Req1, 404, #{error => <<"original_message_not_found">>}, State);
@@ -146,10 +261,10 @@ handle_reply_message(MessageId, Req0, State) ->
                 end
         end
     catch
-        %% CORREÇÃO: Use '_' em vez de variáveis nomeadas
-        _:_ ->
-            ?LOG_ERROR("❌ Exception in reply_message"),
-            send_json(Req0, 400, #{error => <<"invalid_request">>}, State)
+        Exception:Reason:Stacktrace ->
+            ?LOG_ERROR("❌ Exception in reply_message: ~p:~p~nStacktrace: ~p", 
+                      [Exception, Reason, Stacktrace]),
+            send_json(Req0, 500, #{error => <<"server_error">>}, State)
     end.
 
     
@@ -624,8 +739,6 @@ format_edit_history(History) ->
             <<"edited_at">> => maps:get(edited_at, Edit)
         }
     end, History).
-
-%% ======================
 %% FUNÇÕES AUXILIARES
 %% ======================
 
@@ -645,6 +758,34 @@ is_admin(UserId) ->
             _:_ -> false
         end
     end).
+
+%% Enviar atualização para chat list page
+send_chat_list_update(SenderId, ReceiverId, Content, MessageId) ->
+    try
+        %% Notificação para o remetente (atualizar chat list dele)
+        SenderUpdate = #{
+            <<"type">> => <<"chat_list_update">>,
+            <<"action">> => <<"new_message">>,
+            <<"chat_id">> => ReceiverId,
+            <<"last_message">> => Content,
+            <<"timestamp">> => erlang:system_time(second),
+            <<"message_id">> => integer_to_binary(MessageId)
+        },
+        user_session:send_message(SenderId, ReceiverId, SenderUpdate),
+        
+        %% Notificação para o destinatário (atualizar chat list dele)
+        ReceiverUpdate = #{
+            <<"type">> => <<"chat_list_update">>,
+            <<"action">> => <<"new_message">>,
+            <<"chat_id">> => SenderId,
+            <<"last_message">> => Content,
+            <<"timestamp">> => erlang:system_time(second),
+            <<"message_id">> => integer_to_binary(MessageId)
+        },
+        user_session:send_message(SenderId, ReceiverId, ReceiverUpdate)
+    catch
+        _:_ -> ok
+    end.
 
 send_json(Req, Status, Map, State) ->
     Json = jsx:encode(Map),

@@ -12,6 +12,7 @@ import 'chat_service.dart';
 import 'message_operations_service.dart';
 import 'auth_service.dart';
 import 'notification_service.dart';
+import 'dart:math';
 
 class ChatMessage {
   final String id;
@@ -451,36 +452,41 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
-  void _handleIncomingMessage(Map<String, dynamic> message) {
-    print('📨 RAW MESSAGE RECEIVED: $message'); // LOG DETALHADO
-    final type = message['type']?.toString();
-    print('🔍 MESSAGE TYPE: $type'); // DEBUG DO TIPO
+  void _debugPrintMessage(String prefix, Map<String, dynamic> message) {
+    print('$prefix:');
+    print('   type: ${message['type']}');
+    print('   from: ${message['from']}');
+    print('   to: ${message['to']}');
+    print('   content: ${message['content']}');
+    print('   message_id: ${message['message_id']}');
+    print('   db_message_id: ${message['db_message_id']}');
+    print('   reply_to_id: ${message['reply_to_id']}');
+    print('   reply_to_text: ${message['reply_to_text']}');
+    print('   reply_to_sender_name: ${message['reply_to_sender_name']}');
+    print('   status: ${message['status']}');
+  }
 
-    // ✅ ADICIONADO: Handlers para operações avançadas
+  // ======================
+  // MELHORIA NO _handleIncomingMessage()
+  // ======================
+  void _handleIncomingMessage(Map<String, dynamic> message) {
+    final type = message['type']?.toString();
+
     switch (type) {
-      case 'message_edited':
-        _handleEditedMessage(message);
-        return;
       case 'message_deleted':
         _handleDeletedMessage(message);
         return;
-      case 'message_reply':
-        print('🔍 ENTRANDO NO message_reply');
-        _handleReplyMessage(message);
-        return;
+      //case 'message_reply':
+      //  _handleReplyMessage(message);
+      //  return;
       default:
-        print('🔍 MENSAGEM NORMAL - TIPO: $type');
         break;
     }
 
-    // ✅ TRATAMENTO ROBUSTO DE STATUS (SENT -> DELIVERED -> READ)
+    // ✅ TRATAMENTO DE STATUS
     if (type == 'message_delivered' || type == 'message_read') {
       final messageId = message['message_id']?.toString();
       final dbMessageId = message['db_message_id']?.toString();
-
-      print('📥 Status Update: $type');
-      print('   - ID Evento: $messageId');
-      print('   - DB ID: $dbMessageId');
 
       if (messageId != null) {
         final newStatus = type == 'message_delivered' ? 'delivered' : 'read';
@@ -521,6 +527,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               isMe: oldMsg.isMe,
               timestamp: oldMsg.timestamp,
               status: newStatus,
+              // ✅ preservar dados de reply
+              replyToId: oldMsg.replyToId,
+              replyToText: oldMsg.replyToText,
+              replyToSenderName: oldMsg.replyToSenderName,
+              replyToSenderId: oldMsg.replyToSenderId,
             );
           });
         } else if (idx == -1 && dbMessageId != null && mounted) {
@@ -551,6 +562,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 isMe: oldMsg.isMe,
                 timestamp: oldMsg.timestamp,
                 status: newStatus,
+                // ✅ preservar dados de reply
+                replyToId: oldMsg.replyToId,
+                replyToText: oldMsg.replyToText,
+                replyToSenderName: oldMsg.replyToSenderName,
+                replyToSenderId: oldMsg.replyToSenderId,
               );
             });
 
@@ -593,72 +609,92 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         (fromUserId == _currentUserId && toUserId == widget.remoteUserId);
 
     if (isMessageForThisChat && mounted) {
-      print('📨 Mensagem para este chat: $message');
+      print('📨 Mensagem recebida: $message');
+
+      // ✅ DETECTAR SE É UMA RESPOSTA
+      final isReply = message['reply_to_id'] != null;
+      if (isReply) {
+        print('🔍 MENSAGEM É UMA RESPOSTA!');
+        print('   reply_to_id: ${message['reply_to_id']}');
+        print('   reply_to_text: ${message['reply_to_text']}');
+        print('   reply_to_sender_name: ${message['reply_to_sender_name']}');
+      }
+
       final isFromMe = fromUserId == _currentUserId;
       final dbMessageId = message['db_message_id']?.toString();
 
-      // ✅ CORREÇÃO CRÍTICA: Atualizar ID temporário para ID do banco
-      // Relaxamos a verificação de _pendingMessageIds para garantir que o swap ocorra
-      // se a mensagem existir na lista local.
+      // ✅ CORREÇÃO: VERIFICAR SE É UM SWAP DE REPLY
       if (isFromMe && messageId != null && dbMessageId != null) {
         final idx = _messages.indexWhere((m) => m.id == messageId);
         if (idx >= 0) {
-          print('🔄 SWAP DETECTADO: Confirmando envio da mensagem');
-          print('   - ID Temporário: $messageId');
-          print('   - ID Banco: $dbMessageId');
+          print('🔄 SWAP DETECTADO PARA REPLY: $messageId -> $dbMessageId');
 
           setState(() {
             final old = _messages[idx];
-            String statusToUse = 'sent';
-
-            // Verifica se há status pendente para este ID (ex: race condition onde delivered chegou antes)
-            if (_pendingStatusUpdates.containsKey(dbMessageId)) {
-              statusToUse = _pendingStatusUpdates[dbMessageId]!;
-              _pendingStatusUpdates.remove(dbMessageId);
-              print('🔄 Aplicando status pendente após SWAP: $statusToUse');
-            }
-
             _messages[idx] = ChatMessage(
-              id: dbMessageId, // Atualiza para o ID oficial
+              id: dbMessageId,
               text: old.text,
               isMe: old.isMe,
               timestamp: old.timestamp,
-              status: statusToUse,
+              status: message['status']?.toString() ?? 'sent',
+              // ✅ PRESERVAR INFORMAÇÕES DE REPLY
+              replyToId: old.replyToId,
+              replyToText: old.replyToText,
+              replyToSenderName: old.replyToSenderName,
+              replyToSenderId: old.replyToSenderId,
             );
           });
           _pendingMessageIds.remove(messageId);
-          print('   ✅ SWAP REALIZADO COM SUCESSO!');
-          return; // Mensagem atualizada, interrompe o processamento
-        } else {
-          print(
-            '⚠️ Tentativa de SWAP falhou: Mensagem $messageId não encontrada localmente.',
-          );
+          return;
         }
       }
 
-      final isPendingMessage = _pendingMessageIds.contains(messageId ?? '');
-      print('   - isPendingMessage: $isPendingMessage');
-      print('   - messageId: $messageId');
+      // ✅ SWAP HEURÍSTICO PARA REPLIES (quando o servidor envia só o ID real)
+      if (isFromMe &&
+          dbMessageId != null &&
+          (message['reply_to_id'] != null ||
+              message['reply_to_text'] != null)) {
+        final pendingIdx = _messages.indexWhere(
+          (m) =>
+              m.isMe &&
+              m.status == 'sent' &&
+              m.replyToId == message['reply_to_id']?.toString() &&
+              m.text == content,
+        );
 
-      // ✅ VERIFICAÇÃO MELHORADA: só bloqueia se o ID já existe
+        if (pendingIdx >= 0) {
+          final old = _messages[pendingIdx];
+          print('🔄 SWAP HEURÍSTICO DE REPLY: ${old.id} -> $dbMessageId');
+          setState(() {
+            _messages[pendingIdx] = ChatMessage(
+              id: dbMessageId,
+              text: old.text,
+              isMe: old.isMe,
+              timestamp: old.timestamp,
+              status: message['status']?.toString() ?? 'sent',
+              replyToId: old.replyToId,
+              replyToText: old.replyToText,
+              replyToSenderName: old.replyToSenderName,
+              replyToSenderId: old.replyToSenderId,
+            );
+          });
+          _pendingMessageIds.remove(old.id);
+          return;
+        }
+      }
+
+      // ✅ VERIFICAÇÃO DE DUPLICAÇÃO MELHORADA
+      final isPendingMessage = _pendingMessageIds.contains(messageId ?? '');
       final existingMessage = _messages.any(
         (msg) =>
             (messageId != null && msg.id == messageId) ||
             (dbMessageId != null && msg.id == dbMessageId),
       );
-      print('   - existingMessage: $existingMessage');
-      print('   - current messages count: ${_messages.length}');
 
       if (!existingMessage && !isPendingMessage) {
         print('✅ ADICIONANDO MENSAGEM NOVA');
-        print('🔍 CAMPOS DE RESPOSTA NA MENSAGEM:');
-        print('   - reply_to_id: ${message['reply_to_id']}');
-        print('   - reply_to_text: ${message['reply_to_text']}');
-        print('   - reply_to_sender_name: ${message['reply_to_sender_name']}');
 
         final serverTimestamp = _parseRealTimeMessageTimestamp(message);
-
-        // Se vier o DB ID, use-o preferencialmente
         final finalId = dbMessageId ?? messageId ?? _uuid.v4();
 
         setState(() {
@@ -669,7 +705,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               isMe: isFromMe,
               timestamp: serverTimestamp,
               status: message['status']?.toString() ?? 'sent',
-              // ✅ INFORMAÇÕES DE RESPOSTA (SE HOUVER)
+              // ✅ INFORMAÇÕES DE REPLY (SE HOUVER)
               replyToId: message['reply_to_id']?.toString(),
               replyToText: message['reply_to_text']?.toString(),
               replyToSenderName: message['reply_to_sender_name']?.toString(),
@@ -677,81 +713,31 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             ),
           );
 
-          // ✅ ORDENAR MENSAGENS POR TIMESTAMP APÓS ADICIONAR
           _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
         });
+
         _scrollToBottom();
 
         if (isFromMe && messageId != null) {
           _pendingMessageIds.remove(messageId);
         } else if (!isFromMe) {
-          // Mensagem recebida enquanto o chat está aberto:
-          // marcar como lida APENAS se app está em foreground
           if (!_isAppInBackground) {
-            print('📖 Mensagem recebida em foreground - marcando como lida');
+            print('📖 Mensagem recebida - marcando como lida');
             ChatService.markChatAsReadImmediate(widget.remoteUserId);
             ChatService.markMessagesRead(widget.remoteUserId);
           } else {
-            print(
-              '🌑 Mensagem recebida em background - NÃO marcando como lida',
-            );
-
-            // 🔔 ENVIAR NOTIFICAÇÃO QUANDO EM BACKGROUND
+            print('🌑 Mensagem em background - enviando notificação');
             _sendNewMessageNotification(content);
           }
         }
-      } else {
-        print(
-          '❌ MENSAGEM BLOQUEADA: existingMessage=$existingMessage, isPendingMessage=$isPendingMessage',
-        );
-      }
-    } else {
-      print('❌ Mensagem não é para este chat');
-    }
-  }
-
-  // ✅ NOVOS HANDLERS PARA WEBSOCKET
-
-  // Handler para mensagens editadas recebidas via WebSocket
-  void _handleEditedMessage(Map<String, dynamic> message) {
-    final messageId = message['message_id']?.toString();
-    final newContent = message['content']?.toString();
-
-    if (messageId != null && newContent != null) {
-      final index = _messages.indexWhere((msg) => msg.id == messageId);
-      if (index != -1) {
-        setState(() {
-          final oldMessage = _messages[index];
-          _messages[index] = ChatMessage(
-            id: oldMessage.id,
-            text: newContent,
-            isMe: oldMessage.isMe,
-            timestamp: oldMessage.timestamp,
-            status: 'edited',
-          );
-        });
       }
     }
   }
 
-  // Handler para mensagens deletadas recebidas via WebSocket
-  void _handleDeletedMessage(Map<String, dynamic> message) {
-    final messageId = message['message_id']?.toString();
-
-    if (messageId != null) {
-      setState(() {
-        _messages.removeWhere((msg) => msg.id == messageId);
-      });
-    }
-  }
+  // NOVOS HANDLERS PARA WEBSOCKET
 
   // Handler para mensagens de resposta recebidas via WebSocket
   void _handleReplyMessage(Map<String, dynamic> message) {
-    print('🔍 DEBUG _handleReplyMessage: ${message.keys}');
-    print('🔍 reply_to_id: ${message['reply_to_id']}');
-    print('🔍 reply_to_text: ${message['reply_to_text']}');
-    print('🔍 reply_to_sender_name: ${message['reply_to_sender_name']}');
-
     final replyContent = message['content']?.toString();
     final senderId = message['sender_id']?.toString();
     final originalId = message['original_message_id']?.toString();
@@ -764,19 +750,24 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       String? originalText;
       String? originalSenderName;
 
-      final originalMessage = _messages.firstWhere(
-        (msg) => msg.id == originalId,
-        orElse: () => ChatMessage(
-          id: originalId ?? '',
-          text: 'Mensagem não encontrada',
-          isMe: false,
-          timestamp: DateTime.now(),
-          status: 'sent',
-        ),
-      );
+      try {
+        final originalMessage = _messages.firstWhere(
+          (msg) => msg.id == originalId,
+          orElse: () => ChatMessage(
+            id: originalId ?? '',
+            text: 'Mensagem não encontrada',
+            isMe: false,
+            timestamp: DateTime.now(),
+            status: 'sent',
+          ),
+        );
 
-      originalText = originalMessage.text;
-      originalSenderName = originalMessage.isMe ? 'Eu' : widget.contact.name;
+        originalText = originalMessage.text;
+        originalSenderName = originalMessage.isMe ? 'Eu' : widget.contact.name;
+      } catch (e) {
+        originalText = 'Mensagem não encontrada';
+        originalSenderName = 'Desconhecido';
+      }
 
       final replyMessage = ChatMessage(
         id: message['message_id']?.toString() ?? _uuid.v4(),
@@ -797,6 +788,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       });
 
       _scrollToBottom();
+    }
+  }
+
+  // Handler para mensagens deletadas recebidas via WebSocket
+  void _handleDeletedMessage(Map<String, dynamic> message) {
+    final messageId = message['message_id']?.toString();
+
+    if (messageId != null) {
+      setState(() {
+        _messages.removeWhere((msg) => msg.id == messageId);
+      });
     }
   }
 
@@ -1798,86 +1800,184 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     });
   }
 
+  // ======================
+  // FUNÇÃO _sendReply() CORRIGIDA
+  // ======================
   void _sendReply() async {
-    if (_selectedMessageId != null &&
-        _messageController.text.trim().isNotEmpty) {
+    if (_selectedMessageId == null || _selectedMessageId!.isEmpty) {
+      print('❌ _selectedMessageId é nulo ou vazio');
+      return;
+    }
+
+    final replyText = _messageController.text.trim();
+    if (replyText.isEmpty) {
+      print('❌ Texto da resposta está vazio');
+      return;
+    }
+
+    // ✅ SALVAR O ID ANTES DE LIMPAR
+    final originalMessageId = _selectedMessageId!;
+
+    try {
+      print('📤 ENVIANDO REPLY:');
+      print('   Original ID: $originalMessageId');
+      print('   Texto: $replyText');
+      print('   Remote User ID: ${widget.remoteUserId}');
+      print('   Current User ID: $_currentUserId');
+
+      // ✅ 1. OBTER INFORMAÇÕES DA MENSAGEM ORIGINAL COM TRATAMENTO DE ERRO
+      ChatMessage originalMessage;
       try {
+        originalMessage = _messages.firstWhere(
+          (msg) => msg.id == originalMessageId,
+        );
         print(
-          '💬 Respondendo à mensagem $_selectedMessageId: ${_messageController.text}',
+          '✅ Mensagem original encontrada: ${originalMessage.text.substring(0, min(30, originalMessage.text.length))}...',
         );
-
-        // Chamar backend para responder mensagem
-        final result = await MessageOperationsService.replyToMessage(
-          _selectedMessageId!,
-          _messageController.text.trim(),
-          receiverId: widget.remoteUserId,
-        );
-
-        if (result['success'] == true) {
-          // Adicionar mensagem de resposta localmente
-          final replyMessage = result['reply_message'];
-
-          // ✅ OBTER INFORMAÇÕES DA MENSAGEM ORIGINAL
-          final originalMessage = _messages.firstWhere(
-            (msg) => msg.id == _selectedMessageId,
-            orElse: () => ChatMessage(
-              id: _selectedMessageId!,
-              text: 'Mensagem não encontrada',
-              isMe: false,
-              timestamp: DateTime.now(),
-              status: 'sent',
-            ),
-          );
-
-          setState(() {
-            _messages.add(
-              ChatMessage(
-                id: replyMessage['id'].toString(),
-                text: replyMessage['content'],
-                isMe: true,
-                timestamp: DateTime.parse(replyMessage['sent_at']),
-                status: replyMessage['status'],
-                // ✅ INFORMAÇÕES DA RESPOSTA
-                replyToId: _selectedMessageId,
-                replyToText: originalMessage.text,
-                replyToSenderName: originalMessage.isMe
-                    ? 'Eu'
-                    : widget.contact.name,
-              ),
-            );
-
-            // Ordenar mensagens
-            _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-
-            // Limpar seleção
-            _selectedMessageId = null;
-            _messageController.clear();
-          });
-
-          // ✅ ATUALIZAR CHAT LIST PAGE (como nas mensagens normais)
-          ChatService.updateChatAfterReply(
-            widget.remoteUserId,
-            replyMessage['content'],
-          );
-
-          // Scroll para baixo
-          _scrollToBottom();
-        }
       } catch (e) {
-        print('❌ Erro ao responder mensagem: $e');
+        print(
+          '⚠️ Mensagem original não encontrada no histórico local, criando placeholder',
+        );
+        originalMessage = ChatMessage(
+          id: originalMessageId,
+          text: 'Mensagem não encontrada',
+          isMe: false,
+          timestamp: DateTime.now(),
+          status: 'sent',
+        );
+      }
+
+      // ✅ 2. CRIAR ID TEMPORÁRIO PARA A RESPOSTA
+      final tempReplyId =
+          'temp_reply_${DateTime.now().millisecondsSinceEpoch}_${_uuid.v4().substring(0, 8)}';
+
+      print('   ID Temporário: $tempReplyId');
+
+      // ✅ 3. CRIAR MENSAGEM LOCAL COM INFORMAÇÕES COMPLETAS
+      final localReply = ChatMessage(
+        id: tempReplyId,
+        text: replyText,
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: 'sent',
+        // ✅ INFORMAÇÕES DE REPLY PRESERVADAS
+        replyToId: originalMessageId,
+        replyToText: originalMessage.text,
+        replyToSenderName: originalMessage.isMe ? 'Eu' : widget.contact.name,
+        replyToSenderId: originalMessage.isMe
+            ? _currentUserId?.toString() ?? 'unknown'
+            : widget.remoteUserId,
+      );
+
+      // ✅ 4. ADICIONAR À LISTA LOCAL IMEDIATAMENTE
+      setState(() {
+        _messages.add(localReply);
+        _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+        // ✅ LIMPAR CAMPOS APÓS ADICIONAR LOCALMENTE
+        _selectedMessageId = null;
+        _messageController.clear();
+      });
+
+      // ✅ 5. SCROLL PARA BAIXO
+      _scrollToBottom();
+
+      // ✅ 6. ADICIONAR À LISTA DE PENDENTES (PARA EVITAR DUPLICAÇÃO)
+      _pendingMessageIds.add(tempReplyId);
+
+      // ✅ 7. ENVIAR PARA O BACKEND - USAR VARIÁVEL LOCAL SALVA
+      print('🔄 Enviando reply para o backend...');
+      final result = await MessageOperationsService.replyToMessage(
+        originalMessageId,
+        replyText,
+        receiverId: widget.remoteUserId,
+      );
+
+      if (result['success'] == true) {
+        final replyMessage = result['reply_message'];
+        final dbMessageId = replyMessage['id']?.toString();
+
+        print('✅ REPLY ENVIADO COM SUCESSO');
+        print('   ID Banco: $dbMessageId');
+
+        if (dbMessageId != null) {
+          // ✅ 8. ATUALIZAR MENSAGEM LOCAL COM ID REAL DO BANCO
+          final messageIndex = _messages.indexWhere(
+            (msg) => msg.id == tempReplyId,
+          );
+
+          if (messageIndex != -1) {
+            setState(() {
+              _messages[messageIndex] = ChatMessage(
+                id: dbMessageId,
+                text: _messages[messageIndex].text,
+                isMe: _messages[messageIndex].isMe,
+                timestamp: DateTime.parse(
+                  replyMessage['sent_at'] ?? DateTime.now().toIso8601String(),
+                ),
+                status: replyMessage['status']?.toString() ?? 'sent',
+                replyToId: _messages[messageIndex].replyToId,
+                replyToText: _messages[messageIndex].replyToText,
+                replyToSenderName: _messages[messageIndex].replyToSenderName,
+                replyToSenderId: _messages[messageIndex].replyToSenderId,
+              );
+            });
+          }
+
+          _pendingMessageIds.remove(tempReplyId);
+        } else {
+          print('⚠️ Reply enviado mas dbMessageId é nulo');
+        }
+
+        // ✅ 9. ATUALIZAR CHAT LIST
+        ChatService.updateChatAfterReply(widget.remoteUserId, replyText);
+
+        print('✅ Reply processado com sucesso!');
+      } else {
+        print('❌ ERRO NO BACKEND AO ENVIAR REPLY: ${result['error']}');
+        // ✅ SE FALHAR, REMOVER A MENSAGEM LOCAL
+        setState(() {
+          _messages.removeWhere((msg) => msg.id == tempReplyId);
+        });
+        _pendingMessageIds.remove(tempReplyId);
+
+        // ✅ RESTAURAR O ESTADO DE REPLY
+        _selectedMessageId = originalMessageId;
+        _messageController.text = replyText;
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Erro ao responder mensagem: $e'),
+            content: Text('Erro ao enviar resposta: ${result['error']}'),
             backgroundColor: Colors.red,
             duration: Duration(seconds: 3),
           ),
         );
       }
+    } catch (e, stackTrace) {
+      print('❌ ERRO CRÍTICO AO ENVIAR REPLY: $e');
+      print('📚 Stack trace: $stackTrace');
+      print('🔍 Estado no momento do erro:');
+      print('   originalMessageId: $originalMessageId');
+      print('   _selectedMessageId: $_selectedMessageId');
+      print('   replyText: $replyText');
+      print('   currentUserId: $_currentUserId');
+      print('   remoteUserId: ${widget.remoteUserId}');
+
+      // ✅ RESTAURAR O ESTADO PARA TENTAR NOVAMENTE
+      _selectedMessageId = originalMessageId;
+      _messageController.text = replyText;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro: ${e.toString()}'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
     }
   }
 
   // ✅ NOVAS FUNÇÕES AUXILIARES
-
   void _copyMessageText(ChatMessage message) {
     // TODO: Implementar lógica de cópia usando Clipboard
     ScaffoldMessenger.of(context).showSnackBar(
@@ -2146,11 +2246,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         (message.replyToSenderId == _currentUserId.toString())
         ? 'Eu'
         : message.replyToSenderName;
-
-    print('🔍 DEBUG _buildReplyPreview:');
-    print('   - replyToSenderName: ${message.replyToSenderName}');
-    print('   - _currentUserId: $_currentUserId');
-    print('   - replySenderName final: $replySenderName');
 
     return Container(
       margin: const EdgeInsets.only(bottom: 4),
