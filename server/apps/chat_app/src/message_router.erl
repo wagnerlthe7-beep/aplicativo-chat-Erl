@@ -16,7 +16,9 @@
     message_id :: binary(),
     receiver_id :: binary(), 
     sender_id :: binary(),
-    content :: binary(),
+    %% Armazenamos o MAP COMPLETO da mensagem para preservar metadados (ex: reply_to_*).
+    %% Para mensagens antigas, pode ser apenas o conteúdo (binary).
+    content :: term(),
     timestamp :: integer(),
     status :: binary()
 }).
@@ -31,6 +33,7 @@
     get_message_sender/1,
     get_offline_messages/1,
     handle_user_online/1,
+    store_offline_message/2,
     % Funções para notificações (que não estão sendo usadas ainda, mas serão)
     notify_message_edited/4,
     notify_message_deleted/4,
@@ -225,16 +228,27 @@ get_offline_messages(UserId) ->
     {atomic, Results} = mnesia:transaction(F),
     
     Messages = lists:map(fun(R) ->
-        #{
+        ContentData = R#pending_messages.content,
+        % Se content for um mapa completo, extrai o texto e metadados de reply.
+        {ContentText, ReplyFields} = case is_map(ContentData) of
+            true ->
+                {
+                    maps:get(<<"content">>, ContentData, ContentData),
+                    maps:with([<<"reply_to_id">>, <<"reply_to_text">>, <<"reply_to_sender_name">>, <<"reply_to_sender_id">>], ContentData)
+                };
+            false ->
+                {ContentData, #{}}
+        end,
+        maps:merge(#{
             <<"type">> => <<"message">>,
             <<"from">> => R#pending_messages.sender_id,
             <<"to">> => R#pending_messages.receiver_id,
-            <<"content">> => R#pending_messages.content,
+            <<"content">> => ContentText,
             <<"timestamp">> => R#pending_messages.timestamp,
             <<"message_id">> => R#pending_messages.message_id,
             <<"status">> => R#pending_messages.status,
             <<"should_increase_unread">> => true
-        }
+        }, ReplyFields)
     end, Results),
     
     %% Limpar mensagens offline após enviar
@@ -252,10 +266,18 @@ handle_user_online(UserId) ->
         {ok, Messages} ->
             io:format("   📋 Encontradas ~p mensagens pendentes~n", [length(Messages)]),
             
-            MessageIds = lists:map(fun({Id, _SenderId, _Content, _SentAt, _Status}) -> Id end, Messages),
+            MessageIds = lists:map(fun(Msg) -> maps:get(<<"id">>, Msg) end, Messages),
             
             %% 1. Processar cada mensagem (notificar Sender e enviar para Receiver)
-            lists:foreach(fun({Id, SenderId, Content, _SentAt, _Status}) ->
+            lists:foreach(fun(Msg) ->
+                Id = maps:get(<<"id">>, Msg),
+                SenderId = maps:get(<<"sender_id">>, Msg),
+                Content = maps:get(<<"content">>, Msg),
+                SentAt = erlang:system_time(second),
+                ReplyToId = maps:get(<<"reply_to_id">>, Msg, null),
+                ReplyToText = maps:get(<<"reply_to_text">>, Msg, null),
+                ReplyToSenderId = maps:get(<<"reply_to_sender_id">>, Msg, null),
+                ReplyToSenderName = maps:get(<<"reply_to_sender_name">>, Msg, null),
                 SenderIdBin = integer_to_binary(SenderId),
                 
                 %% Notificar remetente (status = delivered)
@@ -275,11 +297,16 @@ handle_user_online(UserId) ->
                     <<"from">> => SenderIdBin,
                     <<"to">> => UserId,
                     <<"content">> => Content,
-                    <<"timestamp">> => erlang:system_time(second),
+                    <<"timestamp">> => SentAt,
                     <<"message_id">> => integer_to_binary(Id),
                     <<"db_message_id">> => Id,
                     <<"status">> => <<"delivered">>,
-                    <<"should_increase_unread">> => true
+                    <<"should_increase_unread">> => true,
+                    %% Metadados de reply
+                    <<"reply_to_id">> => ReplyToId,
+                    <<"reply_to_text">> => ReplyToText,
+                    <<"reply_to_sender_id">> => ReplyToSenderId,
+                    <<"reply_to_sender_name">> => ReplyToSenderName
                 },
                 %% Envia para o próprio usuário que acabou de conectar
                 user_session:send_message(SenderIdBin, UserId, MsgForReceiver)
@@ -324,7 +351,8 @@ get_user_contacts(_UserId) ->
 store_offline_message(UserId, Message) ->
     MessageId = maps:get(<<"message_id">>, Message),
     FromId = maps:get(<<"from">>, Message),
-    Content = maps:get(<<"content">>, Message),
+    %% Guardar o MAP COMPLETO para preservar metadados (ex: reply_to_*).
+    Content = Message,
     Timestamp = maps:get(<<"timestamp">>, Message),
     Status = maps:get(<<"status">>, Message, <<"pending">>),
     
@@ -535,8 +563,6 @@ get_message_replies(MessageId) ->
                         }
                     end, Rows),
                     {ok, Replies};
-                {ok, _, []} ->
-                    {ok, []};
                 {error, Error} ->
                     {error, Error}
             end
