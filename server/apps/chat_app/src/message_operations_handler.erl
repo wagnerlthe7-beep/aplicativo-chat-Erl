@@ -177,8 +177,20 @@ handle_reply_message(MessageId, Req0, State) ->
                                         
                                         case user_session:send_message(SenderId, FinalReceiverId, MessageToReceiver) of
                                             ok ->
-                                                %% Atualizar status no banco
+                                                %% ✅ Atualizar status no banco
                                                 message_repo:mark_message_delivered(DbMessageId),
+                                                
+                                                %% ✅ ENVIAR EVENTO DE DELIVERED PARA O REMETENTE
+                                                %% (mesmo comportamento do fluxo normal via WebSocket)
+                                                DeliveryMsg = #{
+                                                    <<"type">> => <<"message_delivered">>,
+                                                    <<"message_id">> => integer_to_binary(DbMessageId),
+                                                    <<"db_message_id">> => DbMessageId,
+                                                    <<"status">> => <<"delivered">>,
+                                                    <<"delivered_at">> => erlang:system_time(second)
+                                                },
+                                                %% from = destinatário, to = remetente (mesma convenção de message_router)
+                                                user_session:send_message(FinalReceiverId, SenderId, DeliveryMsg),
                                                 
                                                 %% 8. ENVIAR CONFIRMAÇÃO PARA O REMETENTE (STATUS = sent)
                                                 MessageToSender = #{
@@ -761,28 +773,23 @@ is_admin(UserId) ->
 
 %% Enviar atualização para chat list page
 send_chat_list_update(SenderId, ReceiverId, Content, MessageId) ->
+    %% 🔄 IMPORTANTE: Unificar o formato de chat_list_update com o usado em message_router
+    %% para que o Flutter consiga sempre extrair from/to corretamente.
+    %%
+    %% O ChatService, em _updateChatOnMessageReceived, espera os campos:
+    %%   - "from"/"to"  OU  "sender_id"/"receiver_id"
+    %% e usa "content" como last_message.
+    %% Aqui delegamos para message_router:send_chat_list_update/4,
+    %% que já envia exatamente esse formato:
+    %%   #{<<"type">> => <<"chat_list_update">>,
+    %%     <<"message_id">> => integer_to_binary(MessageId),
+    %%     <<"from">> => FromId,
+    %%     <<"to">> => ToId,
+    %%     <<"content">> => Content,
+    %%     <<"timestamp">> => ...,
+    %%     <<"action">> => <<"new_message">>}
     try
-        %% Notificação para o remetente (atualizar chat list dele)
-        SenderUpdate = #{
-            <<"type">> => <<"chat_list_update">>,
-            <<"action">> => <<"new_message">>,
-            <<"chat_id">> => ReceiverId,
-            <<"last_message">> => Content,
-            <<"timestamp">> => erlang:system_time(second),
-            <<"message_id">> => integer_to_binary(MessageId)
-        },
-        user_session:send_message(SenderId, ReceiverId, SenderUpdate),
-        
-        %% Notificação para o destinatário (atualizar chat list dele)
-        ReceiverUpdate = #{
-            <<"type">> => <<"chat_list_update">>,
-            <<"action">> => <<"new_message">>,
-            <<"chat_id">> => SenderId,
-            <<"last_message">> => Content,
-            <<"timestamp">> => erlang:system_time(second),
-            <<"message_id">> => integer_to_binary(MessageId)
-        },
-        user_session:send_message(SenderId, ReceiverId, ReceiverUpdate)
+        message_router:send_chat_list_update(SenderId, ReceiverId, Content, MessageId)
     catch
         _:_ -> ok
     end.

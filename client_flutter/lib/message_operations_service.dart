@@ -114,10 +114,9 @@ class MessageOperationsService {
   /// 3. RESPONDER MENSAGEM
   /// ======================
   static Future<Map<String, dynamic>> replyToMessage(
-    dynamic originalMessageId, // Aceitar int ou String
-    String replyContent, {
-    String? receiverId,
-    String? groupId,
+    dynamic originalMessageId,
+    String content, {
+    required String receiverId,
   }) async {
     try {
       final accessToken = await _secureStorage.read(key: 'access_token');
@@ -127,24 +126,21 @@ class MessageOperationsService {
         throw Exception('Usuário não autenticado');
       }
 
-      // Converter para String se for int
-      final currentUserIdString = currentUserId.toString();
-      final messageIdString = originalMessageId.toString();
+      final url = Uri.parse(
+        '$_backendUrl/api/messages/$originalMessageId/reply',
+      );
 
-      final url = Uri.parse('$_backendUrl/api/messages/$messageIdString/reply');
+      print('📤 Enviando reply para API:');
+      print('   URL: $url');
+      print('   sender_id: $currentUserId');
+      print('   receiver_id: $receiverId');
+      print('   content: $content');
 
-      final Map<String, dynamic> body = {
-        'content': replyContent,
-        'sender_id': currentUserIdString,
+      final Map<String, dynamic> requestBody = {
+        'sender_id': currentUserId,
+        'content': content,
+        'receiver_id': receiverId, // ✅ CRÍTICO: sempre enviar receiver_id
       };
-
-      if (receiverId != null) {
-        body['receiver_id'] = receiverId;
-      }
-
-      if (groupId != null) {
-        body['group_id'] = groupId;
-      }
 
       final response = await http.post(
         url,
@@ -152,23 +148,30 @@ class MessageOperationsService {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer $accessToken',
         },
-        body: jsonEncode(body),
+        body: jsonEncode(requestBody),
       );
+
+      print('📥 Resposta do servidor:');
+      print('   Status: ${response.statusCode}');
+      print('   Body: ${response.body}');
 
       if (response.statusCode == 201) {
         final data = jsonDecode(response.body);
-        return {
-          'success': true,
-          'message': data['message'],
-          'reply_message': data['reply_message'],
-        };
+        print('✅ Reply enviado com sucesso');
+        print('   Data: $data');
+        return data;
       } else {
         final errorData = jsonDecode(response.body);
-        throw Exception(errorData['error'] ?? 'Erro ao responder mensagem');
+        print('❌ Erro no servidor: $errorData');
+        throw Exception(
+          errorData['error'] ?? 'Erro ao enviar reply (${response.statusCode})',
+        );
       }
-    } catch (e) {
-      print('❌ Erro ao responder mensagem: $e');
-      return {'success': false, 'error': e.toString()};
+    } catch (e, stackTrace) {
+      print('❌ ERRO CRÍTICO NO replyToMessage:');
+      print('   Exception: $e');
+      print('   Stack trace: $stackTrace');
+      rethrow;
     }
   }
 

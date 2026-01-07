@@ -12,6 +12,7 @@ import 'chat_service.dart';
 import 'message_operations_service.dart';
 import 'auth_service.dart';
 import 'notification_service.dart';
+import 'app_theme.dart';
 import 'dart:math';
 
 class ChatMessage {
@@ -631,12 +632,21 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
           setState(() {
             final old = _messages[idx];
+            // ❗ Não fazer downgrade de status: se já está delivered/read,
+            // não voltar para 'sent' por causa do echo.
+            final incomingStatus = message['status']?.toString() ?? old.status;
+            final finalStatus =
+                (old.status == 'read' || old.status == 'delivered') &&
+                    incomingStatus == 'sent'
+                ? old.status
+                : incomingStatus;
+
             _messages[idx] = ChatMessage(
               id: dbMessageId,
               text: old.text,
               isMe: old.isMe,
               timestamp: old.timestamp,
-              status: message['status']?.toString() ?? 'sent',
+              status: finalStatus,
               // ✅ PRESERVAR INFORMAÇÕES DE REPLY
               replyToId: old.replyToId,
               replyToText: old.replyToText,
@@ -666,12 +676,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           final old = _messages[pendingIdx];
           print('🔄 SWAP HEURÍSTICO DE REPLY: ${old.id} -> $dbMessageId');
           setState(() {
+            // ❗ Também não fazer downgrade de status aqui.
+            final incomingStatus = message['status']?.toString() ?? old.status;
+            final finalStatus =
+                (old.status == 'read' || old.status == 'delivered') &&
+                    incomingStatus == 'sent'
+                ? old.status
+                : incomingStatus;
+
             _messages[pendingIdx] = ChatMessage(
               id: dbMessageId,
               text: old.text,
               isMe: old.isMe,
               timestamp: old.timestamp,
-              status: message['status']?.toString() ?? 'sent',
+              status: finalStatus,
               replyToId: old.replyToId,
               replyToText: old.replyToText,
               replyToSenderName: old.replyToSenderName,
@@ -1131,12 +1149,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final messageGroups = _groupMessagesByDate();
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppTheme.backgroundColor,
       appBar: AppBar(
-        backgroundColor: Colors.green,
+        backgroundColor: AppTheme.appBarColor,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          icon: const Icon(Icons.arrow_back, color: AppTheme.textOnGreen),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
@@ -1148,8 +1166,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   )
                 : CircleAvatar(
                     radius: 18,
-                    backgroundColor: Colors.white,
-                    child: Icon(Icons.person, color: Colors.green, size: 20),
+                    backgroundColor: AppTheme.surfaceColor,
+                    child: Icon(
+                      Icons.person,
+                      color: AppTheme.avatarIcon,
+                      size: 20,
+                    ),
                   ),
             const SizedBox(width: 12),
             Expanded(
@@ -1160,7 +1182,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   Text(
                     _getContactName(),
                     style: const TextStyle(
-                      color: Colors.white,
+                      color: AppTheme.textOnGreen,
                       fontSize: 16,
                       fontWeight: FontWeight.w500,
                     ),
@@ -1171,8 +1193,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       _getPresenceText(),
                       style: TextStyle(
                         color: _contactPresenceStatus == 'online'
-                            ? Colors.white.withOpacity(0.8)
-                            : Colors.white.withOpacity(0.6),
+                            ? AppTheme.textOnGreen.withOpacity(0.8)
+                            : AppTheme.textOnGreen.withOpacity(0.6),
                         fontSize: 12,
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -1186,15 +1208,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.videocam, color: Colors.white),
+            icon: const Icon(Icons.videocam, color: AppTheme.textOnGreen),
             onPressed: () {},
           ),
           IconButton(
-            icon: const Icon(Icons.call, color: Colors.white),
+            icon: const Icon(Icons.call, color: AppTheme.textOnGreen),
             onPressed: () {},
           ),
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert, color: Colors.white),
+            icon: const Icon(Icons.more_vert, color: AppTheme.textOnGreen),
             onSelected: (value) {},
             itemBuilder: (context) => [
               const PopupMenuItem(
@@ -1213,8 +1235,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         children: [
           if (_isLoadingHistory)
             LinearProgressIndicator(
-              backgroundColor: Colors.green[100],
-              valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
+              backgroundColor: AppTheme.appBarColor.withOpacity(0.2),
+              valueColor: const AlwaysStoppedAnimation<Color>(
+                AppTheme.appBarColor,
+              ),
             ),
           Expanded(
             child: _messages.isEmpty && !_isLoadingHistory
@@ -1250,13 +1274,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           decoration: BoxDecoration(
-            color: Colors.grey[300],
+            color: AppTheme.replyPreviewBackground,
             borderRadius: BorderRadius.circular(12),
           ),
           child: Text(
             _formatDateHeader(date),
             style: TextStyle(
-              color: Colors.grey[700],
+              color: AppTheme.textSecondary,
               fontSize: 12,
               fontWeight: FontWeight.w500,
             ),
@@ -1271,11 +1295,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.chat_bubble_outline, size: 80, color: Colors.grey[300]),
+          Icon(Icons.chat_bubble_outline, size: 80, color: AppTheme.textLight),
           const SizedBox(height: 16),
           const Text(
             'Inicie uma conversa',
-            style: TextStyle(color: Colors.grey, fontSize: 16),
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 16),
           ),
           const SizedBox(height: 8),
           Text(
@@ -1284,7 +1308,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 : _isConnected
                 ? 'Envie uma mensagem para começar'
                 : 'Conectando ao servidor...',
-            style: const TextStyle(color: Colors.grey, fontSize: 14),
+            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14),
           ),
         ],
       ),
@@ -1333,7 +1357,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   _buildAttachmentOption(
                     icon: Icons.photo_library,
                     label: 'Galeria',
-                    color: Colors.blue,
+                    color: AppTheme.actionEdit,
                     onTap: () {
                       Navigator.pop(context);
                       _pickFromGallery();
@@ -1344,7 +1368,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   _buildAttachmentOption(
                     icon: Icons.camera_alt,
                     label: 'Câmera',
-                    color: Colors.green,
+                    color: AppTheme.appBarColor,
                     onTap: () {
                       Navigator.pop(context);
                       _pickFromCamera();
@@ -1581,7 +1605,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             if (message.isMe) ...[
               if (_canEditMessage(message)) // ✅ VERIFICAÇÃO DE TEMPO
                 ListTile(
-                  leading: Icon(Icons.edit, color: Colors.blue),
+                  leading: Icon(Icons.edit, color: AppTheme.actionEdit),
                   title: Text('Editar mensagem'),
                   onTap: () {
                     Navigator.pop(context);
@@ -1591,7 +1615,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
               // Apagar (sempre permitido para mensagens próprias)
               ListTile(
-                leading: Icon(Icons.delete, color: Colors.red),
+                leading: Icon(Icons.delete, color: AppTheme.actionDelete),
                 title: Text('Apagar mensagem'),
                 onTap: () {
                   Navigator.pop(context);
@@ -1603,7 +1627,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             // Opções para todas as mensagens
             // Responder
             ListTile(
-              leading: Icon(Icons.reply, color: Colors.green),
+              leading: Icon(Icons.reply, color: AppTheme.appBarColor),
               title: Text('Responder'),
               onTap: () {
                 Navigator.pop(context);
@@ -1613,7 +1637,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
             // Copiar texto
             ListTile(
-              leading: Icon(Icons.content_copy, color: Colors.grey),
+              leading: Icon(Icons.content_copy, color: AppTheme.actionCopy),
               title: Text('Copiar texto'),
               onTap: () {
                 Navigator.pop(context);
@@ -1695,7 +1719,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('Mensagem editada com sucesso'),
-              backgroundColor: Colors.green,
+              backgroundColor: AppTheme.appBarColor,
               duration: Duration(seconds: 2),
             ),
           );
@@ -1730,7 +1754,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   : message.text,
               style: TextStyle(
                 fontStyle: FontStyle.italic,
-                color: Colors.grey[600],
+                color: AppTheme.textSecondary,
               ),
             ),
           ],
@@ -1768,7 +1792,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Mensagem apagada com sucesso'),
-            backgroundColor: Colors.green,
+            backgroundColor: AppTheme.appBarColor,
             duration: Duration(seconds: 2),
           ),
         );
@@ -2002,7 +2026,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Colors.grey[700],
+        backgroundColor: AppTheme.textSecondary,
         duration: Duration(seconds: 2),
       ),
     );
@@ -2017,8 +2041,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             height: 250,
             padding: EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border(top: BorderSide(color: Colors.grey[300]!)),
+              color: AppTheme.surfaceColor,
+              border: Border(top: BorderSide(color: AppTheme.dividerColor)),
             ),
             child: Column(
               children: [
@@ -2073,12 +2097,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           Container(
             padding: EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.green[50],
-              border: Border(left: BorderSide(color: Colors.green, width: 3)),
+              color: AppTheme.replyPreviewBackground,
+              border: Border(
+                left: BorderSide(color: AppTheme.appBarColor, width: 3),
+              ),
             ),
             child: Row(
               children: [
-                Icon(Icons.reply, color: Colors.green, size: 16),
+                Icon(Icons.reply, color: AppTheme.appBarColor, size: 16),
                 SizedBox(width: 8),
                 Expanded(
                   child: Column(
@@ -2088,7 +2114,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       Text(
                         'Respondendo a:',
                         style: TextStyle(
-                          color: Colors.green[700],
+                          color: AppTheme.appBarColor,
                           fontSize: 12,
                           fontWeight: FontWeight.w500,
                         ),
@@ -2097,7 +2123,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       Text(
                         _getReplyPreviewText(_selectedMessageId!),
                         style: TextStyle(
-                          color: Colors.green[600],
+                          color: AppTheme.replyPreviewText,
                           fontSize: 13,
                         ),
                         maxLines: 1,
@@ -2119,17 +2145,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           Container(
             padding: EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.blue[50],
-              border: Border(left: BorderSide(color: Colors.blue, width: 3)),
+              color: AppTheme.actionEdit.withOpacity(0.1),
+              border: Border(
+                left: BorderSide(color: AppTheme.actionEdit, width: 3),
+              ),
             ),
             child: Row(
               children: [
-                Icon(Icons.edit, color: Colors.blue, size: 16),
+                Icon(Icons.edit, color: AppTheme.actionEdit, size: 16),
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     'Editando mensagem...',
-                    style: TextStyle(color: Colors.blue[700]),
+                    style: TextStyle(color: AppTheme.actionEdit),
                   ),
                 ),
                 IconButton(
@@ -2143,19 +2171,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         // Campo de mensagem
         Container(
           padding: const EdgeInsets.all(16),
-          color: Colors.grey[50],
+          color: AppTheme.searchBackground,
           child: Row(
             children: [
               IconButton(
-                icon: Icon(Icons.attach_file, color: Colors.grey[600]),
+                icon: Icon(Icons.attach_file, color: AppTheme.textSecondary),
                 onPressed: _showAttachmentMenu,
               ),
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: AppTheme.inputBackground,
                     borderRadius: BorderRadius.circular(25),
-                    border: Border.all(color: Colors.grey[300]!),
+                    border: Border.all(color: AppTheme.inputBorder),
                   ),
                   child: Row(
                     children: [
@@ -2168,7 +2196,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                 : (_selectedMessageId != null
                                       ? 'Sua resposta...'
                                       : 'Digite uma mensagem...'),
-                            hintStyle: TextStyle(color: Colors.grey),
+                            hintStyle: TextStyle(color: AppTheme.textLight),
                             border: InputBorder.none,
                             contentPadding: EdgeInsets.symmetric(
                               horizontal: 16,
@@ -2193,7 +2221,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       IconButton(
                         icon: Icon(
                           Icons.emoji_emotions_outlined,
-                          color: Colors.grey[600],
+                          color: AppTheme.textSecondary,
                         ),
                         onPressed: _toggleEmojiPicker,
                       ),
@@ -2204,7 +2232,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               const SizedBox(width: 8),
               Container(
                 decoration: BoxDecoration(
-                  color: _isConnected ? Colors.green : Colors.grey,
+                  color: _isConnected
+                      ? AppTheme.appBarColor
+                      : AppTheme.textLight,
                   shape: BoxShape.circle,
                 ),
                 child: IconButton(
@@ -2212,7 +2242,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     _messageController.text.trim().isEmpty
                         ? (_isRecording ? Icons.stop : Icons.mic)
                         : Icons.send,
-                    color: Colors.white,
+                    color: AppTheme.textOnGreen,
                   ),
                   onPressed: _isConnected
                       ? () {
@@ -2251,11 +2281,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       margin: const EdgeInsets.only(bottom: 4),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: message.isMe ? Colors.white.withOpacity(0.2) : Colors.grey[300],
+        color: message.isMe
+            ? AppTheme.textOnGreen.withOpacity(0.2)
+            : AppTheme.replyPreviewBackground,
         borderRadius: BorderRadius.circular(8),
         border: Border(
           left: BorderSide(
-            color: message.isMe ? Colors.white70 : Colors.grey[600]!,
+            color: message.isMe
+                ? AppTheme.textOnGreen.withOpacity(0.7)
+                : AppTheme.appBarColor,
             width: 3,
           ),
         ),
@@ -2269,7 +2303,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.bold,
-                color: message.isMe ? Colors.white70 : Colors.grey[700],
+                color: message.isMe
+                    ? AppTheme.textOnGreen.withOpacity(0.9)
+                    : AppTheme.textSecondary,
               ),
             ),
             const SizedBox(height: 2),
@@ -2278,7 +2314,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             message.replyToText!,
             style: TextStyle(
               fontSize: 12,
-              color: message.isMe ? Colors.white70 : Colors.grey[700],
+              color: message.isMe
+                  ? AppTheme.textOnGreen.withOpacity(0.9)
+                  : AppTheme.textSecondary,
               fontStyle: FontStyle.italic,
             ),
             maxLines: 2,
@@ -2307,8 +2345,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     )
                   : CircleAvatar(
                       radius: 16,
-                      backgroundColor: Colors.green[100],
-                      child: Icon(Icons.person, color: Colors.green, size: 16),
+                      backgroundColor: AppTheme.avatarBackground,
+                      child: Icon(
+                        Icons.person,
+                        color: AppTheme.avatarIcon,
+                        size: 16,
+                      ),
                     ),
               const SizedBox(width: 8),
             ],
@@ -2319,7 +2361,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  color: message.isMe ? Colors.green : Colors.grey[200],
+                  color: message.isMe
+                      ? AppTheme.appBarColor
+                      : AppTheme.messageReceived,
                   borderRadius: BorderRadius.circular(18),
                 ),
                 child: Column(
@@ -2332,7 +2376,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     Text(
                       message.text,
                       style: TextStyle(
-                        color: message.isMe ? Colors.white : Colors.grey[800],
+                        color: message.isMe
+                            ? AppTheme.messageSentText
+                            : AppTheme.messageReceivedText,
                         fontSize: 16,
                       ),
                     ),
@@ -2344,8 +2390,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           _formatTime(message.timestamp),
                           style: TextStyle(
                             color: message.isMe
-                                ? Colors.white.withOpacity(0.7)
-                                : Colors.grey[500],
+                                ? AppTheme.messageSentText.withOpacity(0.7)
+                                : AppTheme.textLight,
                             fontSize: 10,
                           ),
                         ),
@@ -2355,8 +2401,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                             'editada',
                             style: TextStyle(
                               color: message.isMe
-                                  ? Colors.white.withOpacity(0.7)
-                                  : Colors.grey[500],
+                                  ? AppTheme.messageSentText.withOpacity(0.7)
+                                  : AppTheme.textLight,
                               fontSize: 9,
                               fontStyle: FontStyle.italic,
                             ),
@@ -2389,17 +2435,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     switch (status) {
       case 'read':
         icon = Icons.done_all;
-        color = Colors.lightBlueAccent;
+        color = AppTheme.statusRead;
         break;
       case 'delivered':
       case 'received':
         icon = Icons.done_all;
-        color = Colors.white70;
+        color = AppTheme.statusDelivered;
         break;
       case 'sent':
       default:
         icon = Icons.check;
-        color = Colors.white70;
+        color = AppTheme.statusSent;
         break;
     }
 

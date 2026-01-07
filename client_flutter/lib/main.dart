@@ -10,6 +10,7 @@ import 'chat_list_page.dart';
 import 'chat_service.dart'; // Import necessário
 import 'websocket_foreground_service.dart'; // Foreground service
 import 'notification_service.dart'; // Serviço de notificações
+import 'app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -78,11 +79,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     return MaterialApp(
       title: 'SpeekJoy',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primaryColor: Colors.green,
-        primarySwatch: Colors.green,
-        visualDensity: VisualDensity.adaptivePlatformDensity,
-      ),
+      theme: AppTheme.lightTheme,
       initialRoute: '/',
       routes: {
         '/': (context) => StartupPage(),
