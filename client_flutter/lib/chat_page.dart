@@ -474,6 +474,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final type = message['type']?.toString();
 
     switch (type) {
+      case 'message_edited':
+        _handleEditedMessage(message);
+        return;
       case 'message_deleted':
         _handleDeletedMessage(message);
         return;
@@ -816,6 +819,38 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (messageId != null) {
       setState(() {
         _messages.removeWhere((msg) => msg.id == messageId);
+      });
+    }
+  }
+
+  // Handler para mensagens editadas recebidas via WebSocket
+  void _handleEditedMessage(Map<String, dynamic> message) {
+    final messageId = message['message_id']?.toString();
+    final newContent = message['content']?.toString();
+
+    if (messageId != null && newContent != null) {
+      print(
+        '✏️ Recebida notificação de edição: messageId=$messageId, newContent=$newContent',
+      );
+
+      setState(() {
+        final messageIndex = _messages.indexWhere((msg) => msg.id == messageId);
+        if (messageIndex != -1) {
+          final oldMessage = _messages[messageIndex];
+          _messages[messageIndex] = ChatMessage(
+            id: oldMessage.id,
+            text: newContent,
+            isMe: oldMessage.isMe,
+            timestamp: oldMessage.timestamp,
+            status: 'edited', // ✅ MARCAR COMO EDITADA
+            // ✅ PRESERVAR DADOS DE REPLY
+            replyToId: oldMessage.replyToId,
+            replyToText: oldMessage.replyToText,
+            replyToSenderName: oldMessage.replyToSenderName,
+            replyToSenderId: oldMessage.replyToSenderId,
+          );
+          print('✅ Mensagem ${messageId} atualizada em tempo real');
+        }
       });
     }
   }
@@ -1696,6 +1731,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         );
 
         if (result['success'] == true) {
+          // ATUALIZAR LOCALMENTE (modal já foi fechado ao clicar em "Editar")
           // Atualizar localmente com dados do backend
           setState(() {
             final messageIndex = _messages.indexWhere(
@@ -1703,12 +1739,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             );
             if (messageIndex != -1) {
               final updatedMessage = result['edited_message'];
+              final oldMessage = _messages[messageIndex];
               _messages[messageIndex] = ChatMessage(
                 id: updatedMessage['id'].toString(),
                 text: updatedMessage['content'],
-                isMe: _messages[messageIndex].isMe,
+                isMe: oldMessage.isMe,
                 timestamp: DateTime.parse(updatedMessage['sent_at']),
-                status: updatedMessage['status'],
+                status: 'edited', // ✅ FORÇAR STATUS COMO EDITADO
+                // ✅ PRESERVAR DADOS DE REPLY
+                replyToId: oldMessage.replyToId,
+                replyToText: oldMessage.replyToText,
+                replyToSenderName: oldMessage.replyToSenderName,
+                replyToSenderId: oldMessage.replyToSenderId,
               );
             }
             _editingMessageId = null;
@@ -1716,13 +1758,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             _messageController.clear();
           });
 
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Mensagem editada com sucesso'),
-              backgroundColor: AppTheme.appBarColor,
-              duration: Duration(seconds: 2),
-            ),
-          );
+          // ✅ Mensagem editada sem popup de sucesso
         }
       } catch (e) {
         print('❌ Erro ao editar mensagem: $e');

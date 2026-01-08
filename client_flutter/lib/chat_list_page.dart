@@ -133,7 +133,6 @@ class _ChatListPageState extends State<ChatListPage>
 
     // OUVIR ATUALIZAÇÕES EM TEMPO REAL
     _chatSubscription = ChatService.chatListStream.listen((chats) {
-      print('📡 Lista de chats atualizada: ${chats.length} chats');
       if (mounted) {
         setState(() {
           _chats = chats;
@@ -286,7 +285,11 @@ class _ChatListPageState extends State<ChatListPage>
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.contacts, color: AppTheme.appBarColor, size: 20),
+                      Icon(
+                        Icons.contacts,
+                        color: AppTheme.appBarColor,
+                        size: 20,
+                      ),
                       SizedBox(width: 6),
                       if (!_isSearching)
                         Text(
@@ -341,7 +344,11 @@ class _ChatListPageState extends State<ChatListPage>
                     )
                   else
                     IconButton(
-                      icon: Icon(Icons.search, color: AppTheme.appBarColor, size: 20),
+                      icon: Icon(
+                        Icons.search,
+                        color: AppTheme.appBarColor,
+                        size: 20,
+                      ),
                       padding: EdgeInsets.all(4),
                       constraints: BoxConstraints(minWidth: 36, minHeight: 36),
                       onPressed: _toggleSearch,
@@ -359,7 +366,10 @@ class _ChatListPageState extends State<ChatListPage>
                     children: [
                       Text(
                         '${filteredContacts.length} contactos encontrados',
-                        style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
@@ -385,7 +395,9 @@ class _ChatListPageState extends State<ChatListPage>
                                           searchController.text.isNotEmpty
                                       ? 'Nenhum resultado para "${searchController.text}"'
                                       : 'Nenhum contacto encontrado',
-                                  style: TextStyle(color: AppTheme.textSecondary),
+                                  style: TextStyle(
+                                    color: AppTheme.textSecondary,
+                                  ),
                                   textAlign: TextAlign.center,
                                 ),
                               ],
@@ -523,7 +535,9 @@ class _ChatListPageState extends State<ChatListPage>
               openAppSettings();
             },
             child: Text('Configurações'),
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.appBarColor),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.appBarColor,
+            ),
           ),
         ],
       ),
@@ -596,7 +610,9 @@ class _ChatListPageState extends State<ChatListPage>
                     height: 20,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(AppTheme.textOnGreen),
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        AppTheme.textOnGreen,
+                      ),
                     ),
                   )
                 : Icon(Icons.refresh, color: AppTheme.textOnGreen),
@@ -735,7 +751,9 @@ class _ChatListPageState extends State<ChatListPage>
                 height: 20,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(AppTheme.textOnGreen),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    AppTheme.textOnGreen,
+                  ),
                 ),
               )
             : Icon(Icons.chat, color: AppTheme.textOnGreen),
@@ -773,7 +791,9 @@ class _ChatListPageState extends State<ChatListPage>
           child: chat.photo == null
               ? Icon(Icons.person, color: AppTheme.textSecondary, size: 28)
               : null,
-          backgroundColor: chat.photo == null ? AppTheme.avatarBackground : null,
+          backgroundColor: chat.photo == null
+              ? AppTheme.avatarBackground
+              : null,
         ),
         title: Text(
           chat.name,

@@ -219,7 +219,16 @@ class ChatService {
         case 'chat_list_update':
           print('📋 Chat list update recebido: $message');
           final shouldIncreaseUnread = false; // Não aumenta unread para updates
-          _updateChatOnMessageReceived(message, shouldIncreaseUnread);
+
+          // Verificar se é uma edição para tratar adequadamente
+          final action = message['action']?.toString();
+          if (action == 'edit_message') {
+            print('   ✅ É uma edição de mensagem - atualizando chat list');
+            // Para edições, garantir que não aumenta unread e atualiza conteúdo
+            _updateChatOnMessageEdit(message);
+          } else {
+            _updateChatOnMessageReceived(message, shouldIncreaseUnread);
+          }
           break;
         case 'presence':
           final userId = message['user_id']?.toString();
@@ -363,6 +372,65 @@ class ChatService {
       );
     } catch (e) {
       print('❌ Erro ao atualizar chat: $e');
+    }
+  }
+
+  // ATUALIZAR CHAT PARA EDIÇÃO DE MENSAGEM
+  static void _updateChatOnMessageEdit(Map<String, dynamic> message) async {
+    try {
+      // Tentar pegar IDs primários
+      String? fromUserId = message['from']?.toString();
+      String? toUserId = message['to']?.toString();
+
+      // Fallback: alguns payloads podem usar sender_id / receiver_id
+      fromUserId ??= message['sender_id']?.toString();
+      toUserId ??= message['receiver_id']?.toString();
+
+      final content = message['content']?.toString() ?? '';
+      var currentUserId = await _secureStorage.read(key: 'user_id');
+
+      // Fallback: tenta recarregar auth data se vier nulo
+      if (currentUserId == null) {
+        final auth = await _loadAuthData();
+        currentUserId = auth['userId'];
+      }
+
+      if (currentUserId == null || fromUserId == null || toUserId == null) {
+        print('❌ Dados insuficientes para atualizar chat de edição');
+        return;
+      }
+
+      // ✅ IDENTIFICAR CONTATO (sempre o outro usuário)
+      String contactId = fromUserId == currentUserId ? toUserId : fromUserId;
+
+      // ✅ BUSCAR INFORMAÇÕES DO CONTATO
+      final contactInfo = await _getContactInfo(contactId);
+
+      // ✅ ATUALIZAR CHAT EXISTENTE SEM MUDAR UNREAD
+      if (_chatContacts.containsKey(contactId)) {
+        final existing = _chatContacts[contactId]!;
+        _chatContacts[contactId] = existing.copyWith(
+          name: contactInfo['name'],
+          phoneNumber: contactInfo['phone'],
+          photo: contactInfo['photo'],
+          lastMessageTime: DateTime.now(),
+          lastMessage: content, // ✅ ATUALIZAR CONTEÚDO DA MENSAGEM EDITADA
+          unreadCount: existing.unreadCount, // ✅ MANTER UNREAD ATUAL
+          lastMessageIsReply: false, // ✅ NÃO É REPLY
+        );
+        print(
+          '   ✅ Chat atualizado com mensagem editada: ${contactInfo['name']}',
+        );
+      }
+
+      _saveChatsToStorage();
+      _chatListController.add(_getSortedChatList());
+
+      print(
+        '✅ Chat de edição atualizado: ${contactInfo['name']} (content: $content)',
+      );
+    } catch (e) {
+      print('❌ Erro ao atualizar chat de edição: $e');
     }
   }
 

@@ -32,6 +32,13 @@ class MessageOperationsService {
 
       final url = Uri.parse('$_backendUrl/api/messages/$messageIdString/edit');
 
+      print('🔍 DEBUG EDIT MESSAGE:');
+      print('   URL: $url');
+      print('   Message ID: $messageIdString');
+      print('   New Content: $newContent');
+      print('   User ID: $currentUserIdString');
+      print('   Token: ${accessToken.substring(0, 20)}...');
+
       final response = await http.patch(
         url,
         headers: {
@@ -43,6 +50,9 @@ class MessageOperationsService {
           'user_id': currentUserIdString,
         }),
       );
+
+      print('📥 Response Status: ${response.statusCode}');
+      print('📥 Response Body: ${response.body}');
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -139,7 +149,7 @@ class MessageOperationsService {
       final Map<String, dynamic> requestBody = {
         'sender_id': currentUserId,
         'content': content,
-        'receiver_id': receiverId, // ✅ CRÍTICO: sempre enviar receiver_id
+        'receiver_id': receiverId, // sempre enviar receiver_id
       };
 
       final response = await http.post(

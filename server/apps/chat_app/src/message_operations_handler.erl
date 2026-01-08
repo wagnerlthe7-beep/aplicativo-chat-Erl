@@ -20,15 +20,19 @@ init(Req0, State) ->
     try
         handle_request(Method, Path, Req0, State)
     catch
-        %% CORREÇÃO: Use '_' ou variáveis que começam com underscore
         _:_Error:_Reason ->
             ?LOG_ERROR("❌ Exception in message_operations_handler"),
             send_json(Req0, 500, #{error => <<"internal_server_error">>}, State)
     end.
 
 handle_request(<<"PATCH">>, <<"/api/messages/", _/binary>> = Path, Req0, State) ->
-    MessageId = extract_message_id(Path),
-    handle_edit_message(MessageId, Req0, State);
+    case binary:match(Path, <<"/edit">>) of
+        nomatch ->
+            send_json(Req0, 404, #{error => <<"route_not_found">>}, State);
+        _ ->
+            MessageId = extract_message_id(Path),
+            handle_edit_message(MessageId, Req0, State)
+    end;
 
 handle_request(<<"DELETE">>, <<"/api/messages/", _/binary>> = Path, Req0, State) ->
     MessageId = extract_message_id(Path),
@@ -279,7 +283,6 @@ handle_reply_message(MessageId, Req0, State) ->
             send_json(Req0, 500, #{error => <<"server_error">>}, State)
     end.
 
-    
 %% ======================
 %% 1. EDITAR MENSAGEM (PATCH /api/messages/:messageId/edit)
 %% ======================
@@ -298,8 +301,11 @@ handle_edit_message(MessageId, Req0, State) ->
                 send_json(Req1, 401, #{error => <<"user_id_required">>}, State);
             true ->
                 %% ✅ VERIFICAR SE USUÁRIO PODE EDITAR
+                ?LOG_INFO("🔍 Checking edit permissions for message ~p by user ~p", [MessageId, UserId]),
+                %% Na função handle_edit_message, linha ~331:
                 case message_repo:can_edit_message(MessageId, UserId) of
-                    {ok, can_edit} ->
+                    {ok, can_edit} ->  % ← Este é o padrão que está falhando
+                        ?LOG_INFO("✅ User can edit message: ~p", [can_edit]),
                         %% ✅ OBTER MENSAGEM ORIGINAL
                         case message_repo:get_message_details(MessageId) of
                             {ok, OriginalMessage} ->
@@ -311,13 +317,30 @@ handle_edit_message(MessageId, Req0, State) ->
                                 %% ✅ ATUALIZAR MENSAGEM
                                 case update_message_content(MessageId, Content) of
                                     ok ->
-                                        %% ✅ OBTER MENSAGEM ATUALIZADA
+                                        %% OBTER MENSAGEM ATUALIZADA
                                         case message_repo:get_message_details(MessageId) of
                                             {ok, UpdatedMessage} ->
-                                                ?LOG_INFO("✅ Message edited: ~p by user ~p", [MessageId, UserId]),
+                                                io:format("✅ Message edited: ~p by user ~p~n", [MessageId, UserId]),
+                                                io:format("🔍 DEBUG COMPARAÇÃO DE IDs:~n", []),
+                                                io:format("   MessageId da URL: ~p~n", [MessageId]),
+                                                io:format("   ID do UpdatedMessage: ~p~n", [maps:get(id, UpdatedMessage)]),
+                                                io:format("   São iguais? ~p~n", [MessageId =:= maps:get(id, UpdatedMessage)]),
+                                                io:format(" UpdatedMessage: ~p~n", [UpdatedMessage]),
                                                 
-                                                %% ✅ NOTIFICAR DESTINATÁRIO
+                                                %% NOTIFICAR DESTINATÁRIO
                                                 notify_message_edited(UpdatedMessage),
+                                                
+                                                %% ATUALIZAR CHAT LIST PARA AMBOS COM ACTION=edit_message
+                                                SenderIdBin = integer_to_binary(maps:get(sender_id, UpdatedMessage)),
+                                                ReceiverIdBin = integer_to_binary(maps:get(receiver_id, UpdatedMessage)),
+                                                Content = maps:get(content, UpdatedMessage),
+                                                UpdatedMessageId = integer_to_binary(maps:get(id, UpdatedMessage)),
+                                                
+                                                % Para o remetente (deve mostrar a mensagem editada)
+                                                send_chat_list_edit_update(SenderIdBin, ReceiverIdBin, Content, UpdatedMessageId),
+                                                
+                                                % Para o destinatário (deve mostrar a mensagem editada)  
+                                                send_chat_list_edit_update(ReceiverIdBin, SenderIdBin, Content, UpdatedMessageId),
                                                 
                                                 send_json(Req1, 200, #{
                                                     success => true,
@@ -345,8 +368,9 @@ handle_edit_message(MessageId, Req0, State) ->
         end
     catch
         %% CORREÇÃO: Use '_' em vez de variáveis nomeadas
-        _:_ ->
-            ?LOG_ERROR("❌ Exception in edit_message"),
+        Class:Reason:Stacktrace ->
+            ?LOG_ERROR("❌ Exception in edit_message: ~p:~p~nStacktrace: ~p", 
+                      [Class, Reason, Stacktrace]),
             send_json(Req0, 400, #{error => <<"invalid_request">>}, State)
     end.
 
@@ -662,8 +686,12 @@ notify_message_edited(Message) ->
             <<"timestamp">> => erlang:system_time(second)
         },
         
+        % Enviar para destinatário
         user_session:send_message(SenderId, ReceiverId, Notification),
-        ?LOG_INFO("📡 Edit notification sent: ~p -> ~p", [SenderId, ReceiverId])
+        % Enviar para remetente (para atualizar UI dele também)
+        user_session:send_message(SenderId, SenderId, Notification),
+        
+        ?LOG_INFO("📡 Edit notification sent: ~p -> ~p and ~p -> ~p", [SenderId, ReceiverId, SenderId, SenderId])
     catch
         %% CORREÇÃO: Use '_' em vez de variáveis nomeadas
         _:_ ->
@@ -725,20 +753,53 @@ format_reply_message(Message, OriginalMessageId) ->
     end.
 
 format_message(Message) ->
-    #{
-        <<"id">> => integer_to_binary(maps:get(id, Message)),
-        <<"sender_id">> => integer_to_binary(maps:get(sender_id, Message)),
-        <<"receiver_id">> => integer_to_binary(maps:get(receiver_id, Message)),
-        <<"content">> => maps:get(content, Message),
-        <<"sent_at">> => maps:get(sent_at, Message),
-        <<"status">> => maps:get(status, Message, <<"sent">>),
-        <<"is_edited">> => maps:get(is_edited, Message, false),
-        <<"edit_count">> => maps:get(edit_count, Message, 0),
-        <<"reply_to_id">> => case maps:get(reply_to_id, Message, undefined) of
-                               undefined -> null;
-                               Id -> integer_to_binary(Id)
-                             end
-    }.
+    try
+        io:format("🔍 DEBUG format_message: Message=~p~n", [Message]),
+        Id = maps:get(id, Message),
+        io:format("🔍 DEBUG format_message: Id=~p~n", [Id]),
+        SenderId = maps:get(sender_id, Message),
+        io:format("🔍 DEBUG format_message: SenderId=~p~n", [SenderId]),
+        ReceiverId = maps:get(receiver_id, Message),
+        io:format("🔍 DEBUG format_message: ReceiverId=~p~n", [ReceiverId]),
+        Content = maps:get(content, Message),
+        SentAt = maps:get(sent_at, Message),
+        Status = maps:get(status, Message, <<"sent">>),
+        IsEdited = maps:get(is_edited, Message, false),
+        EditCount = maps:get(edit_count, Message, 0),
+        ReplyToId = maps:get(reply_to_id, Message, undefined),
+        io:format("🔍 DEBUG format_message: ReplyToId=~p~n", [ReplyToId]),
+        
+        #{
+            <<"id">> => integer_to_binary(Id),
+            <<"sender_id">> => integer_to_binary(SenderId),
+            <<"receiver_id">> => integer_to_binary(ReceiverId),
+            <<"content">> => Content,
+            <<"sent_at">> => SentAt,
+            <<"status">> => Status,
+            <<"is_edited">> => IsEdited,
+            <<"edit_count">> => EditCount,
+            <<"reply_to_id">> => case ReplyToId of
+                                   undefined -> null;
+                                   null -> null;
+                                   Id -> integer_to_binary(Id)
+                                 end,
+            <<"deleted_by">> => case maps:get(deleted_by, Message, undefined) of
+                                   undefined -> null;
+                                   null -> null;
+                                   DelBy -> integer_to_binary(DelBy)
+                                 end,
+            <<"deleted_at">> => case maps:get(deleted_at, Message, undefined) of
+                                   undefined -> null;
+                                   null -> null;
+                                   DelAt -> DelAt
+                                 end
+        }
+    catch
+        Class:Reason:Stacktrace ->
+            io:format("❌ Exception in format_message: ~p:~p~nStacktrace: ~p", 
+                      [Class, Reason, Stacktrace]),
+            throw({error, format_failed})
+    end.
 
 format_edit_history(History) ->
     lists:map(fun(Edit) ->
@@ -764,30 +825,54 @@ is_admin(UserId) ->
             
             case epgsql:equery(Conn, Sql, [UserIdInt]) of
                 {ok, _, [{true}]} -> true;
-                _ -> false
+                {ok, _, [{false}]} -> false;
+                {error, _} -> false
             end
+            
         catch
             _:_ -> false
         end
     end).
 
+%% Enviar atualização para chat list page de edição (com action=edit_message)
+send_chat_list_edit_update(SenderId, ReceiverId, Content, MessageId) ->
+    try
+        %% Notificação para o remetente (atualizar chat list dele)
+        SenderUpdate = #{
+            <<"type">> => <<"chat_list_update">>,
+            <<"message_id">> => MessageId,  % ← JÁ É BINÁRIO!
+            <<"from">> => SenderId,
+            <<"to">> => ReceiverId,
+            <<"content">> => Content,
+            <<"timestamp">> => erlang:system_time(second),
+            <<"action">> => <<"edit_message">>
+        },
+        io:format("🔍 DEBUG send_chat_list_edit_update: Enviando SenderUpdate=~p~n", [SenderUpdate]),
+        user_session:send_message(ReceiverId, SenderId, SenderUpdate),
+        io:format("🔍 DEBUG send_chat_list_edit_update: SenderUpdate enviado com sucesso~n", []),
+        
+        %% Notificação para o destinatário (atualizar chat list dele)
+        ReceiverUpdate = #{
+            <<"type">> => <<"chat_list_update">>,
+            <<"message_id">> => MessageId,  % ← JÁ É BINÁRIO!
+            <<"from">> => SenderId,
+            <<"to">> => ReceiverId,
+            <<"content">> => Content,
+            <<"timestamp">> => erlang:system_time(second),
+            <<"action">> => <<"edit_message">>
+        },
+        user_session:send_message(SenderId, ReceiverId, ReceiverUpdate),
+        
+        ?LOG_INFO("   📋 Chat list edit update sent for message ~p", [MessageId])
+    catch
+        Class:Reason:Stacktrace ->
+            io:format("❌ Exception in send_chat_list_edit_update: ~p:~p~nStacktrace: ~p", 
+                      [Class, Reason, Stacktrace]),
+            ?LOG_ERROR("   ❌ Failed to send chat list edit update")
+    end.
+
 %% Enviar atualização para chat list page
 send_chat_list_update(SenderId, ReceiverId, Content, MessageId) ->
-    %% 🔄 IMPORTANTE: Unificar o formato de chat_list_update com o usado em message_router
-    %% para que o Flutter consiga sempre extrair from/to corretamente.
-    %%
-    %% O ChatService, em _updateChatOnMessageReceived, espera os campos:
-    %%   - "from"/"to"  OU  "sender_id"/"receiver_id"
-    %% e usa "content" como last_message.
-    %% Aqui delegamos para message_router:send_chat_list_update/4,
-    %% que já envia exatamente esse formato:
-    %%   #{<<"type">> => <<"chat_list_update">>,
-    %%     <<"message_id">> => integer_to_binary(MessageId),
-    %%     <<"from">> => FromId,
-    %%     <<"to">> => ToId,
-    %%     <<"content">> => Content,
-    %%     <<"timestamp">> => ...,
-    %%     <<"action">> => <<"new_message">>}
     try
         message_router:send_chat_list_update(SenderId, ReceiverId, Content, MessageId)
     catch
