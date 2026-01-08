@@ -298,41 +298,67 @@ get_edit_history(MessageId) ->
     end).
 
 %% @doc Verificar se usuário pode editar mensagem
+%% @doc Verificar se usuário pode editar mensagem
 can_edit_message(MessageId, UserId) ->
+    ?LOG_INFO("🔍 can_edit_message: MessageId=~p, UserId=~p", [MessageId, UserId]),
     db_pool:with_connection(fun(Conn) ->
         try
             MsgIdInt = binary_to_integer_wrapper(MessageId),
             UserIdInt = binary_to_integer_wrapper(UserId),
+            ?LOG_INFO("🔍 Converted IDs: MsgIdInt=~p, UserIdInt=~p", [MsgIdInt, UserIdInt]),
             
             Sql = "SELECT m.id, m.sender_id, m.sent_at, m.is_deleted
                    FROM messages m
                    WHERE m.id = $1 AND m.sender_id = $2",
             
             case epgsql:equery(Conn, Sql, [MsgIdInt, UserIdInt]) of
-                {ok, _, [{_, _, SentAt, IsDeleted}]} ->
-                    % Verificar tempo (15 minutos)
-                    Now = erlang:system_time(second),
-                    SentAtUnix = case SentAt of
-                        {Date, Time} ->
-                            calendar:datetime_to_gregorian_seconds({Date, Time});
-                        _ -> Now
-                    end,
-                    
-                    TimeDiff = Now - SentAtUnix,
-                    MaxEditTime = 15 * 60, % 15 minutos em segundos
-                    
-                    if
-                        IsDeleted -> {error, already_deleted};
-                        TimeDiff > MaxEditTime -> {error, edit_time_expired};
-                        true -> {ok, can_edit}
+                {ok, _, Rows} ->
+                    ?LOG_INFO("🔍 Query result: Rows=~p", [Rows]),
+                    case Rows of
+                        [{_Id, _SenderId, SentAt, IsDeleted}] ->
+                            % Verificar tempo (15 minutos)
+                            Now = erlang:system_time(second),
+                            SentAtUnix = case SentAt of
+                                {Date, {Hour, Min, Sec}} ->
+                                    calendar:datetime_to_gregorian_seconds({Date, {Hour, Min, trunc(Sec)}});
+                                {Date, {Hour, Min, Sec, _MicroSec}} ->
+                                    calendar:datetime_to_gregorian_seconds({Date, {Hour, Min, trunc(Sec)}});
+                                _ -> 
+                                    Now
+                            end,
+                            
+                            TimeDiff = Now - SentAtUnix,
+                            MaxEditTime = 15 * 60, % 15 minutos em segundos
+                            
+                            ?LOG_INFO("🔍 Time check: SentAt=~p, Now=~p, Diff=~p, Max=~p", 
+                                     [SentAt, Now, TimeDiff, MaxEditTime]),
+                            
+                            if
+                                IsDeleted -> 
+                                    ?LOG_INFO("❌ Message is deleted"), 
+                                    {error, already_deleted};
+                                TimeDiff > MaxEditTime -> 
+                                    ?LOG_INFO("❌ Edit time expired"), 
+                                    {error, edit_time_expired};
+                                true -> 
+                                    ?LOG_INFO("✅ User can edit message"), 
+                                    {ok, can_edit}  % <- GARANTIR que retorna {ok, can_edit}
+                            end;
+                        [] ->
+                            ?LOG_INFO("❌ No rows found - not authorized"),
+                            {error, not_authorized};
+                        _ ->
+                            ?LOG_INFO("❌ Unexpected rows format"),
+                            {error, not_found}
                     end;
-                {ok, _, []} ->
-                    {error, not_authorized};
-                _ ->
-                    {error, not_found}
+                {error, Error} ->
+                    ?LOG_INFO("❌ Database error: ~p", [Error]),
+                    {error, database_error}
             end
         catch
-            _:_ -> {error, invalid_id}
+            Class:Reason ->
+                io:format("🎯 CATCH ERROR em can_edit_message: Class=~p, Reason=~p~n", [Class, Reason]),
+                {error, invalid_id}
         end
     end).
 
