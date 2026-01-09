@@ -676,8 +676,9 @@ notify_message_edited(Message) ->
             <<"message_id">> => MessageId,
             <<"sender_id">> => SenderId,
             <<"receiver_id">> => ReceiverId,
-            <<"content">> => Content,
-            <<"timestamp">> => erlang:system_time(second)
+            <<"content">> => Content
+            % ✅ NÃO ENVIAR TIMESTAMP EM EDIÇÕES - NÃO DEVE MOVER CHAT!
+            % <<"timestamp">> => erlang:system_time(second)
         },
         
         % Enviar para destinatário
@@ -838,7 +839,8 @@ send_chat_list_edit_update(SenderId, ReceiverId, Content, MessageId) ->
             <<"from">> => SenderId,
             <<"to">> => ReceiverId,
             <<"content">> => Content,
-            <<"timestamp">> => erlang:system_time(second),
+            % ✅ NÃO ENVIAR TIMESTAMP EM EDIÇÕES - NÃO DEVE MOVER CHAT!
+            % <<"timestamp">> => erlang:system_time(second),
             <<"action">> => <<"edit_message">>
         },
         io:format("🔍 DEBUG send_chat_list_edit_update: Enviando SenderUpdate=~p~n", [SenderUpdate]),
@@ -852,7 +854,8 @@ send_chat_list_edit_update(SenderId, ReceiverId, Content, MessageId) ->
             <<"from">> => SenderId,
             <<"to">> => ReceiverId,
             <<"content">> => Content,
-            <<"timestamp">> => erlang:system_time(second),
+            % ✅ NÃO ENVIAR TIMESTAMP EM EDIÇÕES - NÃO DEVE MOVER CHAT!
+            % <<"timestamp">> => erlang:system_time(second),
             <<"action">> => <<"edit_message">>
         },
         user_session:send_message(SenderId, ReceiverId, ReceiverUpdate),
