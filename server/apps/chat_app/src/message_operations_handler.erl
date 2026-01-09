@@ -320,12 +320,6 @@ handle_edit_message(MessageId, Req0, State) ->
                                         %% OBTER MENSAGEM ATUALIZADA
                                         case message_repo:get_message_details(MessageId) of
                                             {ok, UpdatedMessage} ->
-                                                io:format("✅ Message edited: ~p by user ~p~n", [MessageId, UserId]),
-                                                io:format("🔍 DEBUG COMPARAÇÃO DE IDs:~n", []),
-                                                io:format("   MessageId da URL: ~p~n", [MessageId]),
-                                                io:format("   ID do UpdatedMessage: ~p~n", [maps:get(id, UpdatedMessage)]),
-                                                io:format("   São iguais? ~p~n", [MessageId =:= maps:get(id, UpdatedMessage)]),
-                                                io:format(" UpdatedMessage: ~p~n", [UpdatedMessage]),
                                                 
                                                 %% NOTIFICAR DESTINATÁRIO
                                                 notify_message_edited(UpdatedMessage),

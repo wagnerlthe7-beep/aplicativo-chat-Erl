@@ -21,6 +21,7 @@ class ChatMessage {
   final bool isMe;
   final DateTime timestamp;
   final String status; // 'sent', 'delivered', 'read'
+  final bool isEdited; // ✅ STATUS DE EDIÇÃO (sempre que is_edited for true)
   final String? replyToId; // ID da mensagem respondida
   final String? replyToText; // Texto da mensagem respondida
   final String? replyToSenderName; // Nome de quem enviou a mensagem respondida
@@ -32,6 +33,7 @@ class ChatMessage {
     required this.isMe,
     required this.timestamp,
     required this.status,
+    this.isEdited = false, // ✅ PADRÃO: NÃO EDITADA
     this.replyToId,
     this.replyToText,
     this.replyToSenderName,
@@ -72,6 +74,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final Map<String, String> _pendingStatusUpdates = {};
   final Uuid _uuid = Uuid();
   bool _hasMarkedAsRead = false;
+  List<Map<String, dynamic>> _messageHistory =
+      []; // ✅ ADICIONAR HISTÓRICO LOCAL
   Timer? _markAsReadTimer;
   bool _isAppInBackground = false; // Nova variável para controlar background
 
@@ -796,6 +800,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         isMe: isFromMe,
         timestamp: serverTimestamp,
         status: message['status']?.toString() ?? 'sent',
+        // ✅ MENSAGEM DE RESPOSTA PODE SER EDITADA (se for do usuário atual)
+        isEdited: false, // Será true quando for editada
         // ✅ INFORMAÇÕES DA RESPOSTA
         replyToId: originalId,
         replyToText: originalText,
@@ -842,7 +848,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             text: newContent,
             isMe: oldMessage.isMe,
             timestamp: oldMessage.timestamp,
-            status: 'edited', // ✅ MARCAR COMO EDITADA
+            status: oldMessage
+                .status, // ✅ PRESERVAR STATUS DELIVERY (sent/delivered/read)
+            isEdited: true, // ✅ MARCAR COMO EDITADA
             // ✅ PRESERVAR DADOS DE REPLY
             replyToId: oldMessage.replyToId,
             replyToText: oldMessage.replyToText,
@@ -926,10 +934,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 isMe: _isMessageFromMe(msg),
                 timestamp: serverTimestamp,
                 status: (msg['status']?.toString() ?? 'sent'),
+                isEdited:
+                    (msg['is_edited'] ==
+                    true), // ✅ VERIFICAR is_edited DO BACKEND
                 // ✅ INFORMAÇÕES DE RESPOSTA DO HISTÓRICO
                 replyToId: msg['reply_to_id']?.toString(),
                 replyToText: msg['reply_to_text']?.toString(),
                 replyToSenderName: msg['reply_to_sender_name']?.toString(),
+                replyToSenderId: msg['reply_to_sender_id']?.toString(),
               );
             }).toList(),
           );
@@ -1034,6 +1046,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           isMe: true,
           timestamp: DateTime.now(),
           status: 'sent', // ícone de enviado só se realmente for ao servidor
+          isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
         ),
       );
 
@@ -1740,22 +1753,56 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             if (messageIndex != -1) {
               final updatedMessage = result['edited_message'];
               final oldMessage = _messages[messageIndex];
+
+              // 🔍 DEBUG: VERIFICAR STATUS ANTES DE MUDAR
+              print('🔍 DEBUG EDIÇÃO:');
+              print('   Status delivery original: ${oldMessage.status}');
+              print('   Status backend: ${updatedMessage['status']}');
+              print('   is_edited backend: ${updatedMessage['is_edited']}');
+              print('   Status delivery que será usado: ${oldMessage.status}');
+
               _messages[messageIndex] = ChatMessage(
                 id: updatedMessage['id'].toString(),
                 text: updatedMessage['content'],
                 isMe: oldMessage.isMe,
                 timestamp: DateTime.parse(updatedMessage['sent_at']),
-                status: 'edited', // ✅ FORÇAR STATUS COMO EDITADO
+                status: oldMessage
+                    .status, // ✅ PRESERVAR STATUS DELIVERY (sent/delivered/read)
+                isEdited: true, // ✅ MARCAR COMO EDITADA
                 // ✅ PRESERVAR DADOS DE REPLY
                 replyToId: oldMessage.replyToId,
                 replyToText: oldMessage.replyToText,
                 replyToSenderName: oldMessage.replyToSenderName,
                 replyToSenderId: oldMessage.replyToSenderId,
               );
+
+              // 🔍 DEBUG: VERIFICAR STATUS APÓS MUDAR
+              print(
+                '   ✅ Status delivery após edição: ${_messages[messageIndex].status}',
+              );
+
+              // ✅ ATUALIZAR CONTEÚDO NO HISTÓRICO LOCAL (preservar status delivery)
+              final historyMessageIndex = _messageHistory.indexWhere(
+                (msg) => msg['message_id']?.toString() == _editingMessageId,
+              );
+              if (historyMessageIndex != -1) {
+                _messageHistory[historyMessageIndex] = {
+                  ..._messageHistory[historyMessageIndex],
+                  'content':
+                      updatedMessage['content'], // ✅ ATUALIZAR APENAS CONTEÚDO
+                  'is_edited':
+                      updatedMessage['is_edited'], // ✅ ATUALIZAR is_edited
+                  // ✅ NÃO MUDAR STATUS DELIVERY - PRESERVAR ORIGINAL!
+                };
+              }
             }
             _editingMessageId = null;
             _editController.clear();
             _messageController.clear();
+
+            print(
+              '✅ Conteúdo atualizado no histórico local (status delivery preservado)',
+            );
           });
 
           // ✅ Mensagem editada sem popup de sucesso
@@ -2431,15 +2478,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                             fontSize: 10,
                           ),
                         ),
-                        if (message.status == 'edited') ...[
+                        if (message.isEdited) ...[
                           SizedBox(width: 4),
                           Text(
-                            'editada',
+                            'Editada',
                             style: TextStyle(
-                              color: message.isMe
-                                  ? AppTheme.messageSentText.withOpacity(0.7)
-                                  : AppTheme.textLight,
-                              fontSize: 9,
+                              fontSize: 10,
+                              color: Colors.grey[600],
                               fontStyle: FontStyle.italic,
                             ),
                           ),
