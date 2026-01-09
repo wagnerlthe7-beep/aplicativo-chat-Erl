@@ -223,9 +223,11 @@ class ChatService {
           // Verificar se é uma edição para tratar adequadamente
           final action = message['action']?.toString();
           if (action == 'edit_message') {
-            print('   ✅ É uma edição de mensagem - atualizando chat list');
-            // Para edições, garantir que não aumenta unread e atualiza conteúdo
-            _updateChatOnMessageEdit(message);
+            print(
+              '   ✅ É uma edição de mensagem - atualizando conteúdo sem mover chat',
+            );
+            // ✅ ATUALIZAR CONTEÚDO SEM REORDENAR CHAT LIST!
+            _updateChatContentOnly(message);
           } else {
             _updateChatOnMessageReceived(message, shouldIncreaseUnread);
           }
@@ -409,11 +411,19 @@ class ChatService {
       // ✅ ATUALIZAR CHAT EXISTENTE SEM MUDAR UNREAD
       if (_chatContacts.containsKey(contactId)) {
         final existing = _chatContacts[contactId]!;
+        print('🔍 DEBUG EDIÇÃO CHAT:');
+        print('   - Chat: ${contactInfo['name']}');
+        print('   - Timestamp ANTES: ${existing.lastMessageTime}');
+        print(
+          '   - Timestamp DEPOIS: ${existing.lastMessageTime}',
+        ); // ✅ VALOR REAL!
+
         _chatContacts[contactId] = existing.copyWith(
           name: contactInfo['name'],
           phoneNumber: contactInfo['phone'],
           photo: contactInfo['photo'],
-          lastMessageTime: DateTime.now(),
+          // ✅ NÃO ATUALIZAR lastMessageTime - EDIÇÃO NÃO MOVE CHAT!
+          lastMessageTime: existing.lastMessageTime,
           lastMessage: content, // ✅ ATUALIZAR CONTEÚDO DA MENSAGEM EDITADA
           unreadCount: existing.unreadCount, // ✅ MANTER UNREAD ATUAL
           lastMessageIsReply: false, // ✅ NÃO É REPLY
@@ -424,7 +434,8 @@ class ChatService {
       }
 
       _saveChatsToStorage();
-      _chatListController.add(_getSortedChatList());
+      // ✅ NÃO REORDENAR EM EDIÇÕES - APENAS ATUALIZAR CONTEÚDO
+      _chatListController.add(_chatContacts.values.toList());
 
       print(
         '✅ Chat de edição atualizado: ${contactInfo['name']} (content: $content)',
@@ -973,6 +984,7 @@ class ChatService {
   }
 
   static List<ChatContact> _getSortedChatList() {
+    print('🔍 DEBUG: _getSortedChatList() chamado - reordenando chats...');
     return _chatContacts.values.toList()
       ..sort((a, b) => b.lastMessageTime.compareTo(a.lastMessageTime));
   }
@@ -1224,5 +1236,46 @@ class ChatService {
     if (rem == 3) return '$input=';
     if (rem == 1) return '$input===';
     return input;
+  }
+
+  // ✅ ATUALIZAR APENAS CONTEÚDO DO CHAT SEM REORDENAR
+  static void _updateChatContentOnly(Map<String, dynamic> message) async {
+    try {
+      String? fromUserId = message['from']?.toString();
+      String? toUserId = message['to']?.toString();
+      final content = message['content']?.toString() ?? '';
+      var currentUserId = await _secureStorage.read(key: 'user_id');
+
+      if (currentUserId == null || fromUserId == null || toUserId == null) {
+        print('❌ Dados insuficientes para atualizar conteúdo do chat');
+        return;
+      }
+
+      String contactId = fromUserId == currentUserId ? toUserId : fromUserId;
+
+      if (_chatContacts.containsKey(contactId)) {
+        final existing = _chatContacts[contactId]!;
+        print('🔧 ATUALIZANDO CONTEÚDO DO CHAT (sem reordenar):');
+        print('   - Chat: ${existing.name}');
+        print('   - Novo conteúdo: $content');
+
+        _chatContacts[contactId] = existing.copyWith(
+          name: existing.name,
+          phoneNumber: existing.phoneNumber,
+          photo: existing.photo,
+          lastMessageTime: existing.lastMessageTime, // ✅ PRESERVAR TIMESTAMP!
+          lastMessage: content, // ✅ ATUALIZAR APENAS CONTEÚDO
+          unreadCount: existing.unreadCount, // ✅ MANTER UNREAD
+          lastMessageIsReply: false,
+        );
+        print('   ✅ Conteúdo do chat atualizado sem mover posição');
+      }
+
+      // ✅ ATUALIZAR FRONTEND SEM REORDENAR
+      _chatListController.add(_chatContacts.values.toList());
+      _saveChatsToStorage();
+    } catch (e) {
+      print('❌ Erro ao atualizar conteúdo do chat: $e');
+    }
   }
 }

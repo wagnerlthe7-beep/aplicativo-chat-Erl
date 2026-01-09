@@ -1765,7 +1765,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 id: updatedMessage['id'].toString(),
                 text: updatedMessage['content'],
                 isMe: oldMessage.isMe,
-                timestamp: DateTime.parse(updatedMessage['sent_at']),
+                timestamp:
+                    oldMessage.timestamp, // ✅ PRESERVAR TIMESTAMP ORIGINAL!
                 status: oldMessage
                     .status, // ✅ PRESERVAR STATUS DELIVERY (sent/delivered/read)
                 isEdited: true, // ✅ MARCAR COMO EDITADA
