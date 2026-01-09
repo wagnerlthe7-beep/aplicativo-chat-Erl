@@ -1,12 +1,55 @@
-import 'package:flutter/material.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
-import 'package:uuid/uuid.dart';
-import 'chat_service.dart';
-import 'auth_service.dart';
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:uuid/uuid.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'chat_model.dart';
+import 'chat_service.dart';
+import 'message_operations_service.dart';
+import 'auth_service.dart';
+import 'notification_service.dart';
+import 'app_theme.dart';
+import 'dart:math';
+
+class ChatMessage {
+  final String id;
+  final String text;
+  final bool isMe;
+  final DateTime timestamp;
+  final String status; // 'sent', 'delivered', 'read'
+  final bool isEdited; // ✅ STATUS DE EDIÇÃO (sempre que is_edited for true)
+  final String? replyToId; // ID da mensagem respondida
+  final String? replyToText; // Texto da mensagem respondida
+  final String? replyToSenderName; // Nome de quem enviou a mensagem respondida
+  final String? replyToSenderId; // ID de quem enviou a mensagem respondida
+
+  ChatMessage({
+    required this.id,
+    required this.text,
+    required this.isMe,
+    required this.timestamp,
+    required this.status,
+    this.isEdited = false, // ✅ PADRÃO: NÃO EDITADA
+    this.replyToId,
+    this.replyToText,
+    this.replyToSenderName,
+    this.replyToSenderId,
+  });
+}
+
+class MessageGroup {
+  final DateTime date;
+  final List<ChatMessage> messages;
+
+  MessageGroup({required this.date, required this.messages});
+}
 
 class ChatPage extends StatefulWidget {
-  final Contact contact;
+  final ChatContact contact;
   final String remoteUserId;
 
   const ChatPage({Key? key, required this.contact, required this.remoteUserId})
@@ -16,10 +59,11 @@ class ChatPage extends StatefulWidget {
   _ChatPageState createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final TextEditingController _messageController = TextEditingController();
   final List<ChatMessage> _messages = [];
   final ScrollController _scrollController = ScrollController();
+  final ImagePicker _imagePicker = ImagePicker();
 
   String? _currentUserId;
   bool _isConnected = false;
@@ -30,7 +74,158 @@ class _ChatPageState extends State<ChatPage> {
   final Map<String, String> _pendingStatusUpdates = {};
   final Uuid _uuid = Uuid();
   bool _hasMarkedAsRead = false;
+  List<Map<String, dynamic>> _messageHistory =
+      []; // ✅ ADICIONAR HISTÓRICO LOCAL
   Timer? _markAsReadTimer;
+  bool _isAppInBackground = false; // Nova variável para controlar background
+
+  // Controles para áudio e emojis
+  bool _isRecording = false;
+  bool _showEmojiPicker = false;
+
+  // Controles para edição e seleção de mensagens
+  String? _selectedMessageId;
+  String? _editingMessageId;
+  TextEditingController _editController = TextEditingController();
+
+  // Lista de emojis comuns
+  static const List<String> _commonEmojis = [
+    '😀',
+    '😃',
+    '😄',
+    '😁',
+    '😅',
+    '😂',
+    '🤣',
+    '😊',
+    '😇',
+    '🙂',
+    '🙃',
+    '😉',
+    '😌',
+    '😍',
+    '🥰',
+    '😘',
+    '😗',
+    '😙',
+    '😚',
+    '😋',
+    '😛',
+    '😜',
+    '🤪',
+    '😝',
+    '🤑',
+    '🤗',
+    '🤭',
+    '🤫',
+    '🤥',
+    '😶',
+    '😐',
+    '😑',
+    '😬',
+    '🙄',
+    '😯',
+    '😦',
+    '😧',
+    '😮',
+    '😲',
+    '🥱',
+    '😴',
+    '🤤',
+    '😪',
+    '😵',
+    '🤐',
+    '🥴',
+    '🤢',
+    '🤮',
+    '🤧',
+    '😷',
+    '🤒',
+    '🤕',
+    '🤡',
+    '👍',
+    '👎',
+    '👌',
+    '✌️',
+    '🤞',
+    '🤟',
+    '🤘',
+    '🤙',
+    '👈',
+    '👉',
+    '👆',
+    '🖕',
+    '👇',
+    '☝️',
+    '✋',
+    '🤚',
+    '🖐',
+    '🖖',
+    '👋',
+    '💪',
+    '🦾',
+    '🦿',
+    '🦶',
+    '🦵',
+    '🦴',
+    '🦷',
+    '❤️',
+    '🧡',
+    '💛',
+    '💚',
+    '💙',
+    '💜',
+    '🖤',
+    '🤍',
+    '🤎',
+    '💔',
+    '❣️',
+    '💕',
+    '💞',
+    '💓',
+    '💗',
+    '💖',
+    '💘',
+    '💝',
+    '🎉',
+    '🎊',
+    '🎈',
+    '🎁',
+    '🎀',
+    '🎗',
+    '🎟',
+    '🎫',
+    '🎖',
+    '🏆',
+    '🥇',
+    '🥈',
+    '🥉',
+    '⚽',
+    '🏀',
+    '🏈',
+    '⚾',
+    '🎾',
+    '🎱',
+    '🏐',
+    '🏓',
+    '🥏',
+    '🥅',
+    '🎳',
+    '🏏',
+    '🎯',
+    '🎪',
+    '🎨',
+    '🖌',
+    '🖍',
+    '📝',
+    '✏️',
+    '✒️',
+    '🖊',
+    '🖋',
+    '📎',
+    '📌',
+    '📍',
+  ];
 
   // Status de presença do contato
   String _contactPresenceStatus = 'offline'; // 'online', 'offline'
@@ -40,6 +235,9 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    // Registrar observer para detectar background
+    WidgetsBinding.instance.addObserver(this);
+
     // Informar ao ChatService qual chat está ativo (para controle de unread)
     ChatService.setActiveChat(widget.remoteUserId);
     _initializeChat();
@@ -68,6 +266,9 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    // Remover observer
+    WidgetsBinding.instance.removeObserver(this);
+
     _markAsReadTimer?.cancel();
     _presenceOnlineTimer?.cancel();
     _presenceOfflineTimer?.cancel();
@@ -87,7 +288,37 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
-  // Carregar status de presença do contato
+  // Detectar mudanças no ciclo de vida da app
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    print('🔄 ChatPage Lifecycle State changed to: $state');
+
+    switch (state) {
+      case AppLifecycleState.paused:
+        print('🌑 App foi para background - resetando marcação de lido');
+        _isAppInBackground = true;
+        // Resetar para permitir marcar como lido quando voltar
+        _hasMarkedAsRead = false;
+        break;
+      case AppLifecycleState.resumed:
+        print('☀️ App voltou para foreground - marcando mensagens como lidas');
+        _isAppInBackground = false;
+        // Se voltou para foreground, marcar mensagens como lidas imediatamente
+        if (!_hasMarkedAsRead) {
+          print('📖 Marcando mensagens como lidas ao voltar para foreground');
+          _markChatAsRead();
+          _hasMarkedAsRead = true;
+        }
+        break;
+      case AppLifecycleState.detached:
+        print('💀 App sendo destruída');
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Carregar status de presença do contacto
   Future<void> _loadContactPresence() async {
     try {
       print('🔍 Buscando presença para: ${widget.remoteUserId}');
@@ -226,18 +457,44 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  void _debugPrintMessage(String prefix, Map<String, dynamic> message) {
+    print('$prefix:');
+    print('   type: ${message['type']}');
+    print('   from: ${message['from']}');
+    print('   to: ${message['to']}');
+    print('   content: ${message['content']}');
+    print('   message_id: ${message['message_id']}');
+    print('   db_message_id: ${message['db_message_id']}');
+    print('   reply_to_id: ${message['reply_to_id']}');
+    print('   reply_to_text: ${message['reply_to_text']}');
+    print('   reply_to_sender_name: ${message['reply_to_sender_name']}');
+    print('   status: ${message['status']}');
+  }
+
+  // ======================
+  // MELHORIA NO _handleIncomingMessage()
+  // ======================
   void _handleIncomingMessage(Map<String, dynamic> message) {
-    print('📨 RAW MESSAGE RECEIVED: $message'); // LOG DETALHADO
     final type = message['type']?.toString();
 
-    // ✅ TRATAMENTO ROBUSTO DE STATUS (SENT -> DELIVERED -> READ)
+    switch (type) {
+      case 'message_edited':
+        _handleEditedMessage(message);
+        return;
+      case 'message_deleted':
+        _handleDeletedMessage(message);
+        return;
+      //case 'message_reply':
+      //  _handleReplyMessage(message);
+      //  return;
+      default:
+        break;
+    }
+
+    // ✅ TRATAMENTO DE STATUS
     if (type == 'message_delivered' || type == 'message_read') {
       final messageId = message['message_id']?.toString();
       final dbMessageId = message['db_message_id']?.toString();
-
-      print('📥 Status Update: $type');
-      print('   - ID Evento: $messageId');
-      print('   - DB ID: $dbMessageId');
 
       if (messageId != null) {
         final newStatus = type == 'message_delivered' ? 'delivered' : 'read';
@@ -278,6 +535,11 @@ class _ChatPageState extends State<ChatPage> {
               isMe: oldMsg.isMe,
               timestamp: oldMsg.timestamp,
               status: newStatus,
+              // ✅ preservar dados de reply
+              replyToId: oldMsg.replyToId,
+              replyToText: oldMsg.replyToText,
+              replyToSenderName: oldMsg.replyToSenderName,
+              replyToSenderId: oldMsg.replyToSenderId,
             );
           });
         } else if (idx == -1 && dbMessageId != null && mounted) {
@@ -308,6 +570,11 @@ class _ChatPageState extends State<ChatPage> {
                 isMe: oldMsg.isMe,
                 timestamp: oldMsg.timestamp,
                 status: newStatus,
+                // ✅ preservar dados de reply
+                replyToId: oldMsg.replyToId,
+                replyToText: oldMsg.replyToText,
+                replyToSenderName: oldMsg.replyToSenderName,
+                replyToSenderId: oldMsg.replyToSenderId,
               );
             });
 
@@ -350,57 +617,109 @@ class _ChatPageState extends State<ChatPage> {
         (fromUserId == _currentUserId && toUserId == widget.remoteUserId);
 
     if (isMessageForThisChat && mounted) {
+      print('📨 Mensagem recebida: $message');
+
+      // ✅ DETECTAR SE É UMA RESPOSTA
+      final isReply = message['reply_to_id'] != null;
+      if (isReply) {
+        print('🔍 MENSAGEM É UMA RESPOSTA!');
+        print('   reply_to_id: ${message['reply_to_id']}');
+        print('   reply_to_text: ${message['reply_to_text']}');
+        print('   reply_to_sender_name: ${message['reply_to_sender_name']}');
+      }
+
       final isFromMe = fromUserId == _currentUserId;
       final dbMessageId = message['db_message_id']?.toString();
 
-      // ✅ CORREÇÃO CRÍTICA: Atualizar ID temporário para ID do banco
-      // Relaxamos a verificação de _pendingMessageIds para garantir que o swap ocorra
-      // se a mensagem existir na lista local.
+      // ✅ CORREÇÃO: VERIFICAR SE É UM SWAP DE REPLY
       if (isFromMe && messageId != null && dbMessageId != null) {
         final idx = _messages.indexWhere((m) => m.id == messageId);
         if (idx >= 0) {
-          print('🔄 SWAP DETECTADO: Confirmando envio da mensagem');
-          print('   - ID Temporário: $messageId');
-          print('   - ID Banco: $dbMessageId');
+          print('🔄 SWAP DETECTADO PARA REPLY: $messageId -> $dbMessageId');
 
           setState(() {
             final old = _messages[idx];
-            String statusToUse = 'sent';
-
-            // Verifica se há status pendente para este ID (ex: race condition onde delivered chegou antes)
-            if (_pendingStatusUpdates.containsKey(dbMessageId)) {
-              statusToUse = _pendingStatusUpdates[dbMessageId]!;
-              _pendingStatusUpdates.remove(dbMessageId);
-              print('🔄 Aplicando status pendente após SWAP: $statusToUse');
-            }
+            // ❗ Não fazer downgrade de status: se já está delivered/read,
+            // não voltar para 'sent' por causa do echo.
+            final incomingStatus = message['status']?.toString() ?? old.status;
+            final finalStatus =
+                (old.status == 'read' || old.status == 'delivered') &&
+                    incomingStatus == 'sent'
+                ? old.status
+                : incomingStatus;
 
             _messages[idx] = ChatMessage(
-              id: dbMessageId, // Atualiza para o ID oficial
+              id: dbMessageId,
               text: old.text,
               isMe: old.isMe,
               timestamp: old.timestamp,
-              status: statusToUse,
+              status: finalStatus,
+              // ✅ PRESERVAR INFORMAÇÕES DE REPLY
+              replyToId: old.replyToId,
+              replyToText: old.replyToText,
+              replyToSenderName: old.replyToSenderName,
+              replyToSenderId: old.replyToSenderId,
             );
           });
           _pendingMessageIds.remove(messageId);
-          print('   ✅ SWAP REALIZADO COM SUCESSO!');
-          return; // Mensagem atualizada, interrompe o processamento
-        } else {
-          print(
-            '⚠️ Tentativa de SWAP falhou: Mensagem $messageId não encontrada localmente.',
-          );
+          return;
         }
       }
 
+      // ✅ SWAP HEURÍSTICO PARA REPLIES (quando o servidor envia só o ID real)
+      if (isFromMe &&
+          dbMessageId != null &&
+          (message['reply_to_id'] != null ||
+              message['reply_to_text'] != null)) {
+        final pendingIdx = _messages.indexWhere(
+          (m) =>
+              m.isMe &&
+              m.status == 'sent' &&
+              m.replyToId == message['reply_to_id']?.toString() &&
+              m.text == content,
+        );
+
+        if (pendingIdx >= 0) {
+          final old = _messages[pendingIdx];
+          print('🔄 SWAP HEURÍSTICO DE REPLY: ${old.id} -> $dbMessageId');
+          setState(() {
+            // ❗ Também não fazer downgrade de status aqui.
+            final incomingStatus = message['status']?.toString() ?? old.status;
+            final finalStatus =
+                (old.status == 'read' || old.status == 'delivered') &&
+                    incomingStatus == 'sent'
+                ? old.status
+                : incomingStatus;
+
+            _messages[pendingIdx] = ChatMessage(
+              id: dbMessageId,
+              text: old.text,
+              isMe: old.isMe,
+              timestamp: old.timestamp,
+              status: finalStatus,
+              replyToId: old.replyToId,
+              replyToText: old.replyToText,
+              replyToSenderName: old.replyToSenderName,
+              replyToSenderId: old.replyToSenderId,
+            );
+          });
+          _pendingMessageIds.remove(old.id);
+          return;
+        }
+      }
+
+      // ✅ VERIFICAÇÃO DE DUPLICAÇÃO MELHORADA
       final isPendingMessage = _pendingMessageIds.contains(messageId ?? '');
-      final isDuplicate = _messages.any(
-        (msg) => msg.text == content && msg.isMe == isFromMe,
+      final existingMessage = _messages.any(
+        (msg) =>
+            (messageId != null && msg.id == messageId) ||
+            (dbMessageId != null && msg.id == dbMessageId),
       );
 
-      if (!isDuplicate && !isPendingMessage) {
-        final serverTimestamp = _parseRealTimeMessageTimestamp(message);
+      if (!existingMessage && !isPendingMessage) {
+        print('✅ ADICIONANDO MENSAGEM NOVA');
 
-        // Se vier o DB ID, use-o preferencialmente
+        final serverTimestamp = _parseRealTimeMessageTimestamp(message);
         final finalId = dbMessageId ?? messageId ?? _uuid.v4();
 
         setState(() {
@@ -411,32 +730,165 @@ class _ChatPageState extends State<ChatPage> {
               isMe: isFromMe,
               timestamp: serverTimestamp,
               status: message['status']?.toString() ?? 'sent',
+              // ✅ INFORMAÇÕES DE REPLY (SE HOUVER)
+              replyToId: message['reply_to_id']?.toString(),
+              replyToText: message['reply_to_text']?.toString(),
+              replyToSenderName: message['reply_to_sender_name']?.toString(),
+              replyToSenderId: message['reply_to_sender_id']?.toString(),
             ),
           );
+
+          _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
         });
+
         _scrollToBottom();
 
         if (isFromMe && messageId != null) {
           _pendingMessageIds.remove(messageId);
         } else if (!isFromMe) {
-          // Mensagem recebida enquanto o chat está aberto:
-          // marcar como lida imediatamente para não aumentar unread na lista.
-          ChatService.markChatAsReadImmediate(widget.remoteUserId);
-          ChatService.markMessagesRead(widget.remoteUserId);
+          if (!_isAppInBackground) {
+            print('📖 Mensagem recebida - marcando como lida');
+            ChatService.markChatAsReadImmediate(widget.remoteUserId);
+            ChatService.markMessagesRead(widget.remoteUserId);
+          } else {
+            print('🌑 Mensagem em background - enviando notificação');
+            _sendNewMessageNotification(content);
+          }
         }
       }
     }
   }
 
+  // NOVOS HANDLERS PARA WEBSOCKET
+
+  // Handler para mensagens de resposta recebidas via WebSocket
+  void _handleReplyMessage(Map<String, dynamic> message) {
+    final replyContent = message['content']?.toString();
+    final senderId = message['sender_id']?.toString();
+    final originalId = message['original_message_id']?.toString();
+
+    if (replyContent != null && senderId != null) {
+      final isFromMe = senderId == _currentUserId;
+      final serverTimestamp = _parseRealTimeMessageTimestamp(message);
+
+      // ✅ ENCONTRAR MENSAGEM ORIGINAL PARA OBTER TEXTO E NOME
+      String? originalText;
+      String? originalSenderName;
+
+      try {
+        final originalMessage = _messages.firstWhere(
+          (msg) => msg.id == originalId,
+          orElse: () => ChatMessage(
+            id: originalId ?? '',
+            text: 'Mensagem não encontrada',
+            isMe: false,
+            timestamp: DateTime.now(),
+            status: 'sent',
+          ),
+        );
+
+        originalText = originalMessage.text;
+        originalSenderName = originalMessage.isMe ? 'Eu' : widget.contact.name;
+      } catch (e) {
+        originalText = 'Mensagem não encontrada';
+        originalSenderName = 'Desconhecido';
+      }
+
+      final replyMessage = ChatMessage(
+        id: message['message_id']?.toString() ?? _uuid.v4(),
+        text: replyContent,
+        isMe: isFromMe,
+        timestamp: serverTimestamp,
+        status: message['status']?.toString() ?? 'sent',
+        // ✅ MENSAGEM DE RESPOSTA PODE SER EDITADA (se for do usuário atual)
+        isEdited: false, // Será true quando for editada
+        // ✅ INFORMAÇÕES DA RESPOSTA
+        replyToId: originalId,
+        replyToText: originalText,
+        replyToSenderName: originalSenderName,
+        replyToSenderId: message['reply_to_sender_id']?.toString(),
+      );
+
+      setState(() {
+        _messages.add(replyMessage);
+        _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      });
+
+      _scrollToBottom();
+    }
+  }
+
+  // Handler para mensagens deletadas recebidas via WebSocket
+  void _handleDeletedMessage(Map<String, dynamic> message) {
+    final messageId = message['message_id']?.toString();
+
+    if (messageId != null) {
+      setState(() {
+        _messages.removeWhere((msg) => msg.id == messageId);
+      });
+    }
+  }
+
+  // Handler para mensagens editadas recebidas via WebSocket
+  void _handleEditedMessage(Map<String, dynamic> message) {
+    final messageId = message['message_id']?.toString();
+    final newContent = message['content']?.toString();
+
+    if (messageId != null && newContent != null) {
+      print(
+        '✏️ Recebida notificação de edição: messageId=$messageId, newContent=$newContent',
+      );
+
+      setState(() {
+        final messageIndex = _messages.indexWhere((msg) => msg.id == messageId);
+        if (messageIndex != -1) {
+          final oldMessage = _messages[messageIndex];
+          _messages[messageIndex] = ChatMessage(
+            id: oldMessage.id,
+            text: newContent,
+            isMe: oldMessage.isMe,
+            timestamp: oldMessage.timestamp,
+            status: oldMessage
+                .status, // ✅ PRESERVAR STATUS DELIVERY (sent/delivered/read)
+            isEdited: true, // ✅ MARCAR COMO EDITADA
+            // ✅ PRESERVAR DADOS DE REPLY
+            replyToId: oldMessage.replyToId,
+            replyToText: oldMessage.replyToText,
+            replyToSenderName: oldMessage.replyToSenderName,
+            replyToSenderId: oldMessage.replyToSenderId,
+          );
+          print('✅ Mensagem ${messageId} atualizada em tempo real');
+        }
+      });
+    }
+  }
+
+  // 🔔 ENVIAR NOTIFICAÇÃO DE NOVA MENSAGEM
+  void _sendNewMessageNotification(String messageContent) async {
+    try {
+      final senderName = _getContactName();
+
+      await NotificationService().showNewMessageNotification(
+        senderName: senderName,
+        messageContent: messageContent,
+        chatId: widget.remoteUserId,
+      );
+
+      print('🔔 Notificação enviada para: $senderName');
+    } catch (e) {
+      print('❌ Erro ao enviar notificação: $e');
+    }
+  }
+
   String _getContactName() {
-    return widget.contact.displayName.isEmpty
-        ? (_getContactPhone() ?? 'Sem nome')
-        : widget.contact.displayName;
+    return widget.contact.name.isNotEmpty
+        ? widget.contact.name
+        : (_getContactPhone() ?? 'Sem nome');
   }
 
   String? _getContactPhone() {
-    return widget.contact.phones.isNotEmpty
-        ? widget.contact.phones.first.number
+    return widget.contact.phoneNumber?.isNotEmpty == true
+        ? widget.contact.phoneNumber
         : null;
   }
 
@@ -482,6 +934,14 @@ class _ChatPageState extends State<ChatPage> {
                 isMe: _isMessageFromMe(msg),
                 timestamp: serverTimestamp,
                 status: (msg['status']?.toString() ?? 'sent'),
+                isEdited:
+                    (msg['is_edited'] ==
+                    true), // ✅ VERIFICAR is_edited DO BACKEND
+                // ✅ INFORMAÇÕES DE RESPOSTA DO HISTÓRICO
+                replyToId: msg['reply_to_id']?.toString(),
+                replyToText: msg['reply_to_text']?.toString(),
+                replyToSenderName: msg['reply_to_sender_name']?.toString(),
+                replyToSenderId: msg['reply_to_sender_id']?.toString(),
               );
             }).toList(),
           );
@@ -586,8 +1046,12 @@ class _ChatPageState extends State<ChatPage> {
           isMe: true,
           timestamp: DateTime.now(),
           status: 'sent', // ícone de enviado só se realmente for ao servidor
+          isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
         ),
       );
+
+      // ✅ ORDENAR MENSAGENS POR TIMESTAMP APÓS ADICIONAR
+      _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
     });
 
     _messageController.clear();
@@ -733,12 +1197,12 @@ class _ChatPageState extends State<ChatPage> {
     final messageGroups = _groupMessagesByDate();
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppTheme.backgroundColor,
       appBar: AppBar(
-        backgroundColor: Colors.green,
+        backgroundColor: AppTheme.appBarColor,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          icon: const Icon(Icons.arrow_back, color: AppTheme.textOnGreen),
           onPressed: () => Navigator.pop(context),
         ),
         title: Row(
@@ -750,8 +1214,12 @@ class _ChatPageState extends State<ChatPage> {
                   )
                 : CircleAvatar(
                     radius: 18,
-                    backgroundColor: Colors.white,
-                    child: Icon(Icons.person, color: Colors.green, size: 20),
+                    backgroundColor: AppTheme.surfaceColor,
+                    child: Icon(
+                      Icons.person,
+                      color: AppTheme.avatarIcon,
+                      size: 20,
+                    ),
                   ),
             const SizedBox(width: 12),
             Expanded(
@@ -762,7 +1230,7 @@ class _ChatPageState extends State<ChatPage> {
                   Text(
                     _getContactName(),
                     style: const TextStyle(
-                      color: Colors.white,
+                      color: AppTheme.textOnGreen,
                       fontSize: 16,
                       fontWeight: FontWeight.w500,
                     ),
@@ -773,8 +1241,8 @@ class _ChatPageState extends State<ChatPage> {
                       _getPresenceText(),
                       style: TextStyle(
                         color: _contactPresenceStatus == 'online'
-                            ? Colors.white.withOpacity(0.8)
-                            : Colors.white.withOpacity(0.6),
+                            ? AppTheme.textOnGreen.withOpacity(0.8)
+                            : AppTheme.textOnGreen.withOpacity(0.6),
                         fontSize: 12,
                       ),
                       overflow: TextOverflow.ellipsis,
@@ -788,15 +1256,15 @@ class _ChatPageState extends State<ChatPage> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.videocam, color: Colors.white),
+            icon: const Icon(Icons.videocam, color: AppTheme.textOnGreen),
             onPressed: () {},
           ),
           IconButton(
-            icon: const Icon(Icons.call, color: Colors.white),
+            icon: const Icon(Icons.call, color: AppTheme.textOnGreen),
             onPressed: () {},
           ),
           PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert, color: Colors.white),
+            icon: const Icon(Icons.more_vert, color: AppTheme.textOnGreen),
             onSelected: (value) {},
             itemBuilder: (context) => [
               const PopupMenuItem(
@@ -815,8 +1283,10 @@ class _ChatPageState extends State<ChatPage> {
         children: [
           if (_isLoadingHistory)
             LinearProgressIndicator(
-              backgroundColor: Colors.green[100],
-              valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
+              backgroundColor: AppTheme.appBarColor.withOpacity(0.2),
+              valueColor: const AlwaysStoppedAnimation<Color>(
+                AppTheme.appBarColor,
+              ),
             ),
           Expanded(
             child: _messages.isEmpty && !_isLoadingHistory
@@ -852,13 +1322,13 @@ class _ChatPageState extends State<ChatPage> {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           decoration: BoxDecoration(
-            color: Colors.grey[300],
+            color: AppTheme.replyPreviewBackground,
             borderRadius: BorderRadius.circular(12),
           ),
           child: Text(
             _formatDateHeader(date),
             style: TextStyle(
-              color: Colors.grey[700],
+              color: AppTheme.textSecondary,
               fontSize: 12,
               fontWeight: FontWeight.w500,
             ),
@@ -873,11 +1343,11 @@ class _ChatPageState extends State<ChatPage> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.chat_bubble_outline, size: 80, color: Colors.grey[300]),
+          Icon(Icons.chat_bubble_outline, size: 80, color: AppTheme.textLight),
           const SizedBox(height: 16),
           const Text(
             'Inicie uma conversa',
-            style: TextStyle(color: Colors.grey, fontSize: 16),
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 16),
           ),
           const SizedBox(height: 8),
           Text(
@@ -886,68 +1356,1055 @@ class _ChatPageState extends State<ChatPage> {
                 : _isConnected
                 ? 'Envie uma mensagem para começar'
                 : 'Conectando ao servidor...',
-            style: const TextStyle(color: Colors.grey, fontSize: 14),
+            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 14),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildMessageInput() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      color: Colors.grey[50],
-      child: Row(
-        children: [
-          IconButton(
-            icon: Icon(Icons.attach_file, color: Colors.grey[600]),
-            onPressed: () {},
-          ),
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(25),
-                border: Border.all(color: Colors.grey[300]!),
-              ),
+  // 🔔 MENU DE ANEXOS
+  void _showAttachmentMenu() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header
+            Container(
+              padding: EdgeInsets.all(16),
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _messageController,
-                      decoration: const InputDecoration(
-                        hintText: 'Digite uma mensagem...',
-                        hintStyle: TextStyle(color: Colors.grey),
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
-                        ),
-                      ),
-                      onSubmitted: (_) => _sendMessage(),
-                    ),
+                  Text(
+                    'Anexar',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
                   ),
                   IconButton(
-                    icon: Icon(
-                      Icons.emoji_emotions_outlined,
-                      color: Colors.grey[600],
-                    ),
-                    onPressed: () {},
+                    icon: Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
             ),
+            Divider(height: 1),
+
+            // Opções de anexo
+            Container(
+              padding: EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  // Galeria
+                  _buildAttachmentOption(
+                    icon: Icons.photo_library,
+                    label: 'Galeria',
+                    color: AppTheme.actionEdit,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickFromGallery();
+                    },
+                  ),
+
+                  // Câmera
+                  _buildAttachmentOption(
+                    icon: Icons.camera_alt,
+                    label: 'Câmera',
+                    color: AppTheme.appBarColor,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickFromCamera();
+                    },
+                  ),
+
+                  // Documento
+                  _buildAttachmentOption(
+                    icon: Icons.insert_drive_file,
+                    label: 'Documento',
+                    color: Colors.orange,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickDocument();
+                    },
+                  ),
+
+                  // Arquivo de Áudio
+                  _buildAttachmentOption(
+                    icon: Icons.audio_file,
+                    label: 'Áudio',
+                    color: Colors.red,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _pickAudioFile();
+                    },
+                  ),
+                ],
+              ),
+            ),
+
+            SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAttachmentOption({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 32, color: color),
+            SizedBox(height: 8),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey[700],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 📷 MÉTODOS PARA SELECIONAR ANEXOS
+  Future<void> _pickFromGallery() async {
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 80,
+      );
+
+      if (image != null) {
+        print('📷 Imagem selecionada da galeria: ${image.path}');
+        // TODO: Implementar envio de imagem
+        _showComingSoonSnackBar('Envio de imagens em breve!');
+      }
+    } catch (e) {
+      print('❌ Erro ao selecionar imagem da galeria: $e');
+    }
+  }
+
+  Future<void> _pickFromCamera() async {
+    try {
+      final XFile? image = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 80,
+      );
+
+      if (image != null) {
+        print('📷 Foto tirada com a câmera: ${image.path}');
+        // TODO: Implementar envio de imagem
+        _showComingSoonSnackBar('Envio de fotos em breve!');
+      }
+    } catch (e) {
+      print('❌ Erro ao tirar foto: $e');
+    }
+  }
+
+  Future<void> _pickDocument() async {
+    try {
+      // TODO: Implementar seleção de documentos
+      print('📄 Selecionar documento');
+      _showComingSoonSnackBar('Envio de documentos em breve!');
+    } catch (e) {
+      print('❌ Erro ao selecionar documento: $e');
+    }
+  }
+
+  Future<void> _pickAudioFile() async {
+    try {
+      // TODO: Implementar seleção de arquivos de áudio (MP3, etc)
+      print('🎵 Selecionar arquivo de áudio');
+      _showComingSoonSnackBar('Envio de arquivos de áudio em breve!');
+    } catch (e) {
+      print('❌ Erro ao selecionar arquivo de áudio: $e');
+    }
+  }
+
+  Future<void> _recordAudio() async {
+    try {
+      // TODO: Implementar gravação de mensagem de voz
+      print('🎤 Gravar mensagem de voz');
+      _showComingSoonSnackBar('Gravação de mensagem de voz em breve!');
+    } catch (e) {
+      print('❌ Erro ao gravar mensagem de voz: $e');
+    }
+  }
+
+  // 🎤 CONTROLES DE ÁUDIO E EMOJIS
+  void _toggleEmojiPicker() {
+    setState(() {
+      _showEmojiPicker = !_showEmojiPicker;
+    });
+  }
+
+  void _insertEmoji(String emoji) {
+    final text = _messageController.text;
+    final cursorPosition = _messageController.selection.baseOffset;
+
+    // Inserir emoji na posição do cursor
+    final newText =
+        text.substring(0, cursorPosition) +
+        emoji +
+        text.substring(cursorPosition);
+    _messageController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: cursorPosition + emoji.length),
+    );
+
+    // Fechar emoji picker após inserir
+    setState(() {
+      _showEmojiPicker = false;
+    });
+  }
+
+  void _toggleVoiceRecording() {
+    setState(() {
+      _isRecording = !_isRecording;
+    });
+
+    if (_isRecording) {
+      print('🎤 Iniciando gravação de mensagem de voz...');
+      // TODO: Implementar gravação real
+      _showComingSoonSnackBar('Gravação de mensagem de voz em breve!');
+    } else {
+      print('⏹️ Parando gravação de mensagem de voz');
+      // TODO: Parar gravação e enviar
+    }
+  }
+
+  // 📝 MÉTODOS AUXILIARES
+  String _getReplyPreviewText(String messageId) {
+    try {
+      final message = _messages.firstWhere((msg) => msg.id == messageId);
+
+      // Limitar texto para não quebrar layout
+      String preview = message.text;
+      if (preview.length > 30) {
+        preview = preview.substring(0, 27) + '...';
+      }
+
+      return preview;
+    } catch (e) {
+      return 'mensagem não encontrada';
+    }
+  }
+
+  // 📝 MÉTODOS PARA GERENCIAR MENSAGENS
+  void _showMessageOptions(ChatMessage message) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header
+            Container(
+              padding: EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Opções da Mensagem',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1),
+
+            // ✅ ADICIONADO: Verificação de tempo para edição
+            if (message.isMe) ...[
+              if (_canEditMessage(message)) // ✅ VERIFICAÇÃO DE TEMPO
+                ListTile(
+                  leading: Icon(Icons.edit, color: AppTheme.actionEdit),
+                  title: Text('Editar mensagem'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    _startEditingMessage(message);
+                  },
+                ),
+
+              // Apagar (sempre permitido para mensagens próprias)
+              ListTile(
+                leading: Icon(Icons.delete, color: AppTheme.actionDelete),
+                title: Text('Apagar mensagem'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _deleteMessage(message);
+                },
+              ),
+            ],
+
+            // Opções para todas as mensagens
+            // Responder
+            ListTile(
+              leading: Icon(Icons.reply, color: AppTheme.appBarColor),
+              title: Text('Responder'),
+              onTap: () {
+                Navigator.pop(context);
+                _startReplyingToMessage(message);
+              },
+            ),
+
+            // Copiar texto
+            ListTile(
+              leading: Icon(Icons.content_copy, color: AppTheme.actionCopy),
+              title: Text('Copiar texto'),
+              onTap: () {
+                Navigator.pop(context);
+                _copyMessageText(message);
+              },
+            ),
+
+            // Encaminhar
+            ListTile(
+              leading: Icon(Icons.forward, color: Colors.orange),
+              title: Text('Encaminhar'),
+              onTap: () {
+                Navigator.pop(context);
+                _forwardMessage(message);
+              },
+            ),
+
+            SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _startEditingMessage(ChatMessage message) {
+    setState(() {
+      _editingMessageId = message.id;
+      _editController.text = message.text;
+      _messageController.text = message.text;
+    });
+
+    // Focar no campo de edição
+    FocusScope.of(context).requestFocus(FocusNode());
+  }
+
+  void _cancelEditing() {
+    setState(() {
+      _editingMessageId = null;
+      _editController.clear();
+      _messageController.clear();
+    });
+  }
+
+  void _updateMessage() async {
+    if (_editingMessageId != null &&
+        _messageController.text.trim().isNotEmpty) {
+      try {
+        print(
+          '✏️ Atualizando mensagem $_editingMessageId: ${_messageController.text}',
+        );
+
+        // Chamar backend para editar mensagem
+        final result = await MessageOperationsService.editMessage(
+          _editingMessageId!,
+          _messageController.text.trim(),
+        );
+
+        if (result['success'] == true) {
+          // ATUALIZAR LOCALMENTE (modal já foi fechado ao clicar em "Editar")
+          // Atualizar localmente com dados do backend
+          setState(() {
+            final messageIndex = _messages.indexWhere(
+              (msg) => msg.id == _editingMessageId,
+            );
+            if (messageIndex != -1) {
+              final updatedMessage = result['edited_message'];
+              final oldMessage = _messages[messageIndex];
+
+              // 🔍 DEBUG: VERIFICAR STATUS ANTES DE MUDAR
+              print('🔍 DEBUG EDIÇÃO:');
+              print('   Status delivery original: ${oldMessage.status}');
+              print('   Status backend: ${updatedMessage['status']}');
+              print('   is_edited backend: ${updatedMessage['is_edited']}');
+              print('   Status delivery que será usado: ${oldMessage.status}');
+
+              _messages[messageIndex] = ChatMessage(
+                id: updatedMessage['id'].toString(),
+                text: updatedMessage['content'],
+                isMe: oldMessage.isMe,
+                timestamp:
+                    oldMessage.timestamp, // ✅ PRESERVAR TIMESTAMP ORIGINAL!
+                status: oldMessage
+                    .status, // ✅ PRESERVAR STATUS DELIVERY (sent/delivered/read)
+                isEdited: true, // ✅ MARCAR COMO EDITADA
+                // ✅ PRESERVAR DADOS DE REPLY
+                replyToId: oldMessage.replyToId,
+                replyToText: oldMessage.replyToText,
+                replyToSenderName: oldMessage.replyToSenderName,
+                replyToSenderId: oldMessage.replyToSenderId,
+              );
+
+              // 🔍 DEBUG: VERIFICAR STATUS APÓS MUDAR
+              print(
+                '   ✅ Status delivery após edição: ${_messages[messageIndex].status}',
+              );
+
+              // ✅ ATUALIZAR CONTEÚDO NO HISTÓRICO LOCAL (preservar status delivery)
+              final historyMessageIndex = _messageHistory.indexWhere(
+                (msg) => msg['message_id']?.toString() == _editingMessageId,
+              );
+              if (historyMessageIndex != -1) {
+                _messageHistory[historyMessageIndex] = {
+                  ..._messageHistory[historyMessageIndex],
+                  'content':
+                      updatedMessage['content'], // ✅ ATUALIZAR APENAS CONTEÚDO
+                  'is_edited':
+                      updatedMessage['is_edited'], // ✅ ATUALIZAR is_edited
+                  // ✅ NÃO MUDAR STATUS DELIVERY - PRESERVAR ORIGINAL!
+                };
+              }
+            }
+            _editingMessageId = null;
+            _editController.clear();
+            _messageController.clear();
+
+            print(
+              '✅ Conteúdo atualizado no histórico local (status delivery preservado)',
+            );
+          });
+
+          // ✅ Mensagem editada sem popup de sucesso
+        }
+      } catch (e) {
+        print('❌ Erro ao editar mensagem: $e');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao editar mensagem: $e'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
           ),
-          const SizedBox(width: 8),
+        );
+      }
+    }
+  }
+
+  void _deleteMessage(ChatMessage message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Apagar mensagem'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Deseja apagar esta mensagem?'),
+            SizedBox(height: 8),
+            Text(
+              message.text.length > 50
+                  ? '${message.text.substring(0, 47)}...'
+                  : message.text,
+              style: TextStyle(
+                fontStyle: FontStyle.italic,
+                color: AppTheme.textSecondary,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _confirmDeleteMessage(message);
+            },
+            child: Text('Apagar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDeleteMessage(ChatMessage message) async {
+    try {
+      print('🗑️ Apagando mensagem ${message.id}');
+
+      // Chamar backend para deletar mensagem
+      final result = await MessageOperationsService.deleteMessage(message.id);
+
+      if (result['success'] == true) {
+        // Remover mensagem localmente
+        setState(() {
+          _messages.removeWhere((msg) => msg.id == message.id);
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Mensagem apagada com sucesso'),
+            backgroundColor: AppTheme.appBarColor,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      print('❌ Erro ao apagar mensagem: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro ao apagar mensagem: $e'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  void _startReplyingToMessage(ChatMessage message) {
+    setState(() {
+      _selectedMessageId = message.id;
+    });
+
+    // Focar no campo de mensagem
+    FocusScope.of(context).requestFocus(FocusNode());
+  }
+
+  void _cancelReply() {
+    setState(() {
+      _selectedMessageId = null;
+    });
+  }
+
+  // ======================
+  // FUNÇÃO _sendReply() CORRIGIDA
+  // ======================
+  void _sendReply() async {
+    if (_selectedMessageId == null || _selectedMessageId!.isEmpty) {
+      print('❌ _selectedMessageId é nulo ou vazio');
+      return;
+    }
+
+    final replyText = _messageController.text.trim();
+    if (replyText.isEmpty) {
+      print('❌ Texto da resposta está vazio');
+      return;
+    }
+
+    // ✅ SALVAR O ID ANTES DE LIMPAR
+    final originalMessageId = _selectedMessageId!;
+
+    try {
+      print('📤 ENVIANDO REPLY:');
+      print('   Original ID: $originalMessageId');
+      print('   Texto: $replyText');
+      print('   Remote User ID: ${widget.remoteUserId}');
+      print('   Current User ID: $_currentUserId');
+
+      // ✅ 1. OBTER INFORMAÇÕES DA MENSAGEM ORIGINAL COM TRATAMENTO DE ERRO
+      ChatMessage originalMessage;
+      try {
+        originalMessage = _messages.firstWhere(
+          (msg) => msg.id == originalMessageId,
+        );
+        print(
+          '✅ Mensagem original encontrada: ${originalMessage.text.substring(0, min(30, originalMessage.text.length))}...',
+        );
+      } catch (e) {
+        print(
+          '⚠️ Mensagem original não encontrada no histórico local, criando placeholder',
+        );
+        originalMessage = ChatMessage(
+          id: originalMessageId,
+          text: 'Mensagem não encontrada',
+          isMe: false,
+          timestamp: DateTime.now(),
+          status: 'sent',
+        );
+      }
+
+      // ✅ 2. CRIAR ID TEMPORÁRIO PARA A RESPOSTA
+      final tempReplyId =
+          'temp_reply_${DateTime.now().millisecondsSinceEpoch}_${_uuid.v4().substring(0, 8)}';
+
+      print('   ID Temporário: $tempReplyId');
+
+      // ✅ 3. CRIAR MENSAGEM LOCAL COM INFORMAÇÕES COMPLETAS
+      final localReply = ChatMessage(
+        id: tempReplyId,
+        text: replyText,
+        isMe: true,
+        timestamp: DateTime.now(),
+        status: 'sent',
+        // ✅ INFORMAÇÕES DE REPLY PRESERVADAS
+        replyToId: originalMessageId,
+        replyToText: originalMessage.text,
+        replyToSenderName: originalMessage.isMe ? 'Eu' : widget.contact.name,
+        replyToSenderId: originalMessage.isMe
+            ? _currentUserId?.toString() ?? 'unknown'
+            : widget.remoteUserId,
+      );
+
+      // ✅ 4. ADICIONAR À LISTA LOCAL IMEDIATAMENTE
+      setState(() {
+        _messages.add(localReply);
+        _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+
+        // ✅ LIMPAR CAMPOS APÓS ADICIONAR LOCALMENTE
+        _selectedMessageId = null;
+        _messageController.clear();
+      });
+
+      // ✅ 5. SCROLL PARA BAIXO
+      _scrollToBottom();
+
+      // ✅ 6. ADICIONAR À LISTA DE PENDENTES (PARA EVITAR DUPLICAÇÃO)
+      _pendingMessageIds.add(tempReplyId);
+
+      // ✅ 7. ENVIAR PARA O BACKEND - USAR VARIÁVEL LOCAL SALVA
+      print('🔄 Enviando reply para o backend...');
+      final result = await MessageOperationsService.replyToMessage(
+        originalMessageId,
+        replyText,
+        receiverId: widget.remoteUserId,
+      );
+
+      if (result['success'] == true) {
+        final replyMessage = result['reply_message'];
+        final dbMessageId = replyMessage['id']?.toString();
+
+        print('✅ REPLY ENVIADO COM SUCESSO');
+        print('   ID Banco: $dbMessageId');
+
+        if (dbMessageId != null) {
+          // ✅ 8. ATUALIZAR MENSAGEM LOCAL COM ID REAL DO BANCO
+          final messageIndex = _messages.indexWhere(
+            (msg) => msg.id == tempReplyId,
+          );
+
+          if (messageIndex != -1) {
+            setState(() {
+              _messages[messageIndex] = ChatMessage(
+                id: dbMessageId,
+                text: _messages[messageIndex].text,
+                isMe: _messages[messageIndex].isMe,
+                timestamp: DateTime.parse(
+                  replyMessage['sent_at'] ?? DateTime.now().toIso8601String(),
+                ),
+                status: replyMessage['status']?.toString() ?? 'sent',
+                replyToId: _messages[messageIndex].replyToId,
+                replyToText: _messages[messageIndex].replyToText,
+                replyToSenderName: _messages[messageIndex].replyToSenderName,
+                replyToSenderId: _messages[messageIndex].replyToSenderId,
+              );
+            });
+          }
+
+          _pendingMessageIds.remove(tempReplyId);
+        } else {
+          print('⚠️ Reply enviado mas dbMessageId é nulo');
+        }
+
+        // ✅ 9. ATUALIZAR CHAT LIST
+        ChatService.updateChatAfterReply(widget.remoteUserId, replyText);
+
+        print('✅ Reply processado com sucesso!');
+      } else {
+        print('❌ ERRO NO BACKEND AO ENVIAR REPLY: ${result['error']}');
+        // ✅ SE FALHAR, REMOVER A MENSAGEM LOCAL
+        setState(() {
+          _messages.removeWhere((msg) => msg.id == tempReplyId);
+        });
+        _pendingMessageIds.remove(tempReplyId);
+
+        // ✅ RESTAURAR O ESTADO DE REPLY
+        _selectedMessageId = originalMessageId;
+        _messageController.text = replyText;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao enviar resposta: ${result['error']}'),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e, stackTrace) {
+      print('❌ ERRO CRÍTICO AO ENVIAR REPLY: $e');
+      print('📚 Stack trace: $stackTrace');
+      print('🔍 Estado no momento do erro:');
+      print('   originalMessageId: $originalMessageId');
+      print('   _selectedMessageId: $_selectedMessageId');
+      print('   replyText: $replyText');
+      print('   currentUserId: $_currentUserId');
+      print('   remoteUserId: ${widget.remoteUserId}');
+
+      // ✅ RESTAURAR O ESTADO PARA TENTAR NOVAMENTE
+      _selectedMessageId = originalMessageId;
+      _messageController.text = replyText;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Erro: ${e.toString()}'),
+          backgroundColor: Colors.red,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  // ✅ NOVAS FUNÇÕES AUXILIARES
+  void _copyMessageText(ChatMessage message) {
+    // TODO: Implementar lógica de cópia usando Clipboard
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Texto copiado para a área de transferência'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _forwardMessage(ChatMessage message) {
+    // TODO: Implementar lógica de encaminhamento
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Funcionalidade de encaminhamento em breve'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  void _showComingSoonSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: AppTheme.textSecondary,
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Widget _buildMessageInput() {
+    return Column(
+      children: [
+        // Emoji Picker (mostra quando ativado)
+        if (_showEmojiPicker)
           Container(
+            height: 250,
+            padding: EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: _isConnected ? Colors.green : Colors.grey,
-              shape: BoxShape.circle,
+              color: AppTheme.surfaceColor,
+              border: Border(top: BorderSide(color: AppTheme.dividerColor)),
             ),
-            child: IconButton(
-              icon: const Icon(Icons.send, color: Colors.white),
-              onPressed: _isConnected ? _sendMessage : null,
+            child: Column(
+              children: [
+                // Header do emoji picker
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Emojis',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close),
+                      onPressed: _toggleEmojiPicker,
+                    ),
+                  ],
+                ),
+                Divider(height: 1),
+                // Grid de emojis simples
+                Expanded(
+                  child: GridView.builder(
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 8,
+                      childAspectRatio: 1.0,
+                    ),
+                    itemCount: _commonEmojis.length,
+                    itemBuilder: (context, index) {
+                      return GestureDetector(
+                        onTap: () {
+                          _insertEmoji(_commonEmojis[index]);
+                        },
+                        child: Container(
+                          alignment: Alignment.center,
+                          child: Text(
+                            _commonEmojis[index],
+                            style: TextStyle(fontSize: 24),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
+          ),
+
+        // Reply Preview (mostra quando respondendo)
+        if (_selectedMessageId != null)
+          Container(
+            padding: EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.replyPreviewBackground,
+              border: Border(
+                left: BorderSide(color: AppTheme.appBarColor, width: 3),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.reply, color: AppTheme.appBarColor, size: 16),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Respondendo a:',
+                        style: TextStyle(
+                          color: AppTheme.appBarColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        _getReplyPreviewText(_selectedMessageId!),
+                        style: TextStyle(
+                          color: AppTheme.replyPreviewText,
+                          fontSize: 13,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(Icons.close, size: 16),
+                  onPressed: _cancelReply,
+                ),
+              ],
+            ),
+          ),
+
+        // Edit Preview (mostra quando editando)
+        if (_editingMessageId != null)
+          Container(
+            padding: EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppTheme.actionEdit.withOpacity(0.1),
+              border: Border(
+                left: BorderSide(color: AppTheme.actionEdit, width: 3),
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.edit, color: AppTheme.actionEdit, size: 16),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Editando mensagem...',
+                    style: TextStyle(color: AppTheme.actionEdit),
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(Icons.close, size: 16),
+                  onPressed: _cancelEditing,
+                ),
+              ],
+            ),
+          ),
+
+        // Campo de mensagem
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: AppTheme.searchBackground,
+          child: Row(
+            children: [
+              IconButton(
+                icon: Icon(Icons.attach_file, color: AppTheme.textSecondary),
+                onPressed: _showAttachmentMenu,
+              ),
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: AppTheme.inputBackground,
+                    borderRadius: BorderRadius.circular(25),
+                    border: Border.all(color: AppTheme.inputBorder),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _messageController,
+                          decoration: InputDecoration(
+                            hintText: _editingMessageId != null
+                                ? 'Editando mensagem...'
+                                : (_selectedMessageId != null
+                                      ? 'Sua resposta...'
+                                      : 'Digite uma mensagem...'),
+                            hintStyle: TextStyle(color: AppTheme.textLight),
+                            border: InputBorder.none,
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 12,
+                            ),
+                          ),
+                          onChanged: (value) {
+                            // Atualizar UI quando usuário digita
+                            setState(() {});
+                          },
+                          onSubmitted: (_) {
+                            if (_editingMessageId != null) {
+                              _updateMessage();
+                            } else if (_selectedMessageId != null) {
+                              _sendReply();
+                            } else {
+                              _sendMessage();
+                            }
+                          },
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          Icons.emoji_emotions_outlined,
+                          color: AppTheme.textSecondary,
+                        ),
+                        onPressed: _toggleEmojiPicker,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: _isConnected
+                      ? AppTheme.appBarColor
+                      : AppTheme.textLight,
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: Icon(
+                    _messageController.text.trim().isEmpty
+                        ? (_isRecording ? Icons.stop : Icons.mic)
+                        : Icons.send,
+                    color: AppTheme.textOnGreen,
+                  ),
+                  onPressed: _isConnected
+                      ? () {
+                          if (_editingMessageId != null) {
+                            _updateMessage();
+                          } else if (_selectedMessageId != null) {
+                            _sendReply();
+                          } else if (_messageController.text.trim().isEmpty) {
+                            _toggleVoiceRecording();
+                          } else {
+                            _sendMessage();
+                          }
+                        }
+                      : null,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildReplyPreview(ChatMessage message) {
+    if (message.replyToText == null || message.replyToText!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    // ✅ LÓGICA: Se a mensagem original foi enviada pelo usuário atual, mostrar "Eu"
+    final replySenderName =
+        (message.replyToSenderId == _currentUserId.toString())
+        ? 'Eu'
+        : message.replyToSenderName;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: message.isMe
+            ? AppTheme.textOnGreen.withOpacity(0.2)
+            : AppTheme.replyPreviewBackground,
+        borderRadius: BorderRadius.circular(8),
+        border: Border(
+          left: BorderSide(
+            color: message.isMe
+                ? AppTheme.textOnGreen.withOpacity(0.7)
+                : AppTheme.appBarColor,
+            width: 3,
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (replySenderName != null) ...[
+            Text(
+              replySenderName,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: message.isMe
+                    ? AppTheme.textOnGreen.withOpacity(0.9)
+                    : AppTheme.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 2),
+          ],
+          Text(
+            message.replyToText!,
+            style: TextStyle(
+              fontSize: 12,
+              color: message.isMe
+                  ? AppTheme.textOnGreen.withOpacity(0.9)
+                  : AppTheme.textSecondary,
+              fontStyle: FontStyle.italic,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -955,62 +2412,96 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _buildMessageBubble(ChatMessage message) {
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: message.isMe
-            ? MainAxisAlignment.end
-            : MainAxisAlignment.start,
-        children: [
-          if (!message.isMe) ...[
-            widget.contact.photo != null
-                ? CircleAvatar(
-                    radius: 16,
-                    backgroundImage: MemoryImage(widget.contact.photo!),
-                  )
-                : CircleAvatar(
-                    radius: 16,
-                    backgroundColor: Colors.green[100],
-                    child: Icon(Icons.person, color: Colors.green, size: 16),
-                  ),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: message.isMe ? Colors.green : Colors.grey[200],
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    message.text,
-                    style: TextStyle(
-                      color: message.isMe ? Colors.white : Colors.grey[800],
-                      fontSize: 16,
+    return GestureDetector(
+      onLongPress: () => _showMessageOptions(message),
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          mainAxisAlignment: message.isMe
+              ? MainAxisAlignment.end
+              : MainAxisAlignment.start,
+          children: [
+            if (!message.isMe) ...[
+              widget.contact.photo != null
+                  ? CircleAvatar(
+                      radius: 16,
+                      backgroundImage: MemoryImage(widget.contact.photo!),
+                    )
+                  : CircleAvatar(
+                      radius: 16,
+                      backgroundColor: AppTheme.avatarBackground,
+                      child: Icon(
+                        Icons.person,
+                        color: AppTheme.avatarIcon,
+                        size: 16,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _formatTime(message.timestamp),
-                    style: TextStyle(
-                      color: message.isMe
-                          ? Colors.white.withOpacity(0.7)
-                          : Colors.grey[500],
-                      fontSize: 10,
+              const SizedBox(width: 8),
+            ],
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: message.isMe
+                      ? AppTheme.appBarColor
+                      : AppTheme.messageReceived,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ✅ PREVIEW DA MENSAGEM RESPONDIDA
+                    _buildReplyPreview(message),
+
+                    // ✅ TEXTO DA MENSAGEM
+                    Text(
+                      message.text,
+                      style: TextStyle(
+                        color: message.isMe
+                            ? AppTheme.messageSentText
+                            : AppTheme.messageReceivedText,
+                        fontSize: 16,
+                      ),
                     ),
-                  ),
-                  if (message.isMe) ...[
-                    const SizedBox(width: 4),
-                    _buildStatusIcon(message.status),
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _formatTime(message.timestamp),
+                          style: TextStyle(
+                            color: message.isMe
+                                ? AppTheme.messageSentText.withOpacity(0.7)
+                                : AppTheme.textLight,
+                            fontSize: 10,
+                          ),
+                        ),
+                        if (message.isEdited) ...[
+                          SizedBox(width: 4),
+                          Text(
+                            'Editada',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey[600],
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                        if (message.isMe) ...[
+                          SizedBox(width: 4),
+                          _buildStatusIcon(message.status),
+                        ],
+                      ],
+                    ),
                   ],
-                ],
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1026,43 +2517,31 @@ class _ChatPageState extends State<ChatPage> {
     switch (status) {
       case 'read':
         icon = Icons.done_all;
-        color = Colors.lightBlueAccent;
+        color = AppTheme.statusRead;
         break;
       case 'delivered':
       case 'received':
         icon = Icons.done_all;
-        color = Colors.white70;
+        color = AppTheme.statusDelivered;
         break;
       case 'sent':
       default:
         icon = Icons.check;
-        color = Colors.white70;
+        color = AppTheme.statusSent;
         break;
     }
 
     return Icon(icon, size: 14, color: color);
   }
-}
 
-class ChatMessage {
-  final String id;
-  final String text;
-  final bool isMe;
-  final DateTime timestamp;
-  final String status; // 'sent', 'delivered', 'read'
+  // ✅ NOVA FUNÇÃO: Verificar se mensagem pode ser editada
+  bool _canEditMessage(ChatMessage message) {
+    if (!message.isMe) return false;
 
-  ChatMessage({
-    required this.id,
-    required this.text,
-    required this.isMe,
-    required this.timestamp,
-    required this.status,
-  });
-}
+    final now = DateTime.now();
+    final difference = now.difference(message.timestamp);
 
-class MessageGroup {
-  final DateTime date;
-  final List<ChatMessage> messages;
-
-  MessageGroup({required this.date, required this.messages});
+    // Permitir edição por até 15 minutos
+    return difference.inMinutes <= 15;
+  }
 }

@@ -14,6 +14,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+        isCoreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -46,6 +47,9 @@ dependencies {
 
     // Exemplo: (vai adicionar depois quando usar)
     implementation("com.google.firebase:firebase-auth")
+    
+    // ✅ Core library desugaring para flutter_local_notifications (versão 2.1.4+)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 
 flutter {

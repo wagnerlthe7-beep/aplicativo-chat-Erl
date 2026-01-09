@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'auth_service.dart';
+import 'app_theme.dart';
 
 class PhoneInputPage extends StatefulWidget {
   @override
@@ -53,7 +54,7 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
         backgroundColor: Colors.white,
         elevation: 0,
         leading: IconButton(
-          icon: Icon(Icons.arrow_back, color: Colors.green),
+          icon: Icon(Icons.arrow_back, color: AppTheme.appBarColor),
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(
@@ -76,7 +77,7 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
                 Icon(
                   Icons.phone_android,
                   size: 80,
-                  color: Colors.green,
+                  color: AppTheme.appBarColor,
                 ),
                 SizedBox(height: 30),
                 Text(
@@ -105,14 +106,14 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
                   decoration: InputDecoration(
                     labelText: 'Número de telefone',
                     hintText: '+258 84 123 4567',
-                    prefixIcon: Icon(Icons.phone, color: Colors.green),
+                    prefixIcon: Icon(Icons.phone, color: AppTheme.appBarColor),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
                       borderSide: BorderSide(color: Colors.grey[300]!),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide(color: Colors.green, width: 2),
+                      borderSide: BorderSide(color: AppTheme.appBarColor, width: 2),
                     ),
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -125,8 +126,8 @@ class _PhoneInputPageState extends State<PhoneInputPage> {
                 ElevatedButton(
                   onPressed: _loading ? null : _sendCode,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
+                    backgroundColor: AppTheme.appBarColor,
+                    foregroundColor: AppTheme.textOnGreen,
                     padding: EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),

@@ -4,11 +4,21 @@
 
 -module(message_router).
 
+% Definir o record localmente para acesso ao ETS
+-record(user_presence, {
+    user_id :: binary(),
+    ws_pid :: pid(),
+    last_heartbeat :: integer(),
+    is_connected :: boolean()
+}).
+
 -record(pending_messages, {
     message_id :: binary(),
     receiver_id :: binary(), 
     sender_id :: binary(),
-    content :: binary(),
+    %% Armazenamos o MAP COMPLETO da mensagem para preservar metadados (ex: reply_to_*).
+    %% Para mensagens antigas, pode ser apenas o conteúdo (binary).
+    content :: term(),
     timestamp :: integer(),
     status :: binary()
 }).
@@ -22,7 +32,16 @@
     broadcast_presence/2,
     get_message_sender/1,
     get_offline_messages/1,
-    handle_user_online/1
+    handle_user_online/1,
+    store_offline_message/2,
+    % Funções para notificações (que não estão sendo usadas ainda, mas serão)
+    notify_message_edited/4,
+    notify_message_deleted/4,
+    notify_message_reply/5,
+    
+    % Funções auxiliares
+    get_message_details/1,
+    get_message_replies/1
 ]).
 
 %%%-------------------------------------------------------------------
@@ -48,7 +67,9 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
         {ok, DbMessageId} ->
             io:format("   ✅✅✅ Mensagem salva na BD com ID: ~p~n", [DbMessageId]),
             
-            %% ✅ MENSAGEM PARA O DESTINATÁRIO (status = delivered se online)
+            %% ✅ ENVIAR PARA DESTINATÁRIO (VERIFICANDO SE WEBSOCKET ESTÁ VIVO)
+            %% Nova lógica: Se WebSocket está ativo, mensagem é entregue (delivered)
+            %% Se não está ativo, fica como sent (offline)
             MessageToReceiver = #{<<"type">> => <<"message">>,
                                 <<"from">> => FromId,
                                 <<"to">> => ToId,
@@ -59,31 +80,60 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                                 <<"status">> => <<"delivered">>,  %% para o destinatário, já entregue
                                 <<"should_increase_unread">> => true},
             
-            %% ✅ Enviar para destinatário (online -> delivered; offline -> continua sent)
-            case user_session:send_message(FromId, ToId, MessageToReceiver) of
-                ok ->
-                    io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p~n", [ToId]),
-                    
-                    %% ✅ ATUALIZAR BD: status = 'delivered'
-                    message_repo:mark_message_delivered(DbMessageId),
-                    
-                    %% ✅ Confirmação de entrega para o remetente (AGORA RETORNADA NA TUPLA)
-                    %% O chamador (ws_handler) deve enviar a notificação imediatamente.
-                    
-                    io:format("   ✅ Mensagem entregue para ~p. Retornando status 'delivered' para remetente.~n", [ToId]),
-                    
-                    {ok, MessageToReceiver, delivered};
-                    
-                {error, user_offline} ->
-                    io:format("   💾 Usuário ~p offline - armazenando mensagem (status=sent)~n", [ToId]),
-                    store_offline_message(ToId, MessageToReceiver#{
-                      <<"status">> => <<"sent">>
-                    }),
-                    {ok, MessageToReceiver, sent};
-                    
-                {error, Reason} ->
-                    io:format("   ❌ Erro ao enviar mensagem: ~p~n", [Reason]),
-                    {error, Reason}
+            IsWsAlive = user_session:is_websocket_alive(ToId),
+            io:format("   🔍 WebSocket alive para ~p: ~p~n", [ToId, IsWsAlive]),
+            
+            %% ✅ ESTRATÉGIA MELHORADA: Grace period para Android background
+            case IsWsAlive of
+                true ->
+                    %% WebSocket ativo - tentar enviar mensagem
+                    case user_session:send_message(FromId, ToId, MessageToReceiver) of
+                        ok ->
+                            io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p (WS vivo)~n", [ToId]),
+                            
+                            %% ✅ ATUALIZAR BD: status = 'delivered'
+                            message_repo:mark_message_delivered(DbMessageId),
+                            
+                            %% ✅ ENVIAR ATUALIZAÇÃO PARA CHAT LIST PAGE
+                            send_chat_list_update(FromId, ToId, Content, DbMessageId),
+                            
+                            io:format("   ✅ Mensagem entregue para ~p. Retornando status 'delivered' para remetente.~n", [ToId]),
+                            
+                            {ok, MessageToReceiver, delivered};
+                            
+                        {error, Reason} ->
+                            io:format("   ❌ Erro ao enviar para WS ativo: ~p~n", [Reason]),
+                            {error, Reason}
+                    end;
+                false ->
+                    %% WebSocket não está ativo - verificar grace period
+                    case check_grace_period(ToId) of
+                        {ok, within_grace} ->
+                            io:format("   ⏰ Usuário ~p em grace period (Android background) - tentando delivery~n", [ToId]),
+                            %% Tentar entregar mesmo sem WebSocket (pode reconectar)
+                            case user_session:send_message(FromId, ToId, MessageToReceiver) of
+                                ok ->
+                                    message_repo:mark_message_delivered(DbMessageId),
+                                    
+                                    %% ✅ ENVIAR ATUALIZAÇÃO PARA CHAT LIST PAGE
+                                    send_chat_list_update(FromId, ToId, Content, DbMessageId),
+                                    
+                                    io:format("   ✅ Delivery bem-sucedido em grace period~n"),
+                                    {ok, MessageToReceiver, delivered};
+                                {error, _} ->
+                                    io:format("   💾 Grace period expirou para ~p - armazenando mensagem (status=sent)~n", [ToId]),
+                                    store_offline_message(ToId, MessageToReceiver#{
+                                      <<"status">> => <<"sent">>
+                                    }),
+                                    {ok, MessageToReceiver, sent}
+                            end;
+                        {ok, expired} ->
+                            io:format("   💾 Grace period expirou para ~p - armazenando mensagem (status=sent)~n", [ToId]),
+                            store_offline_message(ToId, MessageToReceiver#{
+                              <<"status">> => <<"sent">>
+                            }),
+                            {ok, MessageToReceiver, sent}
+                    end
             end;
             
         {error, DbError} ->
@@ -178,16 +228,27 @@ get_offline_messages(UserId) ->
     {atomic, Results} = mnesia:transaction(F),
     
     Messages = lists:map(fun(R) ->
-        #{
+        ContentData = R#pending_messages.content,
+        % Se content for um mapa completo, extrai o texto e metadados de reply.
+        {ContentText, ReplyFields} = case is_map(ContentData) of
+            true ->
+                {
+                    maps:get(<<"content">>, ContentData, ContentData),
+                    maps:with([<<"reply_to_id">>, <<"reply_to_text">>, <<"reply_to_sender_name">>, <<"reply_to_sender_id">>], ContentData)
+                };
+            false ->
+                {ContentData, #{}}
+        end,
+        maps:merge(#{
             <<"type">> => <<"message">>,
             <<"from">> => R#pending_messages.sender_id,
             <<"to">> => R#pending_messages.receiver_id,
-            <<"content">> => R#pending_messages.content,
+            <<"content">> => ContentText,
             <<"timestamp">> => R#pending_messages.timestamp,
             <<"message_id">> => R#pending_messages.message_id,
             <<"status">> => R#pending_messages.status,
             <<"should_increase_unread">> => true
-        }
+        }, ReplyFields)
     end, Results),
     
     %% Limpar mensagens offline após enviar
@@ -205,10 +266,18 @@ handle_user_online(UserId) ->
         {ok, Messages} ->
             io:format("   📋 Encontradas ~p mensagens pendentes~n", [length(Messages)]),
             
-            MessageIds = lists:map(fun({Id, _SenderId, _Content, _SentAt, _Status}) -> Id end, Messages),
+            MessageIds = lists:map(fun(Msg) -> maps:get(<<"id">>, Msg) end, Messages),
             
             %% 1. Processar cada mensagem (notificar Sender e enviar para Receiver)
-            lists:foreach(fun({Id, SenderId, Content, SentAt, _Status}) ->
+            lists:foreach(fun(Msg) ->
+                Id = maps:get(<<"id">>, Msg),
+                SenderId = maps:get(<<"sender_id">>, Msg),
+                Content = maps:get(<<"content">>, Msg),
+                SentAt = erlang:system_time(second),
+                ReplyToId = maps:get(<<"reply_to_id">>, Msg, null),
+                ReplyToText = maps:get(<<"reply_to_text">>, Msg, null),
+                ReplyToSenderId = maps:get(<<"reply_to_sender_id">>, Msg, null),
+                ReplyToSenderName = maps:get(<<"reply_to_sender_name">>, Msg, null),
                 SenderIdBin = integer_to_binary(SenderId),
                 
                 %% Notificar remetente (status = delivered)
@@ -228,11 +297,16 @@ handle_user_online(UserId) ->
                     <<"from">> => SenderIdBin,
                     <<"to">> => UserId,
                     <<"content">> => Content,
-                    <<"timestamp">> => erlang:system_time(second),
+                    <<"timestamp">> => SentAt,
                     <<"message_id">> => integer_to_binary(Id),
                     <<"db_message_id">> => Id,
                     <<"status">> => <<"delivered">>,
-                    <<"should_increase_unread">> => true
+                    <<"should_increase_unread">> => true,
+                    %% Metadados de reply
+                    <<"reply_to_id">> => ReplyToId,
+                    <<"reply_to_text">> => ReplyToText,
+                    <<"reply_to_sender_id">> => ReplyToSenderId,
+                    <<"reply_to_sender_name">> => ReplyToSenderName
                 },
                 %% Envia para o próprio usuário que acabou de conectar
                 user_session:send_message(SenderIdBin, UserId, MsgForReceiver)
@@ -277,7 +351,8 @@ get_user_contacts(_UserId) ->
 store_offline_message(UserId, Message) ->
     MessageId = maps:get(<<"message_id">>, Message),
     FromId = maps:get(<<"from">>, Message),
-    Content = maps:get(<<"content">>, Message),
+    %% Guardar o MAP COMPLETO para preservar metadados (ex: reply_to_*).
+    Content = Message,
     Timestamp = maps:get(<<"timestamp">>, Message),
     Status = maps:get(<<"status">>, Message, <<"pending">>),
     
@@ -294,8 +369,42 @@ store_offline_message(UserId, Message) ->
         mnesia:write(pending_messages, Record, write)
     end),
     
-    io:format("💾 Stored offline message for ~p: ~p~n", [UserId, MessageId]),
-    ok.
+    io:format("💾 Stored offline message for ~p: ~p~n", [UserId, MessageId]).
+
+%% @doc Verifica se usuário está em grace period (Android background)
+check_grace_period(UserId) ->
+    try
+        % Verificar se há um registro recente de desconexão
+        case ets:lookup(user_presence, UserId) of
+            [#user_presence{is_connected = false, last_heartbeat = LastHeartbeat}] ->
+                Now = erlang:system_time(second),
+                GracePeriodSeconds = 120,  % 2 minutos de grace period
+                
+                io:format("   ⏰ Grace period check: Now=~p, LastHeartbeat=~p, Diff=~p~n", 
+                          [Now, LastHeartbeat, Now - LastHeartbeat]),
+                
+                case (Now - LastHeartbeat) =< GracePeriodSeconds of
+                    true ->
+                        io:format("   ⏰ Usuário dentro do grace period~n"),
+                        {ok, within_grace};
+                    false ->
+                        io:format("   ⏰ Grace period expirou~n"),
+                        {ok, expired}
+                end;
+            [#user_presence{is_connected = true}] ->
+                % Usuário está conectado - não precisa de grace period
+                io:format("   ℹ️ Usuário está conectado, grace period não aplicável~n"),
+                {ok, expired};
+            _ ->
+                % Sem registro - expirado
+                io:format("   ℹ️ Sem registro de presença, grace period expirado~n"),
+                {ok, expired}
+        end
+    catch
+        _:_ ->
+            io:format("   ❌ Erro ao verificar grace period~n"),
+            {ok, expired}
+    end.
 
 %% @doc Limpa mensagens offline de um usuário
 clear_offline_messages(UserId) ->
@@ -306,3 +415,197 @@ clear_offline_messages(UserId) ->
     end,
     mnesia:transaction(F),
     io:format("🧹 Cleared offline messages for user: ~p~n", [UserId]).
+
+
+%%%===================================================================
+%%% Funções para operações avançadas de mensagens
+%%%===================================================================
+
+%% @doc Notificar edição de mensagem
+notify_message_edited(MessageId, UpdatedContent, SenderId, ReceiverId) ->
+    try
+        Notification = #{
+            <<"type">> => <<"message_edited">>,
+            <<"message_id">> => MessageId,
+            <<"sender_id">> => SenderId,
+            <<"receiver_id">> => ReceiverId,
+            <<"content">> => UpdatedContent,
+            <<"timestamp">> => erlang:system_time(second)
+        },
+        
+        user_session:send_message(SenderId, ReceiverId, Notification),
+        io:format("📡 Notificação de edição enviada: ~p -> ~p~n", [SenderId, ReceiverId]),
+        ok
+    catch
+        Error:Reason ->
+            io:format("❌ Erro ao notificar edição: ~p:~p~n", [Error, Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Notificar deleção de mensagem
+notify_message_deleted(MessageId, SenderId, ReceiverId, Reason) ->
+    try
+        Notification = #{
+            <<"type">> => <<"message_deleted">>,
+            <<"message_id">> => MessageId,
+            <<"sender_id">> => SenderId,
+            <<"receiver_id">> => ReceiverId,
+            <<"reason">> => Reason,
+            <<"timestamp">> => erlang:system_time(second)
+        },
+        
+        user_session:send_message(SenderId, ReceiverId, Notification),
+        io:format("📡 Notificação de deleção enviada: ~p -> ~p~n", [SenderId, ReceiverId]),
+        ok
+    catch
+        Error:Reason ->
+            io:format("❌ Erro ao notificar deleção: ~p:~p~n", [Error, Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Notificar resposta a mensagem
+notify_message_reply(ReplyMessageId, OriginalMessageId, SenderId, ReceiverId, Content) ->
+    try
+        Notification = #{
+            <<"type">> => <<"message_reply">>,
+            <<"message_id">> => ReplyMessageId,
+            <<"original_message_id">> => OriginalMessageId,
+            <<"sender_id">> => SenderId,
+            <<"receiver_id">> => ReceiverId,
+            <<"content">> => Content,
+            <<"timestamp">> => erlang:system_time(second)
+        },
+        
+        user_session:send_message(SenderId, ReceiverId, Notification),
+        io:format("📡 Notificação de resposta enviada: ~p -> ~p~n", [SenderId, ReceiverId]),
+        ok
+    catch
+        Error:Reason ->
+            io:format("❌ Erro ao notificar resposta: ~p:~p~n", [Error, Reason]),
+            {error, Reason}
+    end.
+
+%% @doc Obter informações completas da mensagem
+get_message_details(MessageId) ->
+    db_pool:with_connection(fun(Conn) ->
+        try
+            MsgIdInt = binary_to_integer_wrapper(MessageId),
+            
+            Sql = "SELECT m.id, m.sender_id, m.receiver_id, m.content, 
+                          m.sent_at, m.status, m.is_edited, m.edit_count,
+                          m.reply_to_id, m.is_deleted, m.deleted_by,
+                          m.delete_reason, m.deleted_at,
+                          u1.name as sender_name, u2.name as receiver_name
+                   FROM messages m
+                   LEFT JOIN users u1 ON m.sender_id = u1.id
+                   LEFT JOIN users u2 ON m.receiver_id = u2.id
+                   WHERE m.id = $1",
+            
+            case epgsql:equery(Conn, Sql, [MsgIdInt]) of
+                {ok, _, [Row]} ->
+                    {Id, SenderId, ReceiverId, Content, SentAt, Status, 
+                     IsEdited, EditCount, ReplyToId, IsDeleted, DeletedBy,
+                     DeleteReason, DeletedAt, SenderName, ReceiverName} = Row,
+                    
+                    MessageDetails = #{
+                        id => Id,
+                        sender_id => SenderId,
+                        receiver_id => ReceiverId,
+                        content => Content,
+                        sent_at => SentAt,
+                        status => Status,
+                        is_edited => IsEdited,
+                        edit_count => EditCount,
+                        reply_to_id => ReplyToId,
+                        is_deleted => IsDeleted,
+                        deleted_by => DeletedBy,
+                        delete_reason => DeleteReason,
+                        deleted_at => DeletedAt,
+                        sender_name => SenderName,
+                        receiver_name => ReceiverName
+                    },
+                    {ok, MessageDetails};
+                {ok, _, []} ->
+                    {error, not_found};
+                {error, Error} ->
+                    {error, Error}
+            end
+        catch
+            _:_ -> {error, invalid_id}
+        end
+    end).
+
+%% @doc Buscar mensagens respondidas
+get_message_replies(MessageId) ->
+    db_pool:with_connection(fun(Conn) ->
+        try
+            MsgIdInt = binary_to_integer_wrapper(MessageId),
+            
+            Sql = "SELECT m.id, m.sender_id, m.receiver_id, m.content, 
+                          m.sent_at, m.status, u.name as sender_name
+                   FROM messages m
+                   JOIN users u ON m.sender_id = u.id
+                   WHERE m.reply_to_id = $1
+                   ORDER BY m.sent_at ASC",
+            
+            case epgsql:equery(Conn, Sql, [MsgIdInt]) of
+                {ok, _, Rows} ->
+                    Replies = lists:map(fun(Row) ->
+                        {Id, SenderId, ReceiverId, Content, SentAt, Status, SenderName} = Row,
+                        #{
+                            id => Id,
+                            sender_id => SenderId,
+                            receiver_id => ReceiverId,
+                            content => Content,
+                            sent_at => SentAt,
+                            status => Status,
+                            sender_name => SenderName
+                        }
+                    end, Rows),
+                    {ok, Replies};
+                {error, Error} ->
+                    {error, Error}
+            end
+        catch
+            _:_ -> {error, invalid_id}
+        end
+    end).
+
+%% Helper para conversão
+binary_to_integer_wrapper(Binary) when is_binary(Binary) ->
+    list_to_integer(binary_to_list(Binary));
+binary_to_integer_wrapper(Integer) when is_integer(Integer) ->
+    Integer.
+
+%% @doc Enviar atualização para chat list page
+send_chat_list_update(FromId, ToId, Content, MessageId) ->
+    try
+        %% Notificação para o remetente (atualizar chat list dele)
+        SenderUpdate = #{
+            <<"type">> => <<"chat_list_update">>,
+            <<"message_id">> => integer_to_binary(MessageId),
+            <<"from">> => FromId,
+            <<"to">> => ToId,
+            <<"content">> => Content,
+            <<"timestamp">> => erlang:system_time(second),
+            <<"action">> => <<"new_message">>
+        },
+        user_session:send_message(ToId, FromId, SenderUpdate),
+        
+        %% Notificação para o destinatário (atualizar chat list dele)
+        ReceiverUpdate = #{
+            <<"type">> => <<"chat_list_update">>,
+            <<"message_id">> => integer_to_binary(MessageId),
+            <<"from">> => FromId,
+            <<"to">> => ToId,
+            <<"content">> => Content,
+            <<"timestamp">> => erlang:system_time(second),
+            <<"action">> => <<"new_message">>
+        },
+        user_session:send_message(FromId, ToId, ReceiverUpdate),
+        
+        io:format("   📋 Chat list update sent for message ~p~n", [MessageId])
+    catch
+        _:_ ->
+            io:format("   ❌ Error sending chat list update~n")
+    end.

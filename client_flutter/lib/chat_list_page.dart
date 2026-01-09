@@ -5,6 +5,8 @@ import 'auth_service.dart';
 import 'chat_page.dart';
 import 'chat_service.dart';
 import 'chat_model.dart';
+import 'notification_service.dart';
+import 'app_theme.dart';
 import 'dart:async';
 import 'contacts_helper.dart';
 
@@ -24,6 +26,7 @@ class _ChatListPageState extends State<ChatListPage>
 
   // ✅ SISTEMA DE CHATS REAL
   StreamSubscription<List<ChatContact>>? _chatSubscription;
+  StreamSubscription<Map<String, dynamic>>? _messageSubscription;
   List<ChatContact> _chats = [];
 
   @override
@@ -39,9 +42,65 @@ class _ChatListPageState extends State<ChatListPage>
     _sessionTimer?.cancel();
     _chatRefreshTimer?.cancel();
     _chatSubscription?.cancel();
+    _messageSubscription?.cancel();
     _tabController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+
+  // 🔔 TRATAR MENSAGENS GLOBAIS PARA NOTIFICAÇÕES
+  void _handleGlobalMessage(Map<String, dynamic> message) async {
+    final type = message['type']?.toString();
+
+    // Ignorar eventos de status (delivered, read)
+    if (type == 'message_delivered' || type == 'message_read') {
+      return;
+    }
+
+    final fromUserId = message['from']?.toString();
+    final toUserId = message['to']?.toString();
+    final content = message['content']?.toString() ?? '';
+
+    // Verificar se é uma mensagem recebida (não enviada por mim)
+    if (fromUserId != null && toUserId != null && content.isNotEmpty) {
+      final currentUserId = await AuthService.getCurrentUserId();
+
+      // Se eu sou o destinatário e não estou no chat do remetente
+      if (toUserId == currentUserId &&
+          ChatService.activeChatContactId != fromUserId) {
+        _sendNotificationForMessage(fromUserId, content);
+      }
+    }
+  }
+
+  // 🔔 ENVIAR NOTIFICAÇÃO DE MENSAGEM
+  void _sendNotificationForMessage(
+    String senderId,
+    String messageContent,
+  ) async {
+    try {
+      // Buscar informações do remetente
+      final senderChat = _chats.firstWhere(
+        (chat) => chat.contactId == senderId,
+        orElse: () => ChatContact(
+          contactId: senderId,
+          name: 'Desconhecido',
+          lastMessage: '',
+          lastMessageTime: DateTime.now(),
+          unreadCount: 0,
+        ),
+      );
+
+      await NotificationService().showNewMessageNotification(
+        senderName: senderChat.name,
+        messageContent: messageContent,
+        chatId: senderId,
+      );
+
+      print('🔔 Notificação enviada: ${senderChat.name} - $messageContent');
+    } catch (e) {
+      print('❌ Erro ao enviar notificação: $e');
+    }
   }
 
   // INICIALIZAR CHATS REAIS - CORRIGIDO
@@ -74,12 +133,16 @@ class _ChatListPageState extends State<ChatListPage>
 
     // OUVIR ATUALIZAÇÕES EM TEMPO REAL
     _chatSubscription = ChatService.chatListStream.listen((chats) {
-      print('📡 Lista de chats atualizada: ${chats.length} chats');
       if (mounted) {
         setState(() {
           _chats = chats;
         });
       }
+    });
+
+    // 🔔 OUVIR MENSAGENS GLOBAIS PARA NOTIFICAÇÕES
+    _messageSubscription = ChatService.messageStream.listen((message) {
+      _handleGlobalMessage(message);
     });
   }
 
@@ -222,7 +285,11 @@ class _ChatListPageState extends State<ChatListPage>
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.contacts, color: Colors.green, size: 20),
+                      Icon(
+                        Icons.contacts,
+                        color: AppTheme.appBarColor,
+                        size: 20,
+                      ),
                       SizedBox(width: 6),
                       if (!_isSearching)
                         Text(
@@ -249,7 +316,7 @@ class _ChatListPageState extends State<ChatListPage>
                                 decoration: InputDecoration(
                                   hintText: 'Pesquisar...',
                                   hintStyle: TextStyle(
-                                    color: Colors.grey[600],
+                                    color: AppTheme.textSecondary,
                                     fontSize: 14,
                                   ),
                                   border: InputBorder.none,
@@ -262,7 +329,7 @@ class _ChatListPageState extends State<ChatListPage>
                           IconButton(
                             icon: Icon(
                               Icons.close,
-                              color: Colors.green,
+                              color: AppTheme.appBarColor,
                               size: 20,
                             ),
                             padding: EdgeInsets.all(4),
@@ -277,7 +344,11 @@ class _ChatListPageState extends State<ChatListPage>
                     )
                   else
                     IconButton(
-                      icon: Icon(Icons.search, color: Colors.green, size: 20),
+                      icon: Icon(
+                        Icons.search,
+                        color: AppTheme.appBarColor,
+                        size: 20,
+                      ),
                       padding: EdgeInsets.all(4),
                       constraints: BoxConstraints(minWidth: 36, minHeight: 36),
                       onPressed: _toggleSearch,
@@ -295,7 +366,10 @@ class _ChatListPageState extends State<ChatListPage>
                     children: [
                       Text(
                         '${filteredContacts.length} contactos encontrados',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ),
@@ -313,7 +387,7 @@ class _ChatListPageState extends State<ChatListPage>
                                       ? Icons.search_off
                                       : Icons.contacts_outlined,
                                   size: 60,
-                                  color: Colors.grey,
+                                  color: AppTheme.textLight,
                                 ),
                                 SizedBox(height: 16),
                                 Text(
@@ -321,7 +395,9 @@ class _ChatListPageState extends State<ChatListPage>
                                           searchController.text.isNotEmpty
                                       ? 'Nenhum resultado para "${searchController.text}"'
                                       : 'Nenhum contacto encontrado',
-                                  style: TextStyle(color: Colors.grey),
+                                  style: TextStyle(
+                                    color: AppTheme.textSecondary,
+                                  ),
                                   textAlign: TextAlign.center,
                                 ),
                               ],
@@ -361,7 +437,7 @@ class _ChatListPageState extends State<ChatListPage>
 
     return Container(
       decoration: BoxDecoration(
-        border: Border(bottom: BorderSide(color: Colors.grey[200]!)),
+        border: Border(bottom: BorderSide(color: AppTheme.dividerColor)),
       ),
       child: ListTile(
         leading: contact.photo != null
@@ -371,8 +447,8 @@ class _ChatListPageState extends State<ChatListPage>
               )
             : CircleAvatar(
                 radius: 22,
-                backgroundColor: Colors.green[100],
-                child: Icon(Icons.person, color: Colors.green, size: 24),
+                backgroundColor: AppTheme.avatarBackground,
+                child: Icon(Icons.person, color: AppTheme.avatarIcon, size: 24),
               ),
         title: Text(
           displayName,
@@ -380,9 +456,9 @@ class _ChatListPageState extends State<ChatListPage>
         ),
         subtitle: Text(
           phones,
-          style: TextStyle(color: Colors.grey[600], fontSize: 14),
+          style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
         ),
-        trailing: Icon(Icons.chat, color: Colors.green),
+        trailing: Icon(Icons.chat, color: AppTheme.appBarColor),
         onTap: () {
           Navigator.pop(context);
           _startNewChat(contact);
@@ -412,8 +488,21 @@ class _ChatListPageState extends State<ChatListPage>
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (context) =>
-              ChatPage(contact: contact, remoteUserId: remoteUserId),
+          builder: (context) => ChatPage(
+            contact: ChatContact(
+              contactId: remoteUserId,
+              name: contact.displayName.isEmpty
+                  ? 'Sem nome'
+                  : contact.displayName,
+              phoneNumber: contact.phones.isNotEmpty
+                  ? contact.phones.first.number
+                  : null,
+              lastMessage: '',
+              lastMessageTime: DateTime.now(),
+              unreadCount: 0,
+            ),
+            remoteUserId: remoteUserId,
+          ),
         ),
       );
     } catch (e) {
@@ -446,7 +535,9 @@ class _ChatListPageState extends State<ChatListPage>
               openAppSettings();
             },
             child: Text('Configurações'),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.appBarColor,
+            ),
           ),
         ],
       ),
@@ -475,7 +566,7 @@ class _ChatListPageState extends State<ChatListPage>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('✅ Outras sessões foram revogadas com sucesso!'),
-            backgroundColor: Colors.green,
+            backgroundColor: AppTheme.appBarColor,
           ),
         );
       } else {
@@ -498,14 +589,14 @@ class _ChatListPageState extends State<ChatListPage>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppTheme.backgroundColor,
       appBar: AppBar(
-        backgroundColor: Colors.green,
+        backgroundColor: AppTheme.appBarColor,
         elevation: 0,
         title: Text(
           'SpeekJoy',
           style: TextStyle(
-            color: Colors.white,
+            color: AppTheme.textOnGreen,
             fontSize: 20,
             fontWeight: FontWeight.w500,
           ),
@@ -519,22 +610,24 @@ class _ChatListPageState extends State<ChatListPage>
                     height: 20,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        AppTheme.textOnGreen,
+                      ),
                     ),
                   )
-                : Icon(Icons.refresh, color: Colors.white),
+                : Icon(Icons.refresh, color: AppTheme.textOnGreen),
             onPressed: _isLoading ? null : _reloadChats,
           ),
           IconButton(
-            icon: Icon(Icons.camera_alt, color: Colors.white),
+            icon: Icon(Icons.camera_alt, color: AppTheme.textOnGreen),
             onPressed: () {},
           ),
           IconButton(
-            icon: Icon(Icons.search, color: Colors.white),
+            icon: Icon(Icons.search, color: AppTheme.textOnGreen),
             onPressed: () {},
           ),
           PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert, color: Colors.white),
+            icon: Icon(Icons.more_vert, color: AppTheme.textOnGreen),
             onSelected: (value) {
               if (value == 'logout')
                 _logout();
@@ -546,7 +639,7 @@ class _ChatListPageState extends State<ChatListPage>
                 value: 'revoke_others',
                 child: Row(
                   children: [
-                    Icon(Icons.security, color: Colors.orange),
+                    Icon(Icons.security, color: AppTheme.actionDelete),
                     SizedBox(width: 8),
                     Text('Sair de outros dispositivos'),
                   ],
@@ -568,17 +661,17 @@ class _ChatListPageState extends State<ChatListPage>
         bottom: PreferredSize(
           preferredSize: Size.fromHeight(70),
           child: Container(
-            color: Colors.white,
+            color: AppTheme.surfaceColor,
             child: Column(
               children: [
-                Container(height: 1, color: Colors.grey[300]),
+                Container(height: 1, color: AppTheme.dividerColor),
                 Container(
                   padding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
                   child: TabBar(
                     controller: _tabController,
-                    indicatorColor: Colors.green,
-                    labelColor: Colors.green,
-                    unselectedLabelColor: Colors.grey[600],
+                    indicatorColor: AppTheme.appBarColor,
+                    labelColor: AppTheme.appBarColor,
+                    unselectedLabelColor: AppTheme.textSecondary,
                     tabs: [
                       Tab(
                         child: Column(
@@ -618,11 +711,11 @@ class _ChatListPageState extends State<ChatListPage>
       body: Column(
         children: [
           Container(
-            color: Colors.white,
+            color: AppTheme.surfaceColor,
             padding: EdgeInsets.all(16),
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.grey[100],
+                color: AppTheme.searchBackground,
                 borderRadius: BorderRadius.circular(20),
               ),
               child: TextField(
@@ -630,8 +723,8 @@ class _ChatListPageState extends State<ChatListPage>
                 onChanged: (value) => setState(() => _searchQuery = value),
                 decoration: InputDecoration(
                   hintText: 'Pesquisar ou começar nova conversa',
-                  hintStyle: TextStyle(color: Colors.grey[600]),
-                  prefixIcon: Icon(Icons.search, color: Colors.grey[600]),
+                  hintStyle: TextStyle(color: AppTheme.textSecondary),
+                  prefixIcon: Icon(Icons.search, color: AppTheme.textSecondary),
                   border: InputBorder.none,
                   contentPadding: EdgeInsets.symmetric(
                     horizontal: 16,
@@ -651,17 +744,19 @@ class _ChatListPageState extends State<ChatListPage>
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _openContactsList,
-        backgroundColor: Colors.green,
+        backgroundColor: AppTheme.appBarColor,
         child: _isLoading
             ? SizedBox(
                 width: 20,
                 height: 20,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    AppTheme.textOnGreen,
+                  ),
                 ),
               )
-            : Icon(Icons.chat, color: Colors.white),
+            : Icon(Icons.chat, color: AppTheme.textOnGreen),
       ),
     );
   }
@@ -681,12 +776,12 @@ class _ChatListPageState extends State<ChatListPage>
     );
   }
 
-  // ITEM DE CHAT REAL
+  // ITEM DE CHAT REAL atualizado
   Widget _buildRealChatItem(ChatContact chat) {
     return Container(
       decoration: BoxDecoration(
         border: Border(
-          bottom: BorderSide(color: Colors.grey[200]!, width: 0.5),
+          bottom: BorderSide(color: AppTheme.dividerColor, width: 0.5),
         ),
       ),
       child: ListTile(
@@ -694,19 +789,32 @@ class _ChatListPageState extends State<ChatListPage>
           radius: 25,
           backgroundImage: chat.photo != null ? MemoryImage(chat.photo!) : null,
           child: chat.photo == null
-              ? Icon(Icons.person, color: Colors.grey[600], size: 28)
+              ? Icon(Icons.person, color: AppTheme.textSecondary, size: 28)
               : null,
-          backgroundColor: chat.photo == null ? Colors.grey[300] : null,
+          backgroundColor: chat.photo == null
+              ? AppTheme.avatarBackground
+              : null,
         ),
         title: Text(
           chat.name,
           style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16),
         ),
-        subtitle: Text(
-          chat.lastMessage,
-          style: TextStyle(color: Colors.grey[600], fontSize: 14),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        subtitle: Row(
+          children: [
+            if (chat.lastMessageIsReply)
+              Icon(Icons.reply, size: 12, color: AppTheme.appBarColor),
+            if (chat.lastMessageEdited)
+              Icon(Icons.edit, size: 12, color: AppTheme.actionEdit),
+            SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                chat.lastMessage,
+                style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
         trailing: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -714,20 +822,20 @@ class _ChatListPageState extends State<ChatListPage>
           children: [
             Text(
               _formatTime(chat.lastMessageTime),
-              style: TextStyle(color: Colors.grey[500], fontSize: 12),
+              style: TextStyle(color: AppTheme.textLight, fontSize: 12),
             ),
             if (chat.unreadCount > 0)
               Container(
                 margin: EdgeInsets.only(top: 4),
                 padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
-                  color: Colors.green,
+                  color: AppTheme.appBarColor,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text(
                   chat.unreadCount.toString(),
                   style: TextStyle(
-                    color: Colors.white,
+                    color: AppTheme.textOnGreen,
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
                   ),
@@ -741,20 +849,14 @@ class _ChatListPageState extends State<ChatListPage>
           );
 
           // MARCAR COMO LIDO ANTES DE ABRIR O CHAT
-          //ChatService.markChatAsRead(chat.contactId);
-
-          // CRIAR CONTATO TEMPORÁRIO PARA NAVEGAÇÃO
-          final contact = Contact()
-            ..displayName = chat.name
-            ..phones = [Phone(chat.phoneNumber ?? '')]
-            ..photo = chat.photo;
+          ChatService.markChatAsRead(chat.contactId);
 
           // NAVEGAR PARA O CHAT
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) =>
-                  ChatPage(contact: contact, remoteUserId: chat.contactId),
+                  ChatPage(contact: chat, remoteUserId: chat.contactId),
             ),
           );
         },
@@ -778,16 +880,16 @@ class _ChatListPageState extends State<ChatListPage>
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.chat_bubble_outline, size: 80, color: Colors.grey[300]),
+          Icon(Icons.chat_bubble_outline, size: 80, color: AppTheme.textLight),
           SizedBox(height: 16),
           Text(
             'Nenhuma conversa',
-            style: TextStyle(color: Colors.grey, fontSize: 18),
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 18),
           ),
           SizedBox(height: 8),
           Text(
             'Inicie uma conversa para ver os chats aqui',
-            style: TextStyle(color: Colors.grey, fontSize: 14),
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
           ),
           SizedBox(height: 16),
           ElevatedButton.icon(
@@ -795,8 +897,8 @@ class _ChatListPageState extends State<ChatListPage>
             icon: Icon(Icons.chat),
             label: Text('Iniciar primeira conversa'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.green,
-              foregroundColor: Colors.white,
+              backgroundColor: AppTheme.appBarColor,
+              foregroundColor: AppTheme.textOnGreen,
             ),
           ),
         ],
@@ -823,16 +925,16 @@ class _ChatListPageState extends State<ChatListPage>
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.radio_button_checked, size: 80, color: Colors.grey[400]),
+          Icon(Icons.radio_button_checked, size: 80, color: AppTheme.textLight),
           SizedBox(height: 20),
           Text(
             'Status em breve',
-            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+            style: TextStyle(fontSize: 18, color: AppTheme.textSecondary),
           ),
           SizedBox(height: 10),
           Text(
             'Esta funcionalidade será implementada em breve',
-            style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+            style: TextStyle(fontSize: 14, color: AppTheme.textLight),
             textAlign: TextAlign.center,
           ),
         ],
@@ -845,16 +947,16 @@ class _ChatListPageState extends State<ChatListPage>
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.call, size: 80, color: Colors.grey[400]),
+          Icon(Icons.call, size: 80, color: AppTheme.textLight),
           SizedBox(height: 20),
           Text(
             'Chamadas em breve',
-            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+            style: TextStyle(fontSize: 18, color: AppTheme.textSecondary),
           ),
           SizedBox(height: 10),
           Text(
             'Esta funcionalidade será implementada em breve',
-            style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+            style: TextStyle(fontSize: 14, color: AppTheme.textLight),
             textAlign: TextAlign.center,
           ),
         ],
@@ -882,8 +984,8 @@ class _ChatListPageState extends State<ChatListPage>
             },
             child: Text('Confirmar'),
             style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
-              foregroundColor: Colors.white,
+              backgroundColor: AppTheme.actionDelete,
+              foregroundColor: AppTheme.textOnGreen,
             ),
           ),
         ],

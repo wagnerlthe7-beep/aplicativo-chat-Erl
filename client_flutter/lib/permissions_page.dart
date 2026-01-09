@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'permission_service.dart';
+import 'app_theme.dart';
 
 class PermissionsPage extends StatefulWidget {
   @override
@@ -83,7 +84,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
         content: Text(
           '✅ ${PermissionService.getPermissionTitle(permission)} permitido!',
         ),
-        backgroundColor: Colors.green,
+        backgroundColor: AppTheme.appBarColor,
         duration: Duration(seconds: 2),
       ),
     );
@@ -109,7 +110,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
               openAppSettings();
             },
             child: Text('Configurações'),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.appBarColor),
           ),
         ],
       ),
@@ -143,7 +144,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(height: 20),
-              Icon(Icons.security, size: 80, color: Colors.green),
+              Icon(Icons.security, size: 80, color: AppTheme.appBarColor),
               SizedBox(height: 30),
               Text(
                 'Permissões Necessárias',
@@ -174,16 +175,16 @@ class _PermissionsPageState extends State<PermissionsPage> {
                       margin: EdgeInsets.only(bottom: 16),
                       decoration: BoxDecoration(
                         border: Border.all(
-                          color: isGranted ? Colors.green : Colors.grey[300]!,
+                          color: isGranted ? AppTheme.appBarColor : Colors.grey[300]!,
                           width: 1,
                         ),
                         borderRadius: BorderRadius.circular(12),
-                        color: isGranted ? Colors.green[50] : Colors.white,
+                        color: isGranted ? AppTheme.appBarColor.withOpacity(0.1) : Colors.white,
                       ),
                       child: ListTile(
                         leading: Icon(
                           PermissionService.getPermissionIcon(permission),
-                          color: isGranted ? Colors.green : Colors.grey[600],
+                          color: isGranted ? AppTheme.appBarColor : Colors.grey[600],
                           size: 28,
                         ),
                         title: Text(
@@ -191,7 +192,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
                           style: TextStyle(
                             fontWeight: FontWeight.w600,
                             color: isGranted
-                                ? Colors.green[800]
+                                ? AppTheme.appBarColor
                                 : Colors.grey[800],
                           ),
                         ),
@@ -207,7 +208,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
                         trailing: isGranted
                             ? Icon(
                                 Icons.check_circle,
-                                color: Colors.green,
+                                color: AppTheme.appBarColor,
                                 size: 24,
                               )
                             : IconButton(
@@ -237,8 +238,8 @@ class _PermissionsPageState extends State<PermissionsPage> {
                       ? null
                       : _requestAllRemainingPermissions,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
+                    backgroundColor: AppTheme.appBarColor,
+                    foregroundColor: AppTheme.textOnGreen,
                     padding: EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -280,7 +281,7 @@ class _PermissionsPageState extends State<PermissionsPage> {
                   allGranted ? 'Continuar' : 'Pular por agora',
                   style: TextStyle(
                     fontSize: 16,
-                    color: allGranted ? Colors.green : Colors.grey[600],
+                    color: allGranted ? AppTheme.appBarColor : Colors.grey[600],
                     fontWeight: FontWeight.w500,
                   ),
                 ),

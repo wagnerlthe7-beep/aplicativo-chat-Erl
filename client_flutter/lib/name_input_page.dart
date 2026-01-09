@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'auth_service.dart';
+import 'app_theme.dart';
 
 class NameInputPage extends StatefulWidget {
   final String phoneNumber;
@@ -64,7 +65,7 @@ class _NameInputPageState extends State<NameInputPage> {
               Icon(
                 Icons.person_outline,
                 size: 80,
-                color: Colors.green,
+                color: AppTheme.appBarColor,
               ),
               SizedBox(height: 30),
               Text(
@@ -104,8 +105,8 @@ class _NameInputPageState extends State<NameInputPage> {
               ElevatedButton(
                 onPressed: _loading ? null : _submitName,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white,
+                  backgroundColor: AppTheme.appBarColor,
+                  foregroundColor: AppTheme.textOnGreen,
                   padding: EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),

@@ -67,6 +67,7 @@ class ChatService {
       }
 
       final url = 'ws://10.0.2.2:4000/ws?token=$token';
+      //final url = 'ws://192.168.100.17:4000/ws?token=$token';
       _channel = WebSocketChannel.connect(Uri.parse(url));
 
       _channel!.stream.listen(
@@ -156,6 +157,9 @@ class ChatService {
     }
   }
 
+  // ✅ Getter para obter o chat ativo
+  static String? get activeChatContactId => _activeChatContactId;
+
   static void _handleIncomingMessage(dynamic data) {
     try {
       final message = json.decode(data);
@@ -196,6 +200,37 @@ class ChatService {
           break;
         case 'message_read':
           _messageController.add(message);
+          break;
+        case 'message_edited':
+          _messageController.add(message);
+          print('✏️ Mensagem editada recebida: $message');
+          break;
+        case 'message_deleted':
+          _messageController.add(message);
+          print('🗑️ Mensagem deletada recebida: $message');
+          break;
+        case 'message_reply':
+          _messageController.add(message);
+          print('💬 Resposta recebida: $message');
+          final shouldIncreaseUnread =
+              message['should_increase_unread'] ?? true;
+          _updateChatOnMessageReceived(message, shouldIncreaseUnread);
+          break;
+        case 'chat_list_update':
+          print('📋 Chat list update recebido: $message');
+          final shouldIncreaseUnread = false; // Não aumenta unread para updates
+
+          // Verificar se é uma edição para tratar adequadamente
+          final action = message['action']?.toString();
+          if (action == 'edit_message') {
+            print(
+              '   ✅ É uma edição de mensagem - atualizando conteúdo sem mover chat',
+            );
+            // ✅ ATUALIZAR CONTEÚDO SEM REORDENAR CHAT LIST!
+            _updateChatContentOnly(message);
+          } else {
+            _updateChatOnMessageReceived(message, shouldIncreaseUnread);
+          }
           break;
         case 'presence':
           final userId = message['user_id']?.toString();
@@ -244,83 +279,169 @@ class ChatService {
     }
   }
 
-  // ✅ ATUALIZAR CHAT COM CONTROLE DE UNREAD - VERSÃO FINAL
-  // ✅ ATUALIZAR CHAT COM CONTROLE DE UNREAD - COM DEBUG DETALHADO
+  // ATUALIZAR CHAT COM CONTROLE DE UNREAD - COM DEBUG DETALHADO
+  // ✅ ADICIONAR ESTA FUNÇÃO NO ChatService
   static void _updateChatOnMessageReceived(
     Map<String, dynamic> message,
     bool shouldIncreaseUnread,
   ) async {
     try {
-      final fromUserId = message['from']?.toString();
-      final toUserId = message['to']?.toString();
+      // Tentar pegar IDs primários
+      String? fromUserId = message['from']?.toString();
+      String? toUserId = message['to']?.toString();
+
+      // Fallback: alguns payloads podem usar sender_id / receiver_id (histórico/offline)
+      fromUserId ??= message['sender_id']?.toString();
+      toUserId ??= message['receiver_id']?.toString();
+
       final content = message['content']?.toString() ?? '';
-      final currentUserId = await _secureStorage.read(key: 'user_id');
+      var currentUserId = await _secureStorage.read(key: 'user_id');
 
-      print('🔍🔍🔍 DEBUG UNREAD COUNTER 🔍🔍🔍');
-      print('   From: $fromUserId');
-      print('   To: $toUserId');
-      print('   Current User: $currentUserId');
-      print('   Should Increase Unread: $shouldIncreaseUnread');
-      print('   Content: $content');
+      // Fallback: tenta recarregar auth data se vier nulo
+      if (currentUserId == null) {
+        final auth = await _loadAuthData();
+        currentUserId = auth['userId'];
+      }
 
-      // ✅✅✅ CORREÇÃO DEFINITIVA - Se sou o remetente, NUNCA aumento unread
+      // ✅ DETECTAR SE É UM REPLY
+      final isReply = message['reply_to_id'] != null;
+      if (isReply) {
+        print('🔍 ATUALIZANDO CHAT PARA REPLY');
+        print('   reply_to_id: ${message['reply_to_id']}');
+      }
+
+      // ✅ LÓGICA DE UNREAD CORRIGIDA
       if (fromUserId == currentUserId) {
-        print(
-          '   🚫🚫🚫 CORREÇÃO APLICADA: Sou o remetente, forçando unread=false',
-        );
+        // Mensagem enviada por mim - NUNCA aumentar unread
         shouldIncreaseUnread = false;
+        print('   🚫 Sou o remetente - unread=false');
       }
 
       if (currentUserId == null || fromUserId == null || toUserId == null) {
-        print('❌ Dados insuficientes para atualizar chat');
+        print(
+          '❌ Dados insuficientes para atualizar chat '
+          '(from=$fromUserId to=$toUserId me=$currentUserId type=${message['type']})',
+        );
         return;
       }
 
-      // ✅ IDENTIFICAR O CONTATO CORRETAMENTE
-      String contactId;
-      String messageType;
+      // ✅ IDENTIFICAR CONTATO
+      String contactId = fromUserId == currentUserId ? toUserId : fromUserId;
 
-      if (fromUserId == currentUserId) {
-        // Mensagem enviada por mim - contato é o destinatário
-        contactId = toUserId;
-        messageType = 'ENVIADA';
-        print('   💬 Mensagem ENVIADA por mim para: $contactId');
-      } else {
-        // Mensagem recebida de alguém - contato é o remetente
-        contactId = fromUserId;
-        messageType = 'RECEBIDA';
-        print('   💬 Mensagem RECEBIDA de: $contactId');
-
-        // ✅ NOVO: se o chat desse contato está ABERTO neste dispositivo,
-        // não aumentar unread (comportamento WhatsApp).
-        if (_activeChatContactId == contactId) {
-          print(
-            '   👀 Chat ativo com $contactId - forçando unread=false (já lido)',
-          );
-          shouldIncreaseUnread = false;
-        }
+      // ✅ SE O CHAT ESTÁ ABERTO, NÃO AUMENTAR UNREAD
+      if (_activeChatContactId == contactId) {
+        shouldIncreaseUnread = false;
+        print('   👀 Chat ativo - unread=false');
       }
-
-      print('   🔄 Atualizando chat com: $contactId');
-      print('   📝 Tipo: $messageType, Unread: $shouldIncreaseUnread');
 
       // ✅ BUSCAR INFORMAÇÕES DO CONTATO
       final contactInfo = await _getContactInfo(contactId);
 
-      // ✅ ATUALIZAR O CHAT NA LISTA
-      _updateOrCreateChatContact(
-        contactId: contactId,
-        contactName: contactInfo['name'],
-        lastMessage: content,
-        shouldIncreaseUnread: shouldIncreaseUnread,
-        phoneNumber: contactInfo['phone'],
-        photo: contactInfo['photo'],
-      );
+      // ✅ ATUALIZAR CHAT
+      if (_chatContacts.containsKey(contactId)) {
+        final existing = _chatContacts[contactId]!;
+        final newUnreadCount = shouldIncreaseUnread
+            ? existing.unreadCount + 1
+            : existing.unreadCount;
 
-      print('   ✅ Chat atualizado para: ${contactInfo['name']}');
-      print('🔍🔍🔍 FIM DEBUG UNREAD 🔍🔍🔍');
+        _chatContacts[contactId] = existing.copyWith(
+          name: contactInfo['name'],
+          phoneNumber: contactInfo['phone'],
+          photo: contactInfo['photo'],
+          lastMessageTime: DateTime.now(),
+          lastMessage: content,
+          unreadCount: newUnreadCount,
+          lastMessageIsReply: isReply, // ✅ MARCAR COMO REPLY
+        );
+      } else {
+        _chatContacts[contactId] = ChatContact(
+          contactId: contactId,
+          name: contactInfo['name'],
+          phoneNumber: contactInfo['phone'],
+          photo: contactInfo['photo'],
+          lastMessageTime: DateTime.now(),
+          lastMessage: content,
+          unreadCount: shouldIncreaseUnread ? 1 : 0,
+          lastMessageIsReply: isReply, // ✅ MARCAR COMO REPLY
+        );
+      }
+
+      _saveChatsToStorage();
+      _chatListController.add(_getSortedChatList());
+
+      print(
+        '✅ Chat atualizado: ${contactInfo['name']} (unread: ${_chatContacts[contactId]!.unreadCount})',
+      );
     } catch (e) {
-      print('❌ Erro ao atualizar chat na mensagem recebida: $e');
+      print('❌ Erro ao atualizar chat: $e');
+    }
+  }
+
+  // ATUALIZAR CHAT PARA EDIÇÃO DE MENSAGEM
+  static void _updateChatOnMessageEdit(Map<String, dynamic> message) async {
+    try {
+      // Tentar pegar IDs primários
+      String? fromUserId = message['from']?.toString();
+      String? toUserId = message['to']?.toString();
+
+      // Fallback: alguns payloads podem usar sender_id / receiver_id
+      fromUserId ??= message['sender_id']?.toString();
+      toUserId ??= message['receiver_id']?.toString();
+
+      final content = message['content']?.toString() ?? '';
+      var currentUserId = await _secureStorage.read(key: 'user_id');
+
+      // Fallback: tenta recarregar auth data se vier nulo
+      if (currentUserId == null) {
+        final auth = await _loadAuthData();
+        currentUserId = auth['userId'];
+      }
+
+      if (currentUserId == null || fromUserId == null || toUserId == null) {
+        print('❌ Dados insuficientes para atualizar chat de edição');
+        return;
+      }
+
+      // ✅ IDENTIFICAR CONTATO (sempre o outro usuário)
+      String contactId = fromUserId == currentUserId ? toUserId : fromUserId;
+
+      // ✅ BUSCAR INFORMAÇÕES DO CONTATO
+      final contactInfo = await _getContactInfo(contactId);
+
+      // ✅ ATUALIZAR CHAT EXISTENTE SEM MUDAR UNREAD
+      if (_chatContacts.containsKey(contactId)) {
+        final existing = _chatContacts[contactId]!;
+        print('🔍 DEBUG EDIÇÃO CHAT:');
+        print('   - Chat: ${contactInfo['name']}');
+        print('   - Timestamp ANTES: ${existing.lastMessageTime}');
+        print(
+          '   - Timestamp DEPOIS: ${existing.lastMessageTime}',
+        ); // ✅ VALOR REAL!
+
+        _chatContacts[contactId] = existing.copyWith(
+          name: contactInfo['name'],
+          phoneNumber: contactInfo['phone'],
+          photo: contactInfo['photo'],
+          // ✅ NÃO ATUALIZAR lastMessageTime - EDIÇÃO NÃO MOVE CHAT!
+          lastMessageTime: existing.lastMessageTime,
+          lastMessage: content, // ✅ ATUALIZAR CONTEÚDO DA MENSAGEM EDITADA
+          unreadCount: existing.unreadCount, // ✅ MANTER UNREAD ATUAL
+          lastMessageIsReply: false, // ✅ NÃO É REPLY
+        );
+        print(
+          '   ✅ Chat atualizado com mensagem editada: ${contactInfo['name']}',
+        );
+      }
+
+      _saveChatsToStorage();
+      // ✅ NÃO REORDENAR EM EDIÇÕES - APENAS ATUALIZAR CONTEÚDO
+      _chatListController.add(_chatContacts.values.toList());
+
+      print(
+        '✅ Chat de edição atualizado: ${contactInfo['name']} (content: $content)',
+      );
+    } catch (e) {
+      print('❌ Erro ao atualizar chat de edição: $e');
     }
   }
 
@@ -338,6 +459,7 @@ class ChatService {
 
       // ✅ ENDPOINT CORRETO: /api/users/:user_id (AGORA FUNCIONA)
       final url = Uri.parse('http://10.0.2.2:4000/api/users/$contactId');
+      //final url = Uri.parse('http://192.168.100.17:4000/api/users/$contactId');
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $accessToken',
@@ -620,7 +742,30 @@ class ChatService {
         photo: contactInfo['photo'],
       );
     } catch (e) {
-      print('❌ Erro ao atualizar chat enviado: $e');
+      print('❌ Erro ao atualizar chat após enviar mensagem: $e');
+    }
+  }
+
+  // ✅ MÉTODO PÚBLICO PARA ATUALIZAR CHAT (USADO POR RESPOSTAS)
+  static void updateChatAfterReply(String toUserId, String content) async {
+    try {
+      final currentUserId = await _secureStorage.read(key: 'user_id');
+      if (currentUserId == null) return;
+
+      final contactInfo = await _getContactInfo(toUserId);
+
+      _updateOrCreateChatContact(
+        contactId: toUserId,
+        contactName: contactInfo['name'],
+        lastMessage: content,
+        shouldIncreaseUnread: false, // ✅ REPLY ENVIADO NÃO AUMENTA UNREAD
+        phoneNumber: contactInfo['phone'],
+        photo: contactInfo['photo'],
+      );
+
+      print('✅ Chat atualizado após reply para: ${contactInfo['name']}');
+    } catch (e) {
+      print('❌ Erro ao atualizar chat após reply: $e');
     }
   }
 
@@ -652,6 +797,10 @@ class ChatService {
       final url = Uri.parse(
         'http://10.0.2.2:4000/api/messages/history/$currentUserId/$contactUserId',
       );
+
+      //final url = Uri.parse(
+      //  'http://192.168.100.17:4000/api/messages/history/$currentUserId/$contactUserId',
+      //);
 
       print('📨 Carregando histórico: $currentUserId -> $contactUserId');
 
@@ -806,6 +955,10 @@ class ChatService {
       final url = Uri.parse(
         'http://10.0.2.2:4000/api/messages/mark_read/$meId/$contactId',
       );
+      //final url = Uri.parse(
+      //  'http://192.168.100.17:4000/api/messages/mark_read/$meId/$contactId',
+      //);
+
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
@@ -831,6 +984,7 @@ class ChatService {
   }
 
   static List<ChatContact> _getSortedChatList() {
+    print('🔍 DEBUG: _getSortedChatList() chamado - reordenando chats...');
     return _chatContacts.values.toList()
       ..sort((a, b) => b.lastMessageTime.compareTo(a.lastMessageTime));
   }
@@ -892,24 +1046,50 @@ class ChatService {
     print('🔌 WebSocket disconnected manually');
   }
 
-  // ✅ SISTEMA DE HEARTBEAT
+  // ✅ SISTEMA DE HEARTBEAT - OTIMIZADO PARA BACKGROUND
   static void _startHeartbeat() {
     _stopHeartbeat(); // Garantir que não há múltiplos timers
 
-    // Enviar heartbeat a cada 25 segundos
-    _heartbeatTimer = Timer.periodic(Duration(seconds: 25), (timer) {
+    // Enviar heartbeat a cada 20 segundos (mais frequente para garantir em background)
+    _heartbeatTimer = Timer.periodic(Duration(seconds: 20), (timer) {
       if (_channel != null) {
         try {
           final heartbeatMsg = json.encode({'type': 'heartbeat'});
           _channel!.sink.add(heartbeatMsg);
-          print('💓 Heartbeat enviado');
+          print('💓 Heartbeat enviado (background/foreground)');
         } catch (e) {
           print('❌ Erro ao enviar heartbeat: $e');
+          // Se falhar, tentar reconectar
+          if (!_isManualDisconnect) {
+            print('🔄 Tentando reconectar após falha de heartbeat...');
+            connect();
+          }
         }
       } else {
+        print('💓 WebSocket null, parando heartbeat');
         _stopHeartbeat();
       }
     });
+  }
+
+  // ✅ ENVIAR HEARTBEAT MANUALMENTE (para background manager)
+  static Future<bool> sendHeartbeat() async {
+    if (_channel == null) return false;
+
+    try {
+      final heartbeatMsg = json.encode({'type': 'heartbeat'});
+      _channel!.sink.add(heartbeatMsg);
+      print('💓 Heartbeat enviado manualmente');
+      return true;
+    } catch (e) {
+      print('❌ Erro ao enviar heartbeat manual: $e');
+      return false;
+    }
+  }
+
+  // ✅ VERIFICAR SE ESTÁ CONECTADO
+  static bool isWebSocketConnected() {
+    return _channel != null;
   }
 
   // ✅ ENVIAR PRESENÇA MANUALMENTE (Online/Offline)
@@ -956,6 +1136,8 @@ class ChatService {
       }
 
       final url = Uri.parse('http://10.0.2.2:4000/api/presence/$userId');
+      //final url = Uri.parse('http://192.168.100.17:4000/api/presence/$userId');
+
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $accessToken',
@@ -1054,5 +1236,46 @@ class ChatService {
     if (rem == 3) return '$input=';
     if (rem == 1) return '$input===';
     return input;
+  }
+
+  // ✅ ATUALIZAR APENAS CONTEÚDO DO CHAT SEM REORDENAR
+  static void _updateChatContentOnly(Map<String, dynamic> message) async {
+    try {
+      String? fromUserId = message['from']?.toString();
+      String? toUserId = message['to']?.toString();
+      final content = message['content']?.toString() ?? '';
+      var currentUserId = await _secureStorage.read(key: 'user_id');
+
+      if (currentUserId == null || fromUserId == null || toUserId == null) {
+        print('❌ Dados insuficientes para atualizar conteúdo do chat');
+        return;
+      }
+
+      String contactId = fromUserId == currentUserId ? toUserId : fromUserId;
+
+      if (_chatContacts.containsKey(contactId)) {
+        final existing = _chatContacts[contactId]!;
+        print('🔧 ATUALIZANDO CONTEÚDO DO CHAT (sem reordenar):');
+        print('   - Chat: ${existing.name}');
+        print('   - Novo conteúdo: $content');
+
+        _chatContacts[contactId] = existing.copyWith(
+          name: existing.name,
+          phoneNumber: existing.phoneNumber,
+          photo: existing.photo,
+          lastMessageTime: existing.lastMessageTime, // ✅ PRESERVAR TIMESTAMP!
+          lastMessage: content, // ✅ ATUALIZAR APENAS CONTEÚDO
+          unreadCount: existing.unreadCount, // ✅ MANTER UNREAD
+          lastMessageIsReply: false,
+        );
+        print('   ✅ Conteúdo do chat atualizado sem mover posição');
+      }
+
+      // ✅ ATUALIZAR FRONTEND SEM REORDENAR
+      _chatListController.add(_chatContacts.values.toList());
+      _saveChatsToStorage();
+    } catch (e) {
+      print('❌ Erro ao atualizar conteúdo do chat: $e');
+    }
   }
 }

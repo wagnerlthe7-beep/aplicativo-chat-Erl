@@ -947,9 +947,6 @@ auth_header() ->
 1. Novo utilizador → Digita número → Recebe SMS → Digita código → Backend valida → Entra.
 2. Antigo utilizador → App já tem **token salvo** → Pula SMS → Vai direto para tela principal.
 
----
-
-👉 Pergunto: queres que eu já monte a **segunda tela Flutter (digitar código de 6 dígitos)** + **Erlang verificação**? Assim já ficas com o fluxo completo (registro/login).
 
 
 DEFINIR VARIAVEIS DO AMBIENTE QUE SERAO CHAMADOS NO auth_util.erl    
@@ -973,7 +970,7 @@ digita:  $env:FIREBASE_API_KEY
 para ver FIREBASE_API_KEY no shell do erlang, digita:  os:getenv("FIREBASE_API_KEY").
 
 
-# ✅ O QUE VOCÊ FEZ ATÉ AQUI (E FEZ BEM):
+# ✅ O QUE SE FEZ ATÉ AQUI (E FEZ BEM):
 
 ✔ Configurou o backend Erlang com Cowboy
 ✔ Criou a rota:

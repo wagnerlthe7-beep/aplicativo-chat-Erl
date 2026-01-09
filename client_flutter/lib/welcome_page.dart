@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'app_theme.dart';
 
 class WelcomePage extends StatelessWidget {
   @override
@@ -18,7 +19,7 @@ class WelcomePage extends StatelessWidget {
                     Icon(
                       Icons.chat_bubble_outline,
                       size: 120,
-                      color: Colors.green,
+                      color: AppTheme.appBarColor,
                     ),
                     SizedBox(height: 40),
                     Text(
@@ -60,7 +61,7 @@ class WelcomePage extends StatelessWidget {
                           "Termos de Serviço",
                           style: TextStyle(
                             fontSize: 12,
-                            color: Colors.green,
+                            color: AppTheme.appBarColor,
                             decoration: TextDecoration.underline,
                           ),
                         ),
@@ -78,7 +79,7 @@ class WelcomePage extends StatelessWidget {
                           "Política de Privacidade",
                           style: TextStyle(
                             fontSize: 12,
-                            color: Colors.green,
+                            color: AppTheme.appBarColor,
                             decoration: TextDecoration.underline,
                           ),
                         ),
@@ -92,8 +93,8 @@ class WelcomePage extends StatelessWidget {
                       onPressed: () =>
                           Navigator.pushReplacementNamed(context, '/phone'),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white,
+                        backgroundColor: AppTheme.appBarColor,
+                        foregroundColor: AppTheme.textOnGreen,
                         padding: EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),

@@ -11,6 +11,7 @@ class StartupPage extends StatefulWidget {
 class _StartupPageState extends State<StartupPage> {
   final _storage = FlutterSecureStorage();
   static const String backendUrl = 'http://10.0.2.2:4000';
+  //static const String backendUrl = 'http://192.168.100.17:4000';
 
   @override
   void initState() {
@@ -20,7 +21,7 @@ class _StartupPageState extends State<StartupPage> {
 
   Future<void> _validateAndNavigate() async {
     final accessToken = await _storage.read(key: 'access_token');
-    
+
     if (accessToken == null) {
       // Não tem token - ir para login
       _goToWelcomePage();
@@ -29,7 +30,7 @@ class _StartupPageState extends State<StartupPage> {
 
     // ✅✅✅ VERIFICAR NO BACKEND se a sessão ainda é válida
     final isValid = await _validateSessionWithBackend(accessToken);
-    
+
     if (isValid) {
       // Sessão VÁLIDA - ir para chats
       _goToChatListPage();
@@ -47,13 +48,11 @@ class _StartupPageState extends State<StartupPage> {
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'access_token': accessToken,
-        }),
+        body: jsonEncode({'access_token': accessToken}),
       );
 
       print('🔍 Session validation response: ${response.statusCode}');
-      
+
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body);
         return body['status'] == 'valid';
@@ -85,10 +84,7 @@ class _StartupPageState extends State<StartupPage> {
           children: [
             CircularProgressIndicator(),
             SizedBox(height: 20),
-            Text(
-              'Verificando sessão...',
-              style: TextStyle(fontSize: 16),
-            ),
+            Text('Verificando sessão...', style: TextStyle(fontSize: 16)),
           ],
         ),
       ),
