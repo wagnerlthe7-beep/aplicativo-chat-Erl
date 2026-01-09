@@ -143,10 +143,10 @@ get_chat_history(UserId, ContactId, Limit, Offset) ->
         OffsetInt = case OffsetInt0 < 0 of true -> 0; false -> OffsetInt0 end,
 
         db_pool:with_connection(fun(Conn) ->
-            Query = "\n                SELECT m.id, m.sender_id, m.receiver_id, m.content, m.sent_at, m.status,\n                       m.reply_to_id, \n                       CASE \n                           WHEN m_original.sender_id = $1 THEN 'Eu'\n                           ELSE u1.name \n                       END as reply_to_sender_name,\n                       m_original.sender_id as reply_to_sender_id,\n                       m_original.content as reply_to_text\n                FROM messages m\n                LEFT JOIN messages m_original ON m.reply_to_id = m_original.id\n                LEFT JOIN users u1 ON m_original.sender_id = u1.id\n                WHERE (m.sender_id = $1 AND m.receiver_id = $2)\n                   OR (m.sender_id = $2 AND m.receiver_id = $1)\n                ORDER BY m.sent_at DESC\n                LIMIT $3 OFFSET $4\n            ",
+            Query = "\n                SELECT m.id, m.sender_id, m.receiver_id, m.content, m.sent_at, m.status,\n                       m.is_edited, m.edit_count, m.deleted_by, m.deleted_at,\n                       m.reply_to_id, \n                       CASE \n                           WHEN m_original.sender_id = $1 THEN 'Eu'\n                           ELSE u1.name \n                       END as reply_to_sender_name,\n                       m_original.sender_id as reply_to_sender_id,\n                       m_original.content as reply_to_text\n                FROM messages m\n                LEFT JOIN messages m_original ON m.reply_to_id = m_original.id\n                LEFT JOIN users u1 ON m_original.sender_id = u1.id\n                WHERE (m.sender_id = $1 AND m.receiver_id = $2)\n                   OR (m.sender_id = $2 AND m.receiver_id = $1)\n                ORDER BY m.sent_at DESC\n                LIMIT $3 OFFSET $4\n            ",
             case epgsql:equery(Conn, Query, [UserIdInt, ContactIdInt, LimitInt, OffsetInt]) of
                 {ok, _, Rows} ->
-                    Messages = lists:map(fun({Id, SenderId, ReceiverId, Content, SentAt, Status, ReplyToId, ReplyToSenderName, ReplyToSenderId, ReplyToText}) ->
+                    Messages = lists:map(fun({Id, SenderId, ReceiverId, Content, SentAt, Status, IsEdited, EditCount, DeletedBy, DeletedAt, ReplyToId, ReplyToSenderName, ReplyToSenderId, ReplyToText}) ->
                         #{
                             <<"id">> => Id,
                             <<"sender_id">> => SenderId,
@@ -155,6 +155,11 @@ get_chat_history(UserId, ContactId, Limit, Offset) ->
                             <<"sent_at">> => list_to_binary(io_lib:format("~p", [SentAt])),
                             <<"status">> => Status,
                             <<"type">> => <<"message">>,
+                            %% ✅ CAMPOS DE EDIÇÃO E DELEÇÃO
+                            <<"is_edited">> => case IsEdited of null -> false; _ -> IsEdited end,
+                            <<"edit_count">> => case EditCount of null -> 0; _ -> EditCount end,
+                            <<"deleted_by">> => case DeletedBy of null -> null; _ -> DeletedBy end,
+                            <<"deleted_at">> => case DeletedAt of null -> null; _ -> list_to_binary(io_lib:format("~p", [DeletedAt])) end,
                             %% ✅ CAMPOS DE RESPOSTA
                             <<"reply_to_id">> => case ReplyToId of null -> null; _ -> ReplyToId end,
                             <<"reply_to_sender_name">> => case ReplyToSenderName of null -> null; _ -> ReplyToSenderName end,
