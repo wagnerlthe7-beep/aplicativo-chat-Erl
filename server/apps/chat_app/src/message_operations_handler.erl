@@ -218,7 +218,7 @@ handle_reply_message(MessageId, Req0, State) ->
                                                 user_session:send_message(SenderId, SenderId, MessageToSender),
                                                 
                                                 %% 9. ATUALIZAR CHAT LIST
-                                                send_chat_list_update(SenderId, FinalReceiverId, Content, DbMessageId),
+                                                send_chat_list_edit_update(SenderId, FinalReceiverId, Content, DbMessageId),
                                                 
                                                 ?LOG_INFO("✅ Reply processado com sucesso"),
                                                 
@@ -253,7 +253,7 @@ handle_reply_message(MessageId, Req0, State) ->
                                                     <<"should_increase_unread">> => false
                                                 },
                                                 user_session:send_message(SenderId, SenderId, MessageToSender2),
-                                                send_chat_list_update(SenderId, FinalReceiverId, Content, DbMessageId),
+                                                send_chat_list_edit_update(SenderId, FinalReceiverId, Content, DbMessageId),
                                                 send_json(Req1, 201, #{
                                                     success => true,
                                                     message => <<"Reply queued (receiver offline)">>,
@@ -396,14 +396,22 @@ handle_delete_message(MessageId, Req0, State) ->
                                 %% ✅ SALVAR NO LOG DE DELEÇÃO
                                 save_delete_log(MessageId, UserId, OriginalContent, Reason),
                                 
-                                %% ✅ SOFT DELETE
+                                %% SOFT DELETE
                                 case soft_delete_message(MessageId, UserId, Reason) of
                                     ok ->
                                         ?LOG_INFO("✅ Message deleted: ~p by user ~p", [MessageId, UserId]),
                                         
-                                        %% ✅ NOTIFICAR DESTINATÁRIO
-                                        notify_message_deleted(MessageId, integer_to_binary(SenderId), 
-                                                              integer_to_binary(ReceiverId), Reason),
+                                        %% NOTIFICAR AMBOS OS USUÁRIOS COM QUEM DELETOU CORRETAMENTE
+                                        notify_message_deleted(MessageId, UserId, 
+                                                              integer_to_binary(SenderId), integer_to_binary(ReceiverId), Reason),
+                                        
+                                        %% ATUALIZAR CHAT LIST PARA AMBOS COM ACTION=delete_message
+                                        send_chat_list_delete_update(integer_to_binary(SenderId), integer_to_binary(ReceiverId), 
+                                                                   MessageId, UserId),
+                                        
+                                        %% TAMBÉM ENVIAR PARA O DESTINATÁRIO (IMPORTANTE!)
+                                        send_chat_list_delete_update(integer_to_binary(ReceiverId), integer_to_binary(SenderId), 
+                                                                   MessageId, UserId),
                                         
                                         send_json(Req1, 200, #{
                                             success => true,
@@ -432,10 +440,11 @@ handle_delete_message(MessageId, Req0, State) ->
                 end
         end
     catch
-        %% CORREÇÃO: Use '_' em vez de variáveis nomeadas
-        _:_ ->
-            ?LOG_ERROR("❌ Exception in delete_message"),
-            send_json(Req0, 400, #{error => <<"invalid_request">>}, State)
+        %% CORREÇÃO: Capturar exceção real para debug
+        Class:Exception:Stacktrace ->
+            ?LOG_ERROR("❌ Exception in delete_message: ~p:~p~nStacktrace: ~p", 
+                      [Class, Exception, Stacktrace]),
+            send_json(Req0, 500, #{error => <<"internal_error">>, details => io_lib:format("~p:~p~n~p", [Class, Exception, Stacktrace])}, State)
     end.
 
 %% ======================
@@ -694,19 +703,23 @@ notify_message_edited(Message) ->
     end.
 
 %% Notificar deleção
-notify_message_deleted(MessageId, SenderId, ReceiverId, Reason) ->
+notify_message_deleted(MessageId, DeletedBy, SenderId, ReceiverId, Reason) ->
     try
         Notification = #{
             <<"type">> => <<"message_deleted">>,
             <<"message_id">> => MessageId,
             <<"sender_id">> => SenderId,
             <<"receiver_id">> => ReceiverId,
+            <<"deleted_by">> => DeletedBy,
             <<"reason">> => Reason,
             <<"timestamp">> => erlang:system_time(second)
         },
         
+        % Enviar para o destinatário
         user_session:send_message(SenderId, ReceiverId, Notification),
-        ?LOG_INFO("📡 Delete notification sent: ~p -> ~p", [SenderId, ReceiverId])
+        % Enviar para o próprio remetente (para atualizar o chat dele também)
+        user_session:send_message(SenderId, SenderId, Notification),
+        ?LOG_INFO("📡 Delete notification sent: ~p -> ~p and ~p -> ~p (deleted_by: ~p)", [SenderId, ReceiverId, SenderId, SenderId, DeletedBy])
     catch
         %% CORREÇÃO: Use '_' em vez de variáveis nomeadas
         _:_ ->
@@ -829,38 +842,103 @@ is_admin(UserId) ->
         end
     end).
 
+%% Enviar atualização para chat list page de deleção (com action=delete_message)
+send_chat_list_delete_update(SenderId, ReceiverId, MessageId, DeletedBy) ->
+    io:format("🔍 DEBUG send_chat_list_delete_update: INÍCIO - SenderId=~p, ReceiverId=~p, MessageId=~p, DeletedBy=~p~n", [SenderId, ReceiverId, MessageId, DeletedBy]),
+    try
+        %% ✅ VERIFICAR SE É A ÚLTIMA MENSAGEM DO CHAT ANTES DE ATUALIZAR
+        MessageIdInt = binary_to_integer(MessageId),
+        io:format("🔍 DEBUG send_chat_list_delete_update: Verificando se mensagem ~p é a última do chat~n", [MessageIdInt]),
+        
+        case message_repo:is_last_message_in_chat(SenderId, ReceiverId, MessageIdInt) of
+            {ok, true} ->
+                io:format("🔍 DEBUG send_chat_list_delete_update: ✅ É a última mensagem - ATUALIZANDO chat list~n", []),
+                %% É a última mensagem - pode atualizar chat list
+                %% Personalizar mensagem baseado em quem deletou
+                Content = case DeletedBy of
+                    SenderId -> <<"⊗ Eliminou esta mensagem">>;  % EU apaguei
+                    _ -> <<"⊗ Esta mensagem foi apagada">>  % OUTRO apagou
+                end,
+                
+                %% Notificação para o remetente (atualizar chat list dele)
+                SenderUpdate = #{
+                    <<"type">> => <<"chat_list_update">>,
+                    <<"message_id">> => MessageId,  % ← JÁ É BINÁRIO!
+                    <<"from">> => SenderId,
+                    <<"to">> => ReceiverId,
+                    <<"content">> => Content,
+                    % ✅ NÃO ENVIAR TIMESTAMP EM DELEÇÕES - NÃO DEVE MOVER CHAT!
+                    % <<"timestamp">> => erlang:system_time(second),
+                    <<"action">> => <<"delete_message">>,
+                    <<"deleted_by">> => DeletedBy
+                },
+                io:format("🔍 DEBUG send_chat_list_delete_update: Enviando SenderUpdate=~p~n", [SenderUpdate]),
+                user_session:send_message(SenderId, ReceiverId, SenderUpdate),
+                io:format("🔍 DEBUG send_chat_list_delete_update: SenderUpdate enviado com sucesso~n", []),
+                
+                %% Notificação para o destinatário (atualizar chat list dele)
+                ReceiverUpdate = #{
+                    <<"type">> => <<"chat_list_update">>,
+                    <<"message_id">> => MessageId,  % ← JÁ É BINÁRIO!
+                    <<"from">> => SenderId,
+                    <<"to">> => ReceiverId,
+                    <<"content">> => Content,
+                    % ✅ NÃO ENVIAR TIMESTAMP EM DELEÇÕES - NÃO DEVE MOVER CHAT!
+                    % <<"timestamp">> => erlang:system_time(second),
+                    <<"action">> => <<"delete_message">>,
+                    <<"deleted_by">> => DeletedBy
+                },
+                user_session:send_message(ReceiverId, SenderId, ReceiverUpdate),
+                
+                ?LOG_INFO("   📋 Chat list delete update sent for message ~p", [MessageId]);
+            
+            {ok, false} ->
+                io:format("🔍 DEBUG send_chat_list_delete_update: 🚫 Não é a última mensagem - NÃO ATUALIZANDO chat list~n", []),
+                %% Não é a última mensagem - não atualizar chat list
+                ?LOG_INFO("   🚫 Message ~p is not the last message - skipping chat list update", [MessageId]);
+            
+            {error, Error} ->
+                io:format("🔍 DEBUG send_chat_list_delete_update: ❌ Erro ao verificar última mensagem: ~p~n", [Error]),
+                ?LOG_ERROR("   ❌ Error checking if message is last: ~p", [Error])
+        end
+    catch
+        Class:Reason:Stacktrace ->
+            io:format("❌ Exception in send_chat_list_delete_update: ~p:~p~nStacktrace: ~p", 
+                      [Class, Reason, Stacktrace]),
+            ?LOG_ERROR("   ❌ Failed to send chat list delete update")
+    end.
+
 %% Enviar atualização para chat list page de edição (com action=edit_message)
 send_chat_list_edit_update(SenderId, ReceiverId, Content, MessageId) ->
     try
-        %% Notificação para o remetente (atualizar chat list dele)
-        SenderUpdate = #{
-            <<"type">> => <<"chat_list_update">>,
-            <<"message_id">> => MessageId,  % ← JÁ É BINÁRIO!
-            <<"from">> => SenderId,
-            <<"to">> => ReceiverId,
-            <<"content">> => Content,
-            % ✅ NÃO ENVIAR TIMESTAMP EM EDIÇÕES - NÃO DEVE MOVER CHAT!
-            % <<"timestamp">> => erlang:system_time(second),
-            <<"action">> => <<"edit_message">>
-        },
-        io:format("🔍 DEBUG send_chat_list_edit_update: Enviando SenderUpdate=~p~n", [SenderUpdate]),
-        user_session:send_message(ReceiverId, SenderId, SenderUpdate),
-        io:format("🔍 DEBUG send_chat_list_edit_update: SenderUpdate enviado com sucesso~n", []),
-        
-        %% Notificação para o destinatário (atualizar chat list dele)
-        ReceiverUpdate = #{
-            <<"type">> => <<"chat_list_update">>,
-            <<"message_id">> => MessageId,  % ← JÁ É BINÁRIO!
-            <<"from">> => SenderId,
-            <<"to">> => ReceiverId,
-            <<"content">> => Content,
-            % ✅ NÃO ENVIAR TIMESTAMP EM EDIÇÕES - NÃO DEVE MOVER CHAT!
-            % <<"timestamp">> => erlang:system_time(second),
-            <<"action">> => <<"edit_message">>
-        },
-        user_session:send_message(SenderId, ReceiverId, ReceiverUpdate),
-        
-        ?LOG_INFO("   📋 Chat list edit update sent for message ~p", [MessageId])
+        %% ✅ VERIFICAR SE É A ÚLTIMA MENSAGEM DO CHAT ANTES DE ATUALIZAR
+        MessageIdInt = binary_to_integer(MessageId),
+        case message_repo:is_last_message_in_chat(SenderId, ReceiverId, MessageIdInt) of
+            {ok, true} ->
+                %% É a última mensagem - pode atualizar chat list
+                %% Notificação para o remetente (atualizar chat list dele)
+                Update = #{
+                    <<"type">> => <<"chat_list_update">>,
+                    <<"message_id">> => MessageId,  % ← JÁ É BINÁRIO!
+                    <<"from">> => SenderId,
+                    <<"to">> => ReceiverId,
+                    <<"content">> => Content,
+                    % ✅ NÃO ENVIAR TIMESTAMP EM EDIÇÕES - NÃO DEVE MOVER CHAT!
+                    % <<"timestamp">> => erlang:system_time(second),
+                    <<"action">> => <<"edit_message">>
+                },
+                io:format("🔍 DEBUG send_chat_list_edit_update: Enviando Update=~p~n", [Update]),
+                user_session:send_message(ReceiverId, SenderId, Update),
+                user_session:send_message(SenderId, ReceiverId, Update),
+                ?LOG_INFO("   📋 Chat list edit update sent for message ~p", [MessageId]);
+            
+            {ok, false} ->
+                %% Não é a última mensagem - não atualizar chat list
+                ?LOG_INFO("   🚫 Message ~p is not the last message - skipping chat list update", [MessageId]);
+            
+            {error, Error} ->
+                ?LOG_ERROR("   ❌ Error checking if message is last: ~p", [Error])
+        end
     catch
         Class:Reason:Stacktrace ->
             io:format("❌ Exception in send_chat_list_edit_update: ~p:~p~nStacktrace: ~p", 

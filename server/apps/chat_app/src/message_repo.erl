@@ -22,7 +22,10 @@
     can_delete_message/2,
     binary_to_integer_wrapper/1,
     get_user_name/1,
-    save_reply_message/4
+    save_reply_message/4,
+    is_message_deleted/1,
+    get_message_deleter/1,
+    is_last_message_in_chat/3
 ]).
 
 save_message(SenderId, ReceiverId, Content) ->
@@ -147,9 +150,13 @@ get_chat_history(UserId, ContactId, Limit, Offset) ->
             case epgsql:equery(Conn, Query, [UserIdInt, ContactIdInt, LimitInt, OffsetInt]) of
                 {ok, _, Rows} ->
                     Messages = lists:map(fun({Id, SenderId, ReceiverId, Content, SentAt, Status, IsEdited, EditCount, IsDeleted, DeletedBy, DeletedAt, ReplyToId, ReplyToSenderName, ReplyToSenderId, ReplyToText}) ->
-                        %% ✅ SE MENSAGEM ESTÁ DELETADA, TROCAR CONTEÚDO
+                        %% ✅ SE MENSAGEM ESTÁ DELETADA, PERSONALIZAR CONTEÚDO BASEADO EM QUEM DELETOU
                         FinalContent = case IsDeleted of
-                            true -> <<"Esta mensagem foi apagada">>;
+                            true -> 
+                                case DeletedBy of
+                                    UserIdInt -> <<"⊗ Eliminou esta mensagem">>;  % EU apaguei
+                                    _ -> <<"⊗ Esta mensagem foi apagada">>  % OUTRO apagou
+                                end;
                             false -> Content
                         end,
                         #{
@@ -469,5 +476,61 @@ save_reply_message(SenderId, ReceiverId, Content, ReplyToId) ->
             Exception:Reason ->
                 ?LOG_ERROR("❌ Exception in save_reply_message: ~p", [Exception, Reason]),
                 {error, invalid_parameters}
+        end
+    end).
+
+%% @doc Verifica se uma mensagem foi deletada
+is_message_deleted(MessageId) ->
+    db_pool:with_connection(fun(Conn) ->
+        Sql = "SELECT is_deleted FROM messages WHERE id = $1",
+        case epgsql:equery(Conn, Sql, [MessageId]) of
+            {ok, _, [{IsDeleted}]} ->
+                {ok, IsDeleted};
+            {ok, _, []} ->
+                {error, not_found};
+            {error, Error} ->
+                {error, Error}
+        end
+    end).
+
+%% @doc Verifica se uma mensagem é a última do chat
+is_last_message_in_chat(SenderId, ReceiverId, MessageId) ->
+    io:format("🔍 DEBUG is_last_message_in_chat: SenderId=~p, ReceiverId=~p, MessageId=~p~n", [SenderId, ReceiverId, MessageId]),
+    db_pool:with_connection(fun(Conn) ->
+        SenderIdInt = binary_to_integer_wrapper(SenderId),
+        ReceiverIdInt = binary_to_integer_wrapper(ReceiverId),
+        
+        Sql = "SELECT id FROM messages 
+               WHERE (sender_id = $1 AND receiver_id = $2) 
+                  OR (sender_id = $2 AND receiver_id = $1) 
+               ORDER BY sent_at DESC, id DESC 
+               LIMIT 1",
+        
+        io:format("🔍 DEBUG is_last_message_in_chat: Executando SQL~n", []),
+        case epgsql:equery(Conn, Sql, [SenderIdInt, ReceiverIdInt]) of
+            {ok, _, [{LastMessageId}]} ->
+                Result = LastMessageId == MessageId,
+                io:format("🔍 DEBUG is_last_message_in_chat: LastMessageId=~p, MessageId=~p, Result=~p~n", [LastMessageId, MessageId, Result]),
+                {ok, Result};
+            {ok, _, []} ->
+                io:format("🔍 DEBUG is_last_message_in_chat: Nenhuma mensagem encontrada~n", []),
+                {ok, false};
+            {error, Error} ->
+                io:format("🔍 DEBUG is_last_message_in_chat: Erro=~p~n", [Error]),
+                {error, Error}
+        end
+    end).
+
+%% @doc Busca quem deletou a mensagem
+get_message_deleter(MessageId) ->
+    db_pool:with_connection(fun(Conn) ->
+        Sql = "SELECT deleted_by FROM messages WHERE id = $1 AND is_deleted = true",
+        case epgsql:equery(Conn, Sql, [MessageId]) of
+            {ok, _, [{DeletedBy}]} ->
+                {ok, DeletedBy};
+            {ok, _, []} ->
+                {error, not_found};
+            {error, Error} ->
+                {error, Error}
         end
     end).

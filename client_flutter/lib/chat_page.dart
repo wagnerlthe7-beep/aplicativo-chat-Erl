@@ -835,9 +835,29 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
+  // ✅ FUNÇÃO PARA PERSONALIZAR TEXTO DE MENSAGENS DELETADAS
+  String _getDeletedMessageText(Map<String, dynamic> msg) {
+    if (msg['is_deleted'] == true) {
+      final deletedBy = msg['deleted_by']?.toString();
+
+      // ✅ PERSONALIZAR BASEADO EM QUEM DELETOU
+      if (deletedBy == _currentUserId?.toString()) {
+        // EU apaguei a mensagem
+        return '⊗ Eliminou esta mensagem';
+      } else {
+        // OUTRA pessoa apagou a mensagem
+        return '⊗ Esta mensagem foi apagada';
+      }
+    }
+
+    // ✅ SE NÃO ESTIVER DELETADA, USAR CONTEÚDO NORMAL
+    return msg['content'] ?? '';
+  }
+
   // Handler para mensagens deletadas recebidas via WebSocket
   void _handleDeletedMessage(Map<String, dynamic> message) {
     final messageId = message['message_id']?.toString();
+    final deletedBy = message['deleted_by']?.toString();
 
     if (messageId != null) {
       setState(() {
@@ -845,12 +865,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         if (messageIndex != -1) {
           final oldMessage = _messages[messageIndex];
 
-          // ✅ PERSONALIZAR MENSAGEM BASEADO EM QUEM DELETOU
+          // ✅ PERSONALIZAR MENSAGEM BASEADO EM QUEM DELETOU (não em quem enviou)
           String deleteText;
-          if (oldMessage.isMe) {
-            deleteText = 'Eliminou esta mensagem 🗑️';
+          if (deletedBy == _currentUserId?.toString()) {
+            // EU apaguei a mensagem
+            deleteText = '⊗ Eliminou esta mensagem';
           } else {
-            deleteText = 'Esta mensagem foi apagada 🗑️';
+            // OUTRA pessoa apagou a mensagem
+            deleteText = '⊗ Esta mensagem foi apagada';
           }
 
           _messages[messageIndex] = ChatMessage(
@@ -866,7 +888,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             replyToSenderName: oldMessage.replyToSenderName,
             replyToSenderId: oldMessage.replyToSenderId,
           );
-          print('✅ Mensagem ${messageId} marcada como deletada: $deleteText');
+          print(
+            '✅ Mensagem ${messageId} marcada como deletada: $deleteText (deleted_by: $deletedBy)',
+          );
         }
       });
     }
@@ -974,7 +998,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
               return ChatMessage(
                 id: (msg['message_id'] ?? msg['id'] ?? _uuid.v4()).toString(),
-                text: msg['content'] ?? '',
+                text: _getDeletedMessageText(
+                  msg,
+                ), // ✅ PERSONALIZAR TEXTO DELETADO
                 isMe: _isMessageFromMe(msg),
                 timestamp: serverTimestamp,
                 status: (msg['status']?.toString() ?? 'sent'),
@@ -1918,15 +1944,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final result = await MessageOperationsService.deleteMessage(message.id);
 
       if (result['success'] == true) {
-        // ✅ NÃO REMOVER LOCALMENTE - ESPERAR NOTIFICAÇÃO DO BACKEND
-        // Isso garante que todos os clientes recebam a mesma mensagem
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Mensagem apagada com sucesso'),
-            backgroundColor: AppTheme.appBarColor,
-            duration: Duration(seconds: 2),
-          ),
-        );
+        print('🗑️Mensagem apagada  ${message.id}');
       }
     } catch (e) {
       print('❌ Erro ao apagar mensagem: $e');
@@ -2515,7 +2533,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     // ✅ TEXTO DA MENSAGEM
                     Text(
                       message.isDeleted
-                          ? 'Esta mensagem foi apagada'
+                          ? message
+                                .text // ✅ USAR TEXTO PERSONALIZADO DO HANDLER
                           : message.text,
                       style: TextStyle(
                         color: message.isDeleted
