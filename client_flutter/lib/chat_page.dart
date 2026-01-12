@@ -22,6 +22,7 @@ class ChatMessage {
   final DateTime timestamp;
   final String status; // 'sent', 'delivered', 'read'
   final bool isEdited; // ✅ STATUS DE EDIÇÃO (sempre que is_edited for true)
+  final bool isDeleted; // ✅ STATUS DE DELEÇÃO
   final String? replyToId; // ID da mensagem respondida
   final String? replyToText; // Texto da mensagem respondida
   final String? replyToSenderName; // Nome de quem enviou a mensagem respondida
@@ -34,6 +35,7 @@ class ChatMessage {
     required this.timestamp,
     required this.status,
     this.isEdited = false, // ✅ PADRÃO: NÃO EDITADA
+    this.isDeleted = false, // ✅ PADRÃO: NÃO DELETADA
     this.replyToId,
     this.replyToText,
     this.replyToSenderName,
@@ -495,6 +497,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (type == 'message_delivered' || type == 'message_read') {
       final messageId = message['message_id']?.toString();
       final dbMessageId = message['db_message_id']?.toString();
+      final isEditedFromBackend = message['is_edited'] ?? false;
 
       if (messageId != null) {
         final newStatus = type == 'message_delivered' ? 'delivered' : 'read';
@@ -535,6 +538,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               isMe: oldMsg.isMe,
               timestamp: oldMsg.timestamp,
               status: newStatus,
+              isEdited:
+                  oldMsg.isEdited ||
+                  isEditedFromBackend, // ✅ COMBINAR STATUS DE EDIÇÃO!
+              isDeleted: oldMsg.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
               // ✅ preservar dados de reply
               replyToId: oldMsg.replyToId,
               replyToText: oldMsg.replyToText,
@@ -570,6 +577,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 isMe: oldMsg.isMe,
                 timestamp: oldMsg.timestamp,
                 status: newStatus,
+                isEdited:
+                    oldMsg.isEdited ||
+                    isEditedFromBackend, // ✅ COMBINAR STATUS DE EDIÇÃO!
+                isDeleted: oldMsg.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
                 // ✅ preservar dados de reply
                 replyToId: oldMsg.replyToId,
                 replyToText: oldMsg.replyToText,
@@ -654,6 +665,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               isMe: old.isMe,
               timestamp: old.timestamp,
               status: finalStatus,
+              isEdited: old.isEdited, // ✅ PRESERVAR STATUS DE EDIÇÃO!
+              isDeleted: old.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
               // ✅ PRESERVAR INFORMAÇÕES DE REPLY
               replyToId: old.replyToId,
               replyToText: old.replyToText,
@@ -697,6 +710,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               isMe: old.isMe,
               timestamp: old.timestamp,
               status: finalStatus,
+              isEdited: old.isEdited, // ✅ PRESERVAR STATUS DE EDIÇÃO!
+              isDeleted: old.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
               replyToId: old.replyToId,
               replyToText: old.replyToText,
               replyToSenderName: old.replyToSenderName,
@@ -730,6 +745,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               isMe: isFromMe,
               timestamp: serverTimestamp,
               status: message['status']?.toString() ?? 'sent',
+              isDeleted: false, // ✅ PADRÃO: NÃO DELETADA
               // ✅ INFORMAÇÕES DE REPLY (SE HOUVER)
               replyToId: message['reply_to_id']?.toString(),
               replyToText: message['reply_to_text']?.toString(),
@@ -784,6 +800,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             isMe: false,
             timestamp: DateTime.now(),
             status: 'sent',
+            isDeleted: false, // ✅ PADRÃO: NÃO DELETADA
           ),
         );
 
@@ -800,7 +817,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         isMe: isFromMe,
         timestamp: serverTimestamp,
         status: message['status']?.toString() ?? 'sent',
-        // ✅ MENSAGEM DE RESPOSTA PODE SER EDITADA (se for do usuário atual)
+        isDeleted: false, // ✅ PADRÃO: NÃO DELETADA
         isEdited: false, // Será true quando for editada
         // ✅ INFORMAÇÕES DA RESPOSTA
         replyToId: originalId,
@@ -824,7 +841,33 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     if (messageId != null) {
       setState(() {
-        _messages.removeWhere((msg) => msg.id == messageId);
+        final messageIndex = _messages.indexWhere((msg) => msg.id == messageId);
+        if (messageIndex != -1) {
+          final oldMessage = _messages[messageIndex];
+
+          // ✅ PERSONALIZAR MENSAGEM BASEADO EM QUEM DELETOU
+          String deleteText;
+          if (oldMessage.isMe) {
+            deleteText = 'Eliminou esta mensagem 🗑️';
+          } else {
+            deleteText = 'Esta mensagem foi apagada 🗑️';
+          }
+
+          _messages[messageIndex] = ChatMessage(
+            id: oldMessage.id,
+            text: deleteText,
+            isMe: oldMessage.isMe,
+            timestamp: oldMessage.timestamp,
+            status: oldMessage.status,
+            isEdited: false, // ✅ NÃO MOSTRAR STATUS EDIT
+            isDeleted: true, // ✅ MARCAR COMO DELETADA
+            replyToId: oldMessage.replyToId,
+            replyToText: oldMessage.replyToText,
+            replyToSenderName: oldMessage.replyToSenderName,
+            replyToSenderId: oldMessage.replyToSenderId,
+          );
+          print('✅ Mensagem ${messageId} marcada como deletada: $deleteText');
+        }
       });
     }
   }
@@ -851,6 +894,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             status: oldMessage
                 .status, // ✅ PRESERVAR STATUS DELIVERY (sent/delivered/read)
             isEdited: true, // ✅ MARCAR COMO EDITADA
+            isDeleted: oldMessage.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
             // ✅ PRESERVAR DADOS DE REPLY
             replyToId: oldMessage.replyToId,
             replyToText: oldMessage.replyToText,
@@ -937,6 +981,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 isEdited:
                     (msg['is_edited'] ==
                     true), // ✅ VERIFICAR is_edited DO BACKEND
+                isDeleted:
+                    (msg['is_deleted'] ==
+                    true), // ✅ VERIFICAR is_deleted DO BACKEND
                 // ✅ INFORMAÇÕES DE RESPOSTA DO HISTÓRICO
                 replyToId: msg['reply_to_id']?.toString(),
                 replyToText: msg['reply_to_text']?.toString(),
@@ -1047,6 +1094,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           timestamp: DateTime.now(),
           status: 'sent', // ícone de enviado só se realmente for ao servidor
           isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
+          isDeleted: false, // ✅ NOVA MENSAGEM NÃO É DELETADA
         ),
       );
 
@@ -1770,6 +1818,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 status: oldMessage
                     .status, // ✅ PRESERVAR STATUS DELIVERY (sent/delivered/read)
                 isEdited: true, // ✅ MARCAR COMO EDITADA
+                isDeleted:
+                    oldMessage.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
                 // ✅ PRESERVAR DADOS DE REPLY
                 replyToId: oldMessage.replyToId,
                 replyToText: oldMessage.replyToText,
@@ -1868,11 +1918,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final result = await MessageOperationsService.deleteMessage(message.id);
 
       if (result['success'] == true) {
-        // Remover mensagem localmente
-        setState(() {
-          _messages.removeWhere((msg) => msg.id == message.id);
-        });
-
+        // ✅ NÃO REMOVER LOCALMENTE - ESPERAR NOTIFICAÇÃO DO BACKEND
+        // Isso garante que todos os clientes recebam a mesma mensagem
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Mensagem apagada com sucesso'),
@@ -1952,6 +1999,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           isMe: false,
           timestamp: DateTime.now(),
           status: 'sent',
+          isDeleted: false, // ✅ PADRÃO: NÃO DELETADA
         );
       }
 
@@ -1968,6 +2016,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         isMe: true,
         timestamp: DateTime.now(),
         status: 'sent',
+        isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
+        isDeleted: false, // ✅ NOVA MENSAGEM NÃO É DELETADA
         // ✅ INFORMAÇÕES DE REPLY PRESERVADAS
         replyToId: originalMessageId,
         replyToText: originalMessage.text,
@@ -2024,6 +2074,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   replyMessage['sent_at'] ?? DateTime.now().toIso8601String(),
                 ),
                 status: replyMessage['status']?.toString() ?? 'sent',
+                isEdited: _messages[messageIndex]
+                    .isEdited, // ✅ PRESERVAR STATUS DE EDIÇÃO!
+                isDeleted: _messages[messageIndex]
+                    .isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
                 replyToId: _messages[messageIndex].replyToId,
                 replyToText: _messages[messageIndex].replyToText,
                 replyToSenderName: _messages[messageIndex].replyToSenderName,
@@ -2445,25 +2499,34 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  color: message.isMe
-                      ? AppTheme.appBarColor
-                      : AppTheme.messageReceived,
+                  color: message.isDeleted
+                      ? Colors.grey[300]
+                      : (message.isMe
+                            ? AppTheme.appBarColor
+                            : AppTheme.messageReceived),
                   borderRadius: BorderRadius.circular(18),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // ✅ PREVIEW DA MENSAGEM RESPONDIDA
-                    _buildReplyPreview(message),
+                    if (!message.isDeleted) _buildReplyPreview(message),
 
                     // ✅ TEXTO DA MENSAGEM
                     Text(
-                      message.text,
+                      message.isDeleted
+                          ? 'Esta mensagem foi apagada'
+                          : message.text,
                       style: TextStyle(
-                        color: message.isMe
-                            ? AppTheme.messageSentText
-                            : AppTheme.messageReceivedText,
+                        color: message.isDeleted
+                            ? Colors.grey[600]
+                            : (message.isMe
+                                  ? AppTheme.messageSentText
+                                  : AppTheme.messageReceivedText),
                         fontSize: 16,
+                        fontStyle: message.isDeleted
+                            ? FontStyle.italic
+                            : FontStyle.normal,
                       ),
                     ),
                     const SizedBox(height: 4),
@@ -2479,7 +2542,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                             fontSize: 10,
                           ),
                         ),
-                        if (message.isEdited) ...[
+                        if (message.isEdited && !message.isDeleted) ...[
                           SizedBox(width: 4),
                           Text(
                             'Editada',
@@ -2490,7 +2553,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                             ),
                           ),
                         ],
-                        if (message.isMe) ...[
+                        if (message.isMe && !message.isDeleted) ...[
                           SizedBox(width: 4),
                           _buildStatusIcon(message.status),
                         ],
