@@ -146,11 +146,14 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
 %%% @end
 %%%-------------------------------------------------------------------
 mark_message_delivered(MessageId, ByUser) ->
-    case get_message_sender(MessageId) of
-        {ok, FromId} ->
+    case get_message_details(MessageId) of
+        {ok, MessageDetails} ->
+            FromId = integer_to_binary(maps:get(sender_id, MessageDetails)),
+            IsEdited = maps:get(is_edited, MessageDetails, false),
             DeliveryMsg = #{<<"type">> => <<"message_delivered">>,
                           <<"message_id">> => MessageId,
                           <<"by_user">> => ByUser,
+                          <<"is_edited">> => IsEdited,
                           <<"timestamp">> => erlang:system_time(second)},
             user_session:send_message(ByUser, FromId, DeliveryMsg),
             ok;
@@ -163,11 +166,14 @@ mark_message_delivered(MessageId, ByUser) ->
 %%% @end
 %%%-------------------------------------------------------------------
 mark_message_read(MessageId, ByUser) ->
-    case get_message_sender(MessageId) of
-        {ok, FromId} ->
+    case get_message_details(MessageId) of
+        {ok, MessageDetails} ->
+            FromId = integer_to_binary(maps:get(sender_id, MessageDetails)),
+            IsEdited = maps:get(is_edited, MessageDetails, false),
             ReadMsg = #{<<"type">> => <<"message_read">>,
                       <<"message_id">> => MessageId,
                       <<"by_user">> => ByUser,
+                      <<"is_edited">> => IsEdited,
                       <<"timestamp">> => erlang:system_time(second)},
             user_session:send_message(ByUser, FromId, ReadMsg),
             ok;

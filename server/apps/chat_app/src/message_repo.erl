@@ -143,21 +143,27 @@ get_chat_history(UserId, ContactId, Limit, Offset) ->
         OffsetInt = case OffsetInt0 < 0 of true -> 0; false -> OffsetInt0 end,
 
         db_pool:with_connection(fun(Conn) ->
-            Query = "\n                SELECT m.id, m.sender_id, m.receiver_id, m.content, m.sent_at, m.status,\n                       m.is_edited, m.edit_count, m.deleted_by, m.deleted_at,\n                       m.reply_to_id, \n                       CASE \n                           WHEN m_original.sender_id = $1 THEN 'Eu'\n                           ELSE u1.name \n                       END as reply_to_sender_name,\n                       m_original.sender_id as reply_to_sender_id,\n                       m_original.content as reply_to_text\n                FROM messages m\n                LEFT JOIN messages m_original ON m.reply_to_id = m_original.id\n                LEFT JOIN users u1 ON m_original.sender_id = u1.id\n                WHERE (m.sender_id = $1 AND m.receiver_id = $2)\n                   OR (m.sender_id = $2 AND m.receiver_id = $1)\n                ORDER BY m.sent_at DESC\n                LIMIT $3 OFFSET $4\n            ",
+            Query = "\n                SELECT m.id, m.sender_id, m.receiver_id, m.content, m.sent_at, m.status,\n                       m.is_edited, m.edit_count, m.is_deleted, m.deleted_by, m.deleted_at,\n                       m.reply_to_id, \n                       CASE \n                           WHEN m_original.sender_id = $1 THEN 'Eu'\n                           ELSE u1.name \n                       END as reply_to_sender_name,\n                       m_original.sender_id as reply_to_sender_id,\n                       m_original.content as reply_to_text\n                FROM messages m\n                LEFT JOIN messages m_original ON m.reply_to_id = m_original.id\n                LEFT JOIN users u1 ON m_original.sender_id = u1.id\n                WHERE (m.sender_id = $1 AND m.receiver_id = $2)\n                   OR (m.sender_id = $2 AND m.receiver_id = $1)\n                ORDER BY m.sent_at DESC\n                LIMIT $3 OFFSET $4\n            ",
             case epgsql:equery(Conn, Query, [UserIdInt, ContactIdInt, LimitInt, OffsetInt]) of
                 {ok, _, Rows} ->
-                    Messages = lists:map(fun({Id, SenderId, ReceiverId, Content, SentAt, Status, IsEdited, EditCount, DeletedBy, DeletedAt, ReplyToId, ReplyToSenderName, ReplyToSenderId, ReplyToText}) ->
+                    Messages = lists:map(fun({Id, SenderId, ReceiverId, Content, SentAt, Status, IsEdited, EditCount, IsDeleted, DeletedBy, DeletedAt, ReplyToId, ReplyToSenderName, ReplyToSenderId, ReplyToText}) ->
+                        %% ✅ SE MENSAGEM ESTÁ DELETADA, TROCAR CONTEÚDO
+                        FinalContent = case IsDeleted of
+                            true -> <<"Esta mensagem foi apagada">>;
+                            false -> Content
+                        end,
                         #{
                             <<"id">> => Id,
                             <<"sender_id">> => SenderId,
                             <<"receiver_id">> => ReceiverId,
-                            <<"content">> => Content,
+                            <<"content">> => FinalContent,
                             <<"sent_at">> => list_to_binary(io_lib:format("~p", [SentAt])),
                             <<"status">> => Status,
                             <<"type">> => <<"message">>,
                             %% ✅ CAMPOS DE EDIÇÃO E DELEÇÃO
                             <<"is_edited">> => case IsEdited of null -> false; _ -> IsEdited end,
                             <<"edit_count">> => case EditCount of null -> 0; _ -> EditCount end,
+                            <<"is_deleted">> => case IsDeleted of null -> false; _ -> IsDeleted end,
                             <<"deleted_by">> => case DeletedBy of null -> null; _ -> DeletedBy end,
                             <<"deleted_at">> => case DeletedAt of null -> null; _ -> list_to_binary(io_lib:format("~p", [DeletedAt])) end,
                             %% ✅ CAMPOS DE RESPOSTA
@@ -207,7 +213,7 @@ get_message_details(MessageId) ->
                         id => Id,
                         sender_id => SenderId,
                         receiver_id => ReceiverId,
-                        content => Content,
+                        content => case IsDeleted of true -> <<"Esta mensagem foi apagada">>; false -> Content end,
                         sent_at => SentAt,
                         status => Status,
                         is_edited => IsEdited,
@@ -369,6 +375,7 @@ can_edit_message(MessageId, UserId) ->
 
 %% @doc Verificar se usuário pode deletar mensagem
 can_delete_message(MessageId, UserId) ->
+    io:format("Entrou no Can_delete=> apagando mensagem: ~p, de: ~p~n", [MessageId, UserId]),
     db_pool:with_connection(fun(Conn) ->
         try
             MsgIdInt = binary_to_integer_wrapper(MessageId),
@@ -386,9 +393,12 @@ can_delete_message(MessageId, UserId) ->
                             % Remetente pode deletar até 1 hora
                             Now = erlang:system_time(second),
                             SentAtUnix = case SentAt of
-                                {Date, Time} ->
-                                    calendar:datetime_to_gregorian_seconds({Date, Time});
-                                _ -> Now
+                                {Date, {Hour, Min, Sec}} ->
+                                    calendar:datetime_to_gregorian_seconds({Date, {Hour, Min, trunc(Sec)}});
+                                {Date, {Hour, Min, Sec, _MicroSec}} ->
+                                    calendar:datetime_to_gregorian_seconds({Date, {Hour, Min, trunc(Sec)}});
+                                _ -> 
+                                    Now
                             end,
                             
                             TimeDiff = Now - SentAtUnix,
