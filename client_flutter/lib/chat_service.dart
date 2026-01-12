@@ -208,6 +208,8 @@ class ChatService {
         case 'message_deleted':
           _messageController.add(message);
           print('🗑️ Mensagem deletada recebida: $message');
+          // ✅ REMOVER MENSAGEM DO CHAT LIST SE FOR A ÚLTIMA
+          _removeMessageFromChatList(message);
           break;
         case 'message_reply':
           _messageController.add(message);
@@ -225,6 +227,12 @@ class ChatService {
           if (action == 'edit_message') {
             print(
               '   ✅ É uma edição de mensagem - atualizando conteúdo sem mover chat',
+            );
+            // ✅ ATUALIZAR CONTEÚDO SEM REORDENAR CHAT LIST!
+            _updateChatContentOnly(message);
+          } else if (action == 'delete_message') {
+            print(
+              '   ✅ É uma deleção de mensagem - atualizando conteúdo sem mover chat',
             );
             // ✅ ATUALIZAR CONTEÚDO SEM REORDENAR CHAT LIST!
             _updateChatContentOnly(message);
@@ -1276,6 +1284,100 @@ class ChatService {
       _saveChatsToStorage();
     } catch (e) {
       print('❌ Erro ao atualizar conteúdo do chat: $e');
+    }
+  }
+
+  // ✅ REMOVER MENSAGEM DO CHAT LIST QUANDO DELETADA
+  static void _removeMessageFromChatList(Map<String, dynamic> message) async {
+    try {
+      String? fromUserId = message['sender_id']?.toString();
+      String? toUserId = message['receiver_id']?.toString();
+      var currentUserId = await _secureStorage.read(key: 'user_id');
+
+      if (currentUserId == null || fromUserId == null || toUserId == null) {
+        print('❌ Dados insuficientes para remover mensagem do chat');
+        return;
+      }
+
+      String contactId = fromUserId == currentUserId ? toUserId : fromUserId;
+
+      if (_chatContacts.containsKey(contactId)) {
+        final existing = _chatContacts[contactId]!;
+        print('🗑️ REMOVENDO MENSAGEM DO CHAT LIST:');
+        print('   - Chat: ${existing.name}');
+        print('   - Mensagem ID: ${message['message_id']}');
+
+        // ✅ SE A MENSAGEM DELETADA FOR A ÚLTIMA, ATUALIZAR PARA ANTERIOR
+        // SE NÃO, MANTER ÚLTIMA ATUAL
+        _updateChatListAfterDeletion(contactId);
+        print('   ✅ Chat list atualizado após deleção');
+      }
+
+      // ✅ ATUALIZAR FRONTEND
+      _chatListController.add(_chatContacts.values.toList());
+      _saveChatsToStorage();
+    } catch (e) {
+      print('❌ Erro ao remover mensagem do chat: $e');
+    }
+  }
+
+  // ✅ ATUALIZAR CHAT LIST APÓS DELEÇÃO (BUSCAR ÚLTIMA MENSAGEM RESTANTE)
+  static void _updateChatListAfterDeletion(String contactId) async {
+    try {
+      // Buscar última mensagem não deletada deste contato
+      final response = await http.get(
+        Uri.parse(
+          'http://10.0.2.2:4000/api/messages/history/$contactId?limit=1',
+        ),
+        headers: {
+          'Authorization':
+              'Bearer ${await _secureStorage.read(key: 'access_token')}',
+          'Content-Type': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final messages = data['messages'] as List<dynamic>;
+
+        if (_chatContacts.containsKey(contactId)) {
+          final existing = _chatContacts[contactId]!;
+
+          if (messages.isNotEmpty) {
+            // ✅ TEM MENSAGENS RESTANTES - USAR A ÚLTIMA
+            final lastMessage = messages.first;
+            _chatContacts[contactId] = existing.copyWith(
+              name: existing.name,
+              phoneNumber: existing.phoneNumber,
+              photo: existing.photo,
+              lastMessageTime: DateTime.parse(
+                lastMessage['sent_at'],
+              ), // ✅ USAR TIMESTAMP DA ÚLTIMA
+              lastMessage: lastMessage['content'],
+              unreadCount: existing.unreadCount,
+              lastMessageIsReply: lastMessage['reply_to_id'] != null,
+            );
+            print(
+              '   ✅ Última mensagem restante usada: ${lastMessage['content']}',
+            );
+          } else {
+            // ✅ NÃO TEM MENSAGENS - MOSTRAR MENSAGEM DE APAGADA
+            _chatContacts[contactId] = existing.copyWith(
+              name: existing.name,
+              phoneNumber: existing.phoneNumber,
+              photo: existing.photo,
+              lastMessageTime:
+                  existing.lastMessageTime, // ✅ MANTER TIMESTAMP ANTIGO
+              lastMessage: 'Esta mensagem foi apagada',
+              unreadCount: existing.unreadCount,
+              lastMessageIsReply: false,
+            );
+            print('   ✅ Chat limpo - mostrando "Esta mensagem foi apagada"');
+          }
+        }
+      }
+    } catch (e) {
+      print('❌ Erro ao buscar últimas mensagens após deleção: $e');
     }
   }
 }
