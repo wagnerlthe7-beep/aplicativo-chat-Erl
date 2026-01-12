@@ -274,7 +274,7 @@ handle_user_online(UserId) ->
             
             MessageIds = lists:map(fun(Msg) -> maps:get(<<"id">>, Msg) end, Messages),
             
-            %% 1. Processar cada mensagem (notificar Sender e enviar para Receiver)
+            %% 1. Processar cada mensagem (verificar se não foi deletada)
             lists:foreach(fun(Msg) ->
                 Id = maps:get(<<"id">>, Msg),
                 SenderId = maps:get(<<"sender_id">>, Msg),
@@ -286,36 +286,107 @@ handle_user_online(UserId) ->
                 ReplyToSenderName = maps:get(<<"reply_to_sender_name">>, Msg, null),
                 SenderIdBin = integer_to_binary(SenderId),
                 
-                %% Notificar remetente (status = delivered)
-                DeliveryMsg = #{
-                    <<"type">> => <<"message_delivered">>,
-                    <<"message_id">> => integer_to_binary(Id), %% Usando ID do banco como referência se não houver UUID
-                    <<"db_message_id">> => Id,
-                    <<"status">> => <<"delivered">>,
-                    <<"delivered_at">> => erlang:system_time(second)
-                },
-                %% Tenta enviar para o remetente se estiver online
-                user_session:send_message(UserId, SenderIdBin, DeliveryMsg),
-                
-                %% Enviar mensagem para o destinatário (UserId)
-                MsgForReceiver = #{
-                    <<"type">> => <<"message">>,
-                    <<"from">> => SenderIdBin,
-                    <<"to">> => UserId,
-                    <<"content">> => Content,
-                    <<"timestamp">> => SentAt,
-                    <<"message_id">> => integer_to_binary(Id),
-                    <<"db_message_id">> => Id,
-                    <<"status">> => <<"delivered">>,
-                    <<"should_increase_unread">> => true,
-                    %% Metadados de reply
-                    <<"reply_to_id">> => ReplyToId,
-                    <<"reply_to_text">> => ReplyToText,
-                    <<"reply_to_sender_id">> => ReplyToSenderId,
-                    <<"reply_to_sender_name">> => ReplyToSenderName
-                },
-                %% Envia para o próprio usuário que acabou de conectar
-                user_session:send_message(SenderIdBin, UserId, MsgForReceiver)
+                %% ✅ VERIFICAR SE MENSAGEM FOI DELETADA ANTES DE ENTREGAR
+                case message_repo:is_message_deleted(Id) of
+                    {ok, false} ->
+                        %% MENSAGEM NÃO DELETADA - ENTREGAR NORMALMENTE
+                        io:format("   ✅ Entregando mensagem ~p para usuário ~p~n", [Id, UserId]),
+                        
+                        %% Notificar remetente (status = delivered)
+                        DeliveryMsg = #{
+                            <<"type">> => <<"message_delivered">>,
+                            <<"message_id">> => integer_to_binary(Id), %% Usando ID do banco como referência se não houver UUID
+                            <<"db_message_id">> => Id,
+                            <<"status">> => <<"delivered">>,
+                            <<"delivered_at">> => erlang:system_time(second)
+                        },
+                        %% Tenta enviar para o remetente se estiver online
+                        user_session:send_message(UserId, SenderIdBin, DeliveryMsg),
+                        
+                        %% Enviar mensagem para o destinatário (UserId)
+                        MsgForReceiver = #{
+                            <<"type">> => <<"message">>,
+                            <<"from">> => SenderIdBin,
+                            <<"to">> => UserId,
+                            <<"content">> => Content,
+                            <<"timestamp">> => SentAt,
+                            <<"message_id">> => integer_to_binary(Id),
+                            <<"db_message_id">> => Id,
+                            <<"status">> => <<"delivered">>,
+                            <<"should_increase_unread">> => true,
+                            %% Metadados de reply
+                            <<"reply_to_id">> => ReplyToId,
+                            <<"reply_to_text">> => ReplyToText,
+                            <<"reply_to_sender_id">> => ReplyToSenderId,
+                            <<"reply_to_sender_name">> => ReplyToSenderName
+                        },
+                        %% Envia para o próprio usuário que acabou de conectar
+                        user_session:send_message(SenderIdBin, UserId, MsgForReceiver);
+                    
+                    {ok, true} ->
+                        %% MENSAGEM DELETADA - ENTREGAR COMO MENSAGEM DELETADA PERSONALIZADA
+                        io:format("   🗑️ Entregando mensagem deletada ~p para usuário ~p~n", [Id, UserId]),
+                        
+                        %% Buscar quem deletou a mensagem
+                        case message_repo:get_message_deleter(Id) of
+                            {ok, DeletedBy} ->
+                                %% Personalizar mensagem baseado em quem deletou (perspectiva do destinatário)
+                                DeletedContent = case DeletedBy of
+                                    UserId -> unicode:characters_to_binary("⊗ Eliminou esta mensagem");  % Você apagou
+                                    _ -> unicode:characters_to_binary("⊗ Esta mensagem foi apagada")  % Outro apagou
+                                end,
+                                
+                                io:format("   🔍 DEBUG DeletedContent: ~p~n", [DeletedContent]),
+                                
+                                %% Notificar remetente (status = delivered)
+                                DeliveryMsg = #{
+                                    <<"type">> => <<"message_delivered">>,
+                                    <<"message_id">> => integer_to_binary(Id),
+                                    <<"db_message_id">> => Id,
+                                    <<"status">> => <<"delivered">>,
+                                    <<"delivered_at">> => erlang:system_time(second)
+                                },
+                                user_session:send_message(UserId, SenderIdBin, DeliveryMsg),
+                                
+                                %% Enviar mensagem personalizada para o destinatário
+                                DeletedMsgForReceiver = #{
+                                    <<"type">> => <<"message">>,
+                                    <<"from">> => SenderIdBin,
+                                    <<"to">> => UserId,
+                                    <<"content">> => DeletedContent,
+                                    <<"timestamp">> => SentAt,
+                                    <<"message_id">> => integer_to_binary(Id),
+                                    <<"db_message_id">> => Id,
+                                    <<"status">> => <<"delivered">>,
+                                    <<"should_increase_unread">> => false,  % Não aumentar unread para mensagem deletada
+                                    <<"deleted_by">> => integer_to_binary(DeletedBy),
+                                    <<"reply_to_id">> => ReplyToId,
+                                    <<"reply_to_text">> => ReplyToText,
+                                    <<"reply_to_sender_id">> => ReplyToSenderId,
+                                    <<"reply_to_sender_name">> => ReplyToSenderName
+                                },
+                                user_session:send_message(SenderIdBin, UserId, DeletedMsgForReceiver);
+                            
+                            {error, _} ->
+                                %% Se não conseguir quem deletou, usar mensagem genérica
+                                GenericDeletedMsg = #{
+                                    <<"type">> => <<"message">>,
+                                    <<"from">> => SenderIdBin,
+                                    <<"to">> => UserId,
+                                    <<"content">> => unicode:characters_to_binary("⊗ Esta mensagem foi apagada"),
+                                    <<"timestamp">> => SentAt,
+                                    <<"message_id">> => integer_to_binary(Id),
+                                    <<"db_message_id">> => Id,
+                                    <<"status">> => <<"delivered">>,
+                                    <<"should_increase_unread">> => false
+                                },
+                                user_session:send_message(SenderIdBin, UserId, GenericDeletedMsg)
+                        end;
+                    
+                    {error, Reason} ->
+                        %% ERRO AO VERIFICAR - LOG E PULAR
+                        io:format("   ❌ Erro ao verificar status da mensagem ~p: ~p~n", [Id, Reason])
+                end
                 
             end, Messages),
             
@@ -451,17 +522,27 @@ notify_message_edited(MessageId, UpdatedContent, SenderId, ReceiverId) ->
 %% @doc Notificar deleção de mensagem
 notify_message_deleted(MessageId, SenderId, ReceiverId, Reason) ->
     try
+        % Descobrir quem deletou (será o usuário atual da sessão)
+        DeletedBy = case Reason of
+            <<"user_delete">> -> SenderId;  % Remetente deletou
+            _ -> SenderId  % Por padrão, assume que foi o remetente
+        end,
+        
         Notification = #{
             <<"type">> => <<"message_deleted">>,
             <<"message_id">> => MessageId,
             <<"sender_id">> => SenderId,
             <<"receiver_id">> => ReceiverId,
+            <<"deleted_by">> => DeletedBy,
             <<"reason">> => Reason,
             <<"timestamp">> => erlang:system_time(second)
         },
         
+        % Enviar para o destinatário
         user_session:send_message(SenderId, ReceiverId, Notification),
-        io:format("📡 Notificação de deleção enviada: ~p -> ~p~n", [SenderId, ReceiverId]),
+        % Enviar para o próprio remetente (para atualizar o chat dele também)
+        user_session:send_message(SenderId, SenderId, Notification),
+        io:format("📡 Notificação de deleção enviada: ~p -> ~p e ~p -> ~p (deleted_by: ~p)~n", [SenderId, ReceiverId, SenderId, SenderId, DeletedBy]),
         ok
     catch
         Error:Reason ->
