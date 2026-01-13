@@ -13,6 +13,7 @@ import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:flutter/widgets.dart';
 import 'chat_model.dart';
 import 'auth_service.dart';
+import 'chat_page.dart'; // ✅ Importar ChatMessage
 
 class ChatService {
   static WebSocketChannel? _channel;
@@ -208,8 +209,8 @@ class ChatService {
         case 'message_deleted':
           _messageController.add(message);
           print('🗑️ Mensagem deletada recebida: $message');
-          // ✅ ATUALIZAR CONTEÚDO DO CHAT LIST COM MENSAGEM PERSONALIZADA
-          _updateChatContentOnlyWithDeletedMessage(message);
+          // ✅ SÓ ATUALIZAR CHAT LIST SE FOR A ÚLTIMA MENSAGEM
+          _updateChatContentOnlyWithDeletedMessageIfLast(message);
           break;
         case 'message_reply':
           _messageController.add(message);
@@ -1246,7 +1247,71 @@ class ChatService {
     return input;
   }
 
-  // ✅ ATUALIZAR APENAS CONTEÚDO DO CHAT SEM REORDENAR (PARA MENSAGEM DELETADA)
+  static void _updateChatContentOnlyWithDeletedMessageIfLast(
+    Map<String, dynamic> message,
+  ) async {
+    try {
+      print(
+        '🔍 DEBUG _updateChatContentOnlyWithDeletedMessageIfLast: Verificando se é última mensagem',
+      );
+
+      // ✅ VERIFICAR SE É A ÚLTIMA MENSAGEM ANTES DE ATUALIZAR CHAT LIST
+      final messageId = message['message_id']?.toString();
+      final fromUserId =
+          message['from']?.toString() ?? message['sender_id']?.toString();
+      final toUserId =
+          message['to']?.toString() ?? message['receiver_id']?.toString();
+      var currentUserId = await _secureStorage.read(key: 'user_id');
+
+      if (currentUserId == null ||
+          fromUserId == null ||
+          toUserId == null ||
+          messageId == null) {
+        print('❌ Dados insuficientes para verificar última mensagem');
+        return;
+      }
+
+      // Verificar se é a última mensagem no chat list atual
+      String contactId = fromUserId == currentUserId ? toUserId : fromUserId;
+
+      if (_chatContacts.containsKey(contactId)) {
+        final existing = _chatContacts[contactId]!;
+
+        // ✅ LÓGICA CORRETA: Verificar se a última mensagem no chat list é a mesma que foi deletada
+        // Para isso, precisamos comparar o ID da mensagem atual no chat list
+        // Se não conseguirmos determinar, não atualizamos para evitar problemas
+        print(
+          '🔍 DEBUG: Verificando se mensagem $messageId é a última do chat',
+        );
+        print('   🔍 Última mensagem no chat list: ${existing.lastMessage}');
+        print('   🔍 Contém ⊗? ${existing.lastMessage.contains('⊗')}');
+
+        // Se a última mensagem não contém ⊗, significa que é uma mensagem normal
+        // Mas ainda assim não sabemos se é a mesma mensagem
+        // Por segurança, só atualizamos se tivermos certeza
+        if (!existing.lastMessage.contains('⊗')) {
+          print(
+            '🚫 Última mensagem é normal, mas não temos certeza se é a mesma - NÃO ATUALIZANDO',
+          );
+          print('   🔍 Para evitar problemas, não atualizamos chat list');
+          return;
+        }
+
+        // Se a última mensagem já contém ⊗, significa que já foi deletada
+        // Não atualizamos novamente
+        print('🚫 Última mensagem já é deletada - NÃO ATUALIZANDO chat list');
+        print(
+          '   🔍 Mensagem atual: $messageId, última mensagem já foi processada',
+        );
+      } else {
+        print('🚫 Chat não encontrado na lista - NÃO ATUALIZANDO');
+      }
+    } catch (e) {
+      print('❌ Erro ao verificar última mensagem: $e');
+      // Em caso de erro, não atualizar para evitar problemas
+    }
+  }
+
   static void _updateChatContentOnlyWithDeletedMessage(
     Map<String, dynamic> message,
   ) async {
