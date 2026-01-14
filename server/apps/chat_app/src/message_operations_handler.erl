@@ -218,7 +218,7 @@ handle_reply_message(MessageId, Req0, State) ->
                                                 user_session:send_message(SenderId, SenderId, MessageToSender),
                                                 
                                                 %% 9. ATUALIZAR CHAT LIST
-                                                send_chat_list_edit_update(SenderId, FinalReceiverId, Content, DbMessageId),
+                                                send_chat_list_edit_update(SenderId, FinalReceiverId, Content, integer_to_binary(DbMessageId)),
                                                 
                                                 ?LOG_INFO("✅ Reply processado com sucesso"),
                                                 
@@ -253,7 +253,7 @@ handle_reply_message(MessageId, Req0, State) ->
                                                     <<"should_increase_unread">> => false
                                                 },
                                                 user_session:send_message(SenderId, SenderId, MessageToSender2),
-                                                send_chat_list_edit_update(SenderId, FinalReceiverId, Content, DbMessageId),
+                                                send_chat_list_edit_update(SenderId, FinalReceiverId, Content, integer_to_binary(DbMessageId)),
                                                 send_json(Req1, 201, #{
                                                     success => true,
                                                     message => <<"Reply queued (receiver offline)">>,
@@ -789,7 +789,7 @@ format_message(Message) ->
             <<"reply_to_id">> => case ReplyToId of
                                    undefined -> null;
                                    null -> null;
-                                   Id -> integer_to_binary(Id)
+                                   ReplyToId -> integer_to_binary(ReplyToId)
                                  end,
             <<"deleted_by">> => case maps:get(deleted_by, Message, undefined) of
                                    undefined -> null;

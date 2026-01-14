@@ -28,16 +28,16 @@ class AppTheme {
 
   // Cores de mensagens
   static const Color messageSent =
-      accentGreen; // Mensagens enviadas (verde claro)
+      primaryGreen; // Mensagens enviadas (verde escuro)
   static const Color messageReceived = Color(
     0xFFFFFFFF,
   ); // Mensagens recebidas (branco)
   static const Color messageReceivedText = Color(
-    0xFF000000,
-  ); // Texto mensagens recebidas
+    0xFF111B21,
+  ); // Texto mensagens recebidas (WhatsApp Black)
   static const Color messageSentText = Color(
-    0xFFFFFFFF,
-  ); // Texto mensagens enviadas
+    0xFFE9EDEF,
+  ); // Texto mensagens enviadas (Soft White)
 
   // Cores de status
   static const Color statusRead = tealGreen; // Duplo check azul (lido)
