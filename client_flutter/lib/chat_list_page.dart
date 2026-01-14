@@ -28,6 +28,26 @@ class _ChatListPageState extends State<ChatListPage>
   StreamSubscription<List<ChatContact>>? _chatSubscription;
   StreamSubscription<Map<String, dynamic>>? _messageSubscription;
   List<ChatContact> _chats = [];
+  
+  // ✅ ESTADO DE SELEÇÃO
+  final Set<String> _selectedChatIds = {};
+  bool get _isSelectionMode => _selectedChatIds.isNotEmpty;
+
+  void _toggleSelection(String contactId) {
+    setState(() {
+      if (_selectedChatIds.contains(contactId)) {
+        _selectedChatIds.remove(contactId);
+      } else {
+        _selectedChatIds.add(contactId);
+      }
+    });
+  }
+
+  void _clearSelection() {
+    setState(() {
+      _selectedChatIds.clear();
+    });
+  }
 
   @override
   void initState() {
@@ -46,6 +66,182 @@ class _ChatListPageState extends State<ChatListPage>
     _tabController.dispose();
     _searchController.dispose();
     super.dispose();
+  }
+  
+  // ✅ APP BAR NORMAL
+  AppBar _buildNormalAppBar() {
+    return AppBar(
+      backgroundColor: AppTheme.appBarColor,
+      elevation: 0,
+      title: Text(
+        'SpeekJoy',
+        style: TextStyle(
+          color: AppTheme.textOnGreen,
+          fontSize: 20,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      actions: [
+        // BOTÃO DE RECARREGAR CHATS
+        IconButton(
+          icon: _isLoading
+              ? SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      AppTheme.textOnGreen,
+                    ),
+                  ),
+                )
+              : Icon(Icons.refresh, color: AppTheme.textOnGreen),
+          onPressed: _isLoading ? null : _reloadChats,
+        ),
+        IconButton(
+          icon: Icon(Icons.camera_alt, color: AppTheme.textOnGreen),
+          onPressed: () {},
+        ),
+        IconButton(
+          icon: Icon(Icons.search, color: AppTheme.textOnGreen),
+          onPressed: () {},
+        ),
+        PopupMenuButton<String>(
+          icon: Icon(Icons.more_vert, color: AppTheme.textOnGreen),
+          onSelected: (value) {
+            if (value == 'logout')
+              _logout();
+            else if (value == 'revoke_others')
+              _showRevokeDialog();
+          },
+          itemBuilder: (context) => [
+            PopupMenuItem(
+              value: 'revoke_others',
+              child: Row(
+                children: [
+                  Icon(Icons.security, color: AppTheme.actionDelete),
+                  SizedBox(width: 8),
+                  Text('Sair de outros dispositivos'),
+                ],
+              ),
+            ),
+            PopupMenuItem(
+              value: 'logout',
+              child: Row(
+                children: [
+                  Icon(Icons.logout, color: Colors.red),
+                  SizedBox(width: 8),
+                  Text('Logout'),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+      bottom: PreferredSize(
+        preferredSize: Size.fromHeight(70),
+        child: Container(
+          color: AppTheme.surfaceColor,
+          child: Column(
+            children: [
+              Container(height: 1, color: AppTheme.dividerColor),
+              Container(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                child: TabBar(
+                  controller: _tabController,
+                  indicatorColor: AppTheme.appBarColor,
+                  labelColor: AppTheme.appBarColor,
+                  unselectedLabelColor: AppTheme.textSecondary,
+                  tabs: [
+                    Tab(
+                      child: Column(
+                        children: [
+                          Icon(Icons.chat_bubble_outline, size: 18),
+                          SizedBox(height: 2),
+                          Text('CHATS', style: TextStyle(fontSize: 10)),
+                        ],
+                      ),
+                    ),
+                    Tab(
+                      child: Column(
+                        children: [
+                          Icon(Icons.radio_button_checked, size: 18),
+                          SizedBox(height: 2),
+                          Text('STATUS', style: TextStyle(fontSize: 10)),
+                        ],
+                      ),
+                    ),
+                    Tab(
+                      child: Column(
+                        children: [
+                          Icon(Icons.call, size: 18),
+                          SizedBox(height: 2),
+                          Text('CALLS', style: TextStyle(fontSize: 10)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ✅ APP BAR DE SELEÇÃO
+  AppBar _buildSelectionAppBar() {
+    return AppBar(
+      backgroundColor: AppTheme.appBarColor,
+      leading: IconButton(
+        icon: Icon(Icons.arrow_back, color: AppTheme.textOnGreen),
+        onPressed: _clearSelection,
+      ),
+      title: Text(
+        '${_selectedChatIds.length}',
+        style: TextStyle(
+          color: AppTheme.textOnGreen,
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      actions: [
+        IconButton(
+          icon: Icon(Icons.push_pin, color: AppTheme.textOnGreen),
+          onPressed: () {}, // Fixar (Placeholder)
+        ),
+        IconButton(
+          icon: Icon(Icons.delete, color: AppTheme.textOnGreen),
+          onPressed: () {
+            // Deletar selecionados
+            if (_selectedChatIds.isNotEmpty) {
+              final chat = _chats.firstWhere(
+                  (c) => c.contactId == _selectedChatIds.first);
+              _showDeleteChatDialog(chat);
+            }
+          },
+        ),
+        IconButton(
+          icon: Icon(Icons.volume_off, color: AppTheme.textOnGreen),
+          onPressed: () {}, // Mute (Placeholder)
+        ),
+        IconButton(
+          icon: Icon(Icons.archive, color: AppTheme.textOnGreen),
+          onPressed: () {}, // Arquivar (Placeholder)
+        ),
+        PopupMenuButton<String>(
+          icon: Icon(Icons.more_vert, color: AppTheme.textOnGreen),
+          itemBuilder: (context) => [
+            PopupMenuItem(value: 'view_contact', child: Text('Ver contacto')),
+            PopupMenuItem(value: 'add_favorite', child: Text('Adicionar aos favoritos')),
+            PopupMenuItem(value: 'lock_chat', child: Text('Trancar conversa')),
+            PopupMenuItem(value: 'add_list', child: Text('Adicionar a lista')),
+            PopupMenuItem(value: 'block', child: Text('Bloquear')),
+          ],
+        ),
+      ],
+    );
   }
 
   // 🔔 TRATAR MENSAGENS GLOBAIS PARA NOTIFICAÇÕES
@@ -586,128 +782,49 @@ class _ChatListPageState extends State<ChatListPage>
     }
   }
 
+  // ✅ DIÁLOGO DE CONFIRMAÇÃO PARA EXCLUIR CONVERSA
+  void _showDeleteChatDialog(ChatContact chat) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Eliminar esta conversa?'),
+        content: Text(
+            'A conversa com "${chat.name}" será removida desta lista.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancelar',
+                style: TextStyle(color: AppTheme.primaryGreen)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _deleteChat(chat);
+            },
+            child: Text('Eliminar conversa',
+                style: TextStyle(color: AppTheme.primaryGreen)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _deleteChat(ChatContact chat) async {
+    await ChatService.deleteChat(chat.contactId);
+    _clearSelection(); // Limpar seleção após deletar
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Conversa eliminada'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppTheme.backgroundColor,
-      appBar: AppBar(
-        backgroundColor: AppTheme.appBarColor,
-        elevation: 0,
-        title: Text(
-          'SpeekJoy',
-          style: TextStyle(
-            color: AppTheme.textOnGreen,
-            fontSize: 20,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        actions: [
-          // BOTÃO DE RECARREGAR CHATS
-          IconButton(
-            icon: _isLoading
-                ? SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        AppTheme.textOnGreen,
-                      ),
-                    ),
-                  )
-                : Icon(Icons.refresh, color: AppTheme.textOnGreen),
-            onPressed: _isLoading ? null : _reloadChats,
-          ),
-          IconButton(
-            icon: Icon(Icons.camera_alt, color: AppTheme.textOnGreen),
-            onPressed: () {},
-          ),
-          IconButton(
-            icon: Icon(Icons.search, color: AppTheme.textOnGreen),
-            onPressed: () {},
-          ),
-          PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert, color: AppTheme.textOnGreen),
-            onSelected: (value) {
-              if (value == 'logout')
-                _logout();
-              else if (value == 'revoke_others')
-                _showRevokeDialog();
-            },
-            itemBuilder: (context) => [
-              PopupMenuItem(
-                value: 'revoke_others',
-                child: Row(
-                  children: [
-                    Icon(Icons.security, color: AppTheme.actionDelete),
-                    SizedBox(width: 8),
-                    Text('Sair de outros dispositivos'),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: 'logout',
-                child: Row(
-                  children: [
-                    Icon(Icons.logout, color: Colors.red),
-                    SizedBox(width: 8),
-                    Text('Logout'),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ],
-        bottom: PreferredSize(
-          preferredSize: Size.fromHeight(70),
-          child: Container(
-            color: AppTheme.surfaceColor,
-            child: Column(
-              children: [
-                Container(height: 1, color: AppTheme.dividerColor),
-                Container(
-                  padding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-                  child: TabBar(
-                    controller: _tabController,
-                    indicatorColor: AppTheme.appBarColor,
-                    labelColor: AppTheme.appBarColor,
-                    unselectedLabelColor: AppTheme.textSecondary,
-                    tabs: [
-                      Tab(
-                        child: Column(
-                          children: [
-                            Icon(Icons.chat_bubble_outline, size: 18),
-                            SizedBox(height: 2),
-                            Text('CHATS', style: TextStyle(fontSize: 10)),
-                          ],
-                        ),
-                      ),
-                      Tab(
-                        child: Column(
-                          children: [
-                            Icon(Icons.radio_button_checked, size: 18),
-                            SizedBox(height: 2),
-                            Text('STATUS', style: TextStyle(fontSize: 10)),
-                          ],
-                        ),
-                      ),
-                      Tab(
-                        child: Column(
-                          children: [
-                            Icon(Icons.call, size: 18),
-                            SizedBox(height: 2),
-                            Text('CALLS', style: TextStyle(fontSize: 10)),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+      appBar: _isSelectionMode ? _buildSelectionAppBar() : _buildNormalAppBar(),
       body: Column(
         children: [
           Container(
@@ -742,22 +859,24 @@ class _ChatListPageState extends State<ChatListPage>
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _openContactsList,
-        backgroundColor: AppTheme.appBarColor,
-        child: _isLoading
-            ? SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    AppTheme.textOnGreen,
-                  ),
-                ),
-              )
-            : Icon(Icons.chat, color: AppTheme.textOnGreen),
-      ),
+      floatingActionButton: _isSelectionMode
+          ? null // Ocultar botão "Nova Conversa" durante seleção
+          : FloatingActionButton(
+              onPressed: _openContactsList,
+              backgroundColor: AppTheme.appBarColor,
+              child: _isLoading
+                  ? SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          AppTheme.textOnGreen,
+                        ),
+                      ),
+                    )
+                  : Icon(Icons.chat, color: AppTheme.textOnGreen),
+            ),
     );
   }
 
@@ -778,88 +897,106 @@ class _ChatListPageState extends State<ChatListPage>
 
   // ITEM DE CHAT REAL atualizado
   Widget _buildRealChatItem(ChatContact chat) {
+    final isSelected = _selectedChatIds.contains(chat.contactId);
+
     return Container(
-      decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: AppTheme.dividerColor, width: 0.5),
+      // ✅ Fundo de seleção usando a cor da AppBar com opacidade
+      color: isSelected ? AppTheme.appBarColor.withOpacity(0.15) : null,
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: AppTheme.dividerColor, width: 0.5),
+          ),
         ),
-      ),
-      child: ListTile(
-        leading: CircleAvatar(
-          radius: 25,
-          backgroundImage: chat.photo != null ? MemoryImage(chat.photo!) : null,
-          child: chat.photo == null
-              ? Icon(Icons.person, color: AppTheme.textSecondary, size: 28)
-              : null,
-          backgroundColor: chat.photo == null
-              ? AppTheme.avatarBackground
-              : null,
-        ),
-        title: Text(
-          chat.name,
-          style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16),
-        ),
-        subtitle: Row(
-          children: [
-            if (chat.lastMessageIsReply)
-              Icon(Icons.reply, size: 12, color: AppTheme.appBarColor),
-            if (chat.lastMessageEdited)
-              Icon(Icons.edit, size: 12, color: AppTheme.actionEdit),
-            SizedBox(width: 4),
-            Expanded(
-              child: Text(
-                chat.lastMessage,
-                style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+        child: ListTile(
+          leading: Stack(
+            children: [
+              CircleAvatar(
+                radius: 25,
+                backgroundImage:
+                    chat.photo != null ? MemoryImage(chat.photo!) : null,
+                child: chat.photo == null
+                    ? Icon(Icons.person,
+                        color: AppTheme.textSecondary, size: 28)
+                    : null,
+                backgroundColor: chat.photo == null
+                    ? AppTheme.avatarBackground
+                    : null,
               ),
-            ),
-          ],
-        ),
-        trailing: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Text(
-              _formatTime(chat.lastMessageTime),
-              style: TextStyle(color: AppTheme.textLight, fontSize: 12),
-            ),
-            if (chat.unreadCount > 0)
-              Container(
-                margin: EdgeInsets.only(top: 4),
-                padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: AppTheme.appBarColor,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  chat.unreadCount.toString(),
-                  style: TextStyle(
-                    color: AppTheme.textOnGreen,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
+              if (isSelected)
+                Positioned(
+                  bottom: -2,
+                  right: -2,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      // ✅ Checkmark usando a cor exata da AppBar
+                      color: AppTheme.appBarColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: AppTheme.surfaceColor, width: 2),
+                    ),
+                    padding: EdgeInsets.all(2),
+                    child: Icon(
+                      Icons.check,
+                      size: 14,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
+            ],
+          ),
+          title: Text(
+            chat.name,
+            style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16),
+          ),
+          onLongPress: () => _toggleSelection(chat.contactId),
+          onTap: () {
+            if (_isSelectionMode) {
+              _toggleSelection(chat.contactId);
+            } else {
+              _startNewChatFromItem(chat);
+            }
+          },
+          subtitle: Row(
+            children: [
+              if (chat.lastMessageIsReply)
+                Icon(Icons.reply, size: 12, color: AppTheme.appBarColor),
+              if (chat.lastMessageEdited)
+                Icon(Icons.edit, size: 12, color: AppTheme.actionEdit),
+              SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  chat.lastMessage,
+                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-          ],
+            ],
+          ),
+          trailing: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                _formatTime(chat.lastMessageTime),
+                style: TextStyle(color: AppTheme.textLight, fontSize: 12),
+              ),
+              if (chat.unreadCount > 0)
+                Container(
+                  margin: EdgeInsets.only(top: 4),
+                  padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppTheme.appBarColor,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '${chat.unreadCount}',
+                    style: TextStyle(color: Colors.white, fontSize: 10),
+                  ),
+                ),
+            ],
+          ),
         ),
-        onTap: () {
-          print(
-            '👆 Clicado no chat: ${chat.name} (Unread: ${chat.unreadCount})',
-          );
-
-          // MARCAR COMO LIDO ANTES DE ABRIR O CHAT
-          ChatService.markChatAsRead(chat.contactId);
-
-          // NAVEGAR PARA O CHAT
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) =>
-                  ChatPage(contact: chat, remoteUserId: chat.contactId),
-            ),
-          );
-        },
       ),
     );
   }
@@ -991,5 +1128,23 @@ class _ChatListPageState extends State<ChatListPage>
         ],
       ),
     );
+  }
+
+  // Novo método auxiliar para abrir chat do item
+  void _startNewChatFromItem(ChatContact chat) {
+     print('👆 Clicado no chat: ${chat.name} (Unread: ${chat.unreadCount})');
+     
+     // ✅ RESTAURADO: MARCAR COMO LIDO ANTES DE ABRIR
+     ChatService.markChatAsRead(chat.contactId);
+     
+     Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ChatPage(
+            contact: chat,
+            remoteUserId: chat.contactId,
+          ),
+        ),
+      );
   }
 }
