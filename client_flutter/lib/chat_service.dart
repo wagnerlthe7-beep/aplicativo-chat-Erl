@@ -14,6 +14,7 @@ import 'package:flutter/widgets.dart';
 import 'chat_model.dart';
 import 'auth_service.dart';
 import 'chat_page.dart'; // ✅ Importar ChatMessage
+import 'contacts_helper.dart';
 
 class ChatService {
   static WebSocketChannel? _channel;
@@ -233,10 +234,10 @@ class ChatService {
             _updateChatContentOnly(message);
           } else if (action == 'delete_message') {
             print(
-              '   ✅ É uma deleção de mensagem - atualizando conteúdo sem mover chat',
+              '   ✅ É uma deleção de mensagem - verificando se deve atualizar chat list',
             );
-            // ✅ ATUALIZAR CONTEÚDO COM MENSAGEM DELETADA PERSONALIZADA!
-            _updateChatContentOnlyWithDeletedMessage(message);
+            // ✅ VERIFICAR SE É A ÚLTIMA MENSAGEM ANTES DE ATUALIZAR
+            _updateChatContentOnlyWithDeletedMessageIfLast(message);
           } else {
             _updateChatOnMessageReceived(message, shouldIncreaseUnread);
           }
@@ -454,112 +455,69 @@ class ChatService {
     }
   }
 
-  // ✅ MÉTODO FINAL PARA BUSCAR INFORMAÇÕES DO CONTATO - CORRIGIDO
+  // ✅ MÉTODO FINAL PARA BUSCAR INFORMAÇÕES DO CONTATO
   static Future<Map<String, dynamic>> _getContactInfo(String contactId) async {
-    print('🔍🆕 BUSCA REAL DE NOME PARA: $contactId');
 
-    // ✅ 1. BUSCA NO BACKEND - ENDPOINT CORRIGIDO QUE AGORA FUNCIONA
+    // ✅ 1. BUSCA NO BACKEND PARA OBTER O TELEFONE
     try {
       final accessToken = await _secureStorage.read(key: 'access_token');
       if (accessToken == null) {
-        print('❌ TOKEN NÃO ENCONTRADO');
         throw Exception('Token não disponível');
       }
 
-      // ✅ ENDPOINT CORRETO: /api/users/:user_id (AGORA FUNCIONA)
       final url = Uri.parse('http://10.0.2.2:4000/api/users/$contactId');
-      //final url = Uri.parse('http://192.168.100.17:4000/api/users/$contactId');
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $accessToken',
       };
 
-      print('🌐📞 CHAMANDO BACKEND: GET $url');
-
       final response = await http
           .get(url, headers: headers)
           .timeout(Duration(seconds: 10));
 
-      print('📡 RESPOSTA BRUTA:');
-      print('   Status: ${response.statusCode}');
-      print('   Body: ${response.body}');
-
       if (response.statusCode == 200) {
         final userData = json.decode(response.body);
-        print('📊 DADOS DECODIFICADOS: $userData');
+        final backendPhone = userData['phone']?.toString();
+        
+        // Verifica se temos um telefone válido do backend
+        if (backendPhone != null && backendPhone.isNotEmpty) {
+           
+           // ✅ 2. VERIFICAR NA LISTA DE CONTATOS LOCAL
+           // Importante: Normalizar o telefone se necessário
+           final cleanBackendPhone = backendPhone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+           // mapLocal: Telefone -> Nome na Agenda
+           final localContacts = await ContactsHelper.getLocalContactsMap();
+           
+           String finalDisplayName;
+           
+           if (localContacts.containsKey(cleanBackendPhone)) {
+             // ✅ ENCONTRADO NA AGENDA -> USAR NOME DA AGENDA
+             finalDisplayName = localContacts[cleanBackendPhone]!;
+           } else {
+             finalDisplayName = backendPhone;
+           }
 
-        final userName = userData['name']?.toString();
-        final userPhone = userData['phone']?.toString();
-
-        if (userName != null && userName.isNotEmpty && userName != 'null') {
-          print('✅✅✅ NOME ENCONTRADO NA BD: "$userName"');
-          return {
-            'name': userName,
-            'phone': userPhone ?? contactId,
-            'photo': null,
-          };
+           return {
+             'name': finalDisplayName,
+             'phone': backendPhone,
+             'photo': null, // Se quiser foto local, poderia buscar aqui também
+           };
         } else {
-          print('⚠️ Nome vazio ou nulo no backend');
-          throw Exception('Nome vazio da BD');
+            print('⚠️ Telefone vazio no backend para ID $contactId');
         }
-      } else if (response.statusCode == 404) {
-        print('❌ USUÁRIO NÃO ENCONTRADO NA BD');
-        throw Exception('Usuário não existe na BD');
-      } else {
-        print('❌ ERRO HTTP: ${response.statusCode}');
-        throw Exception('Erro HTTP ${response.statusCode}');
       }
-    } catch (e) {
-      print('💥 ERRO NA BUSCA DO BACKEND: $e');
-
-      // ✅ 2. FALLBACK: BUSCAR DOS CONTATOS LOCAIS
-      try {
-        final hasContactPermission = await Permission.contacts.isGranted;
-        if (hasContactPermission) {
-          print('📱 TENTANDO CONTATOS LOCAIS...');
-          final contacts = await FlutterContacts.getContacts(
-            withProperties: true,
-            withPhoto: true,
-          );
-
-          final cleanContactId = contactId.replaceAll(RegExp(r'[^0-9+]'), '');
-          print('🔍 Procurando por: $cleanContactId');
-
-          for (final contact in contacts) {
-            for (final phone in contact.phones) {
-              final cleanPhone = phone.number.replaceAll(
-                RegExp(r'[^0-9+]'),
-                '',
-              );
-
-              // ✅ BUSCA MAIS FLEXÍVEL
-              if (cleanPhone.contains(cleanContactId) ||
-                  cleanContactId.contains(cleanPhone)) {
-                final contactName = contact.displayName.isEmpty
-                    ? 'Sem Nome'
-                    : contact.displayName;
-
-                print('✅ NOME ENCONTRADO NOS CONTATOS: "$contactName"');
-                return {
-                  'name': contactName,
-                  'phone': phone.number,
-                  'photo': contact.photo,
-                };
-              }
-            }
-          }
-          print('❌ Contato não encontrado nos contatos locais');
-        } else {
-          print('❌ Sem permissão para contatos');
-        }
-      } catch (e2) {
-        print('💥 ERRO NOS CONTATOS LOCAIS: $e2');
-      }
-
-      // ✅ 3. FALLBACK FINAL - NÃO USA O ID, USA NOME TEMPORÁRIO
-      print('🆘 USANDO NOME TEMPORÁRIO');
+      
+      // Fallback se backend falhar ou sem phone
       return {
-        'name': 'A Carregar...', // ✅ NÃO USA O ID COMO NOME!
+        'name': contactId, // Fallback último caso
+        'phone': contactId,
+        'photo': null,
+      };
+
+    } catch (e) {
+      print('💥 ERRO NA BUSCA DO NOME: $e');
+      return {
+        'name': contactId, // Fallback erro
         'phone': contactId,
         'photo': null,
       };
@@ -637,6 +595,13 @@ class ChatService {
 
       print('✅ Rebuild completo - unread counts PRESERVADOS');
       _chatListController.add(_getSortedChatList());
+
+      // ✅ ⚡ FORÇAR ATUALIZAÇÃO DE NOMES/FOTOS EM BACKGROUND
+      // Isso garante que a lógica de "Nome da Agenda" seja aplicada
+      print('🔄 Iniciando atualização de dados dos contatos em background...');
+      for (final contactId in _chatContacts.keys) {
+        _updateContactInfoWithoutResettingUnread(contactId);
+      }
     } catch (e) {
       print('❌ Erro no rebuild: $e');
     }
@@ -664,6 +629,10 @@ class ChatService {
       }
 
       _saveChatsToStorage();
+      
+      // ✅ IMPORTANTE: Notificar a UI sobre a mudança!
+      _chatListController.add(_getSortedChatList());
+      
     } catch (e) {
       print('❌ Erro ao atualizar informações do contato $contactId: $e');
     }
