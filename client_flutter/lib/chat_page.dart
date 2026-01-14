@@ -1653,10 +1653,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       selection: TextSelection.collapsed(offset: cursorPosition + emoji.length),
     );
 
-    // Fechar emoji picker após inserir
-    setState(() {
-      _showEmojiPicker = false;
-    });
+    // Manter emoji picker aberto após inserir
+    // setState(() {
+    //   _showEmojiPicker = false;
+    // });
   }
 
   void _toggleVoiceRecording() {
@@ -1701,84 +1701,89 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           color: Colors.white,
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header
-            Container(
-              padding: EdgeInsets.all(16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Opções da Mensagem',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Header
+              Container(
+                padding: EdgeInsets.all(16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Opções da Mensagem',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            Divider(height: 1),
+              Divider(height: 1),
 
-            // ✅ ADICIONADO: Verificação de tempo para edição
-            if (message.isMe) ...[
-              if (_canEditMessage(message)) // ✅ VERIFICAÇÃO DE TEMPO
+              // ✅ ADICIONADO: Verificação de tempo para edição
+              if (message.isMe) ...[
+                if (_canEditMessage(message)) // ✅ VERIFICAÇÃO DE TEMPO
+                  ListTile(
+                    leading: Icon(Icons.edit, color: AppTheme.actionEdit),
+                    title: Text('Editar mensagem'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _startEditingMessage(message);
+                    },
+                  ),
+
+                // Apagar (sempre permitido para mensagens próprias)
                 ListTile(
-                  leading: Icon(Icons.edit, color: AppTheme.actionEdit),
-                  title: Text('Editar mensagem'),
+                  leading: Icon(Icons.delete, color: AppTheme.actionDelete),
+                  title: Text('Apagar mensagem'),
                   onTap: () {
                     Navigator.pop(context);
-                    _startEditingMessage(message);
+                    _deleteMessage(message);
                   },
                 ),
+              ],
 
-              // Apagar (sempre permitido para mensagens próprias)
+              // Opções para todas as mensagens
+              // Responder
               ListTile(
-                leading: Icon(Icons.delete, color: AppTheme.actionDelete),
-                title: Text('Apagar mensagem'),
+                leading: Icon(Icons.reply, color: AppTheme.appBarColor),
+                title: Text('Responder'),
                 onTap: () {
                   Navigator.pop(context);
-                  _deleteMessage(message);
+                  _startReplyingToMessage(message);
                 },
               ),
+
+              // Copiar texto
+              ListTile(
+                leading: Icon(Icons.content_copy, color: AppTheme.actionCopy),
+                title: Text('Copiar texto'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _copyMessageText(message);
+                },
+              ),
+
+              // Encaminhar
+              ListTile(
+                leading: Icon(Icons.forward, color: Colors.orange),
+                title: Text('Encaminhar'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _forwardMessage(message);
+                },
+              ),
+
+              SizedBox(height: 20),
             ],
-
-            // Opções para todas as mensagens
-            // Responder
-            ListTile(
-              leading: Icon(Icons.reply, color: AppTheme.appBarColor),
-              title: Text('Responder'),
-              onTap: () {
-                Navigator.pop(context);
-                _startReplyingToMessage(message);
-              },
-            ),
-
-            // Copiar texto
-            ListTile(
-              leading: Icon(Icons.content_copy, color: AppTheme.actionCopy),
-              title: Text('Copiar texto'),
-              onTap: () {
-                Navigator.pop(context);
-                _copyMessageText(message);
-              },
-            ),
-
-            // Encaminhar
-            ListTile(
-              leading: Icon(Icons.forward, color: Colors.orange),
-              title: Text('Encaminhar'),
-              onTap: () {
-                Navigator.pop(context);
-                _forwardMessage(message);
-              },
-            ),
-
-            SizedBox(height: 20),
-          ],
+          ),
         ),
       ),
     );
@@ -1874,6 +1879,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               }
             }
             _editingMessageId = null;
+            _selectedMessageId = null; // ✅ LIMPAR TAMBÉM O SELECTED MESSAGE ID
             _editController.clear();
             _messageController.clear();
 
@@ -2280,7 +2286,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         _getReplyPreviewText(_selectedMessageId!),
                         style: TextStyle(
                           color: AppTheme.replyPreviewText,
-                          fontSize: 13,
+                          fontSize: 12,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -2345,6 +2351,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     children: [
                       Expanded(
                         child: TextField(
+                          keyboardType: TextInputType.multiline,
+                          maxLines: 6,
+                          minLines: 1,
+                          textInputAction: TextInputAction.newline,
                           controller: _messageController,
                           decoration: InputDecoration(
                             hintText: _editingMessageId != null
@@ -2362,15 +2372,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           onChanged: (value) {
                             // Atualizar UI quando usuário digita
                             setState(() {});
-                          },
-                          onSubmitted: (_) {
-                            if (_editingMessageId != null) {
-                              _updateMessage();
-                            } else if (_selectedMessageId != null) {
-                              _sendReply();
-                            } else {
-                              _sendMessage();
-                            }
                           },
                         ),
                       ),
@@ -2427,58 +2428,94 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return const SizedBox.shrink();
     }
 
-    // ✅ LÓGICA: Se a mensagem original foi enviada pelo usuário atual, mostrar "Eu"
-    final replySenderName =
-        (message.replyToSenderId == _currentUserId.toString())
-        ? 'Eu'
-        : message.replyToSenderName;
+    final isOwnMessage = message.isMe;
+    final replyIsOwn = message.replyToSenderId == _currentUserId.toString();
+    final replySenderName = replyIsOwn ? 'Você' : (message.replyToSenderName ?? 'Desconhecido');
+    
+    // Cores baseadas no tipo de balão (Enviado vs Recebido)
+    final backgroundColor = isOwnMessage 
+        ? Colors.black.withOpacity(0.1) // Escurece levemente o verde
+        : const Color(0xFFF5F5F5).withOpacity(0.6); // Cinza no balão branco
+        
+    final textColor = isOwnMessage
+        ? Colors.white.withOpacity(0.9)
+        : Colors.black.withOpacity(0.6);
+
+    // DEFINIÇÃO DE CORES DE DESTAQUE (Barra e Nome)
+    Color accentColor;
+    
+    if (isOwnMessage) {
+      // ESTAMOS NO BALÃO VERDE (Enviado) -> Precisamos de cores Claras
+      if (replyIsOwn) {
+         // Respondendo a mim mesmo: "Você" em Branco para máximo contraste
+         accentColor = Colors.white;
+      } else {
+         // Respondendo a outro: Nome dele. O Roxo escuro não aparece no verde.
+         // Usamos um Roxo Claro/Lilás ou Laranja que contraste bem com verde escuro.
+         accentColor = const Color(0xFFE1BEE7); // Purple 100 (Lilás claro)
+      }
+    } else {
+      // ESTAMOS NO BALÃO BRANCO (Recebido) -> Cores Escuras normais
+      if (replyIsOwn) {
+         // Respondendo a mim: Verde escuro
+         accentColor = AppTheme.appBarColor; 
+      } else {
+         // Respondendo a outro: Roxo escuro
+         accentColor = const Color(0xFF6B4B9E);
+      }
+    }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 4),
-      padding: const EdgeInsets.all(8),
+      margin: const EdgeInsets.only(bottom: 2), // Margem reduzida de 6 para 2
       decoration: BoxDecoration(
-        color: message.isMe
-            ? AppTheme.textOnGreen.withOpacity(0.2)
-            : AppTheme.replyPreviewBackground,
-        borderRadius: BorderRadius.circular(8),
-        border: Border(
-          left: BorderSide(
-            color: message.isMe
-                ? AppTheme.textOnGreen.withOpacity(0.7)
-                : AppTheme.appBarColor,
-            width: 3,
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(6),
+         // Gambiarra visual para a borda esquerda ficar dentro do arredondamento:
+         // Usamos um container interno recortado ou apenas BorderSide se funcionar bem.
+         // O WhatsApp usa radius pequeno (4-6).
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: IntrinsicHeight(
+          child: Row(
+            children: [
+              Container(
+                width: 4,
+                color: accentColor,
+              ),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        replySenderName,
+                        style: TextStyle(
+                          color: accentColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        message.replyToText!,
+                        style: TextStyle(
+                          color: textColor,
+                          fontSize: 13,
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (replySenderName != null) ...[
-            Text(
-              replySenderName,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-                color: message.isMe
-                    ? AppTheme.textOnGreen.withOpacity(0.9)
-                    : AppTheme.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 2),
-          ],
-          Text(
-            message.replyToText!,
-            style: TextStyle(
-              fontSize: 12,
-              color: message.isMe
-                  ? AppTheme.textOnGreen.withOpacity(0.9)
-                  : AppTheme.textSecondary,
-              fontStyle: FontStyle.italic,
-            ),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
       ),
     );
   }
@@ -2486,104 +2523,107 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Widget _buildMessageBubble(ChatMessage message) {
     return GestureDetector(
       onLongPress: () => _showMessageOptions(message),
-      child: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        child: Row(
-          mainAxisAlignment: message.isMe
-              ? MainAxisAlignment.end
-              : MainAxisAlignment.start,
-          children: [
-            if (!message.isMe) ...[
-              widget.contact.photo != null
-                  ? CircleAvatar(
-                      radius: 16,
-                      backgroundImage: MemoryImage(widget.contact.photo!),
-                    )
-                  : CircleAvatar(
-                      radius: 16,
-                      backgroundColor: AppTheme.avatarBackground,
-                      child: Icon(
-                        Icons.person,
-                        color: AppTheme.avatarIcon,
-                        size: 16,
-                      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Align(
+        alignment: message.isMe ? Alignment.centerRight : Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.80,
+            minWidth: 100, // Garantir largura mínima para hora
+          ),
+          child: CustomPaint(
+            painter: BubblePainter(
+              color: message.isDeleted
+                  ? Colors.grey[200]!
+                  : (message.isMe
+                      ? AppTheme.appBarColor // Cor exata da AppBar
+                      : AppTheme.messageReceived),
+              alignment: message.isMe ? Alignment.topRight : Alignment.topLeft,
+              tail: true,
+            ),
+            child: Container(
+              margin: EdgeInsets.fromLTRB(
+                message.isMe ? 8 : 16, // Margem esquerda (maior se recebido para tail)
+                4,
+                message.isMe ? 16 : 8, // Margem direita (maior se enviado para tail)
+                4,
+              ),
+              child: Stack(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(
+                      left: 3,
+                      right: 3,
+                      top: 2, // Topo reduzido de 5 para 2
+                      bottom: 18, // Fundo reduzido de 22 para 18
                     ),
-              const SizedBox(width: 8),
-            ],
-            Flexible(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: message.isDeleted
-                      ? Colors.grey[300]
-                      : (message.isMe
-                            ? AppTheme.appBarColor
-                            : AppTheme.messageReceived),
-                  borderRadius: BorderRadius.circular(18),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // ✅ PREVIEW DA MENSAGEM RESPONDIDA
-                    if (!message.isDeleted) _buildReplyPreview(message),
-
-                    // ✅ TEXTO DA MENSAGEM
-                    Text(
-                      message.isDeleted
-                          ? message
-                                .text // ✅ USAR TEXTO PERSONALIZADO DO HANDLER
-                          : message.text,
-                      style: TextStyle(
-                        color: message.isDeleted
-                            ? Colors.grey[600]
-                            : (message.isMe
-                                  ? AppTheme.messageSentText
-                                  : AppTheme.messageReceivedText),
-                        fontSize: 16,
-                        fontStyle: message.isDeleted
-                            ? FontStyle.italic
-                            : FontStyle.normal,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (!message.isDeleted) _buildReplyPreview(message),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 5),
+                          child: Text(
+                            message.isDeleted ? message.text : message.text,
+                            style: TextStyle(
+                              color: message.isDeleted
+                                  ? Colors.grey[600]
+                                  : (message.isMe
+                                      ? AppTheme.messageSentText
+                                      : AppTheme.messageReceivedText),
+                              fontSize: 16,
+                              fontWeight: FontWeight.normal,
+                              fontStyle: message.isDeleted
+                                  ? FontStyle.italic
+                                  : FontStyle.normal,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 4),
-                    Row(
+                  ),
+                  Positioned(
+                    bottom: 2, // Subir a hora (de 4 para 2)
+                    right: 8, // Ajuste lateral leve
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
                           _formatTime(message.timestamp),
                           style: TextStyle(
-                            color: message.isMe
-                                ? AppTheme.messageSentText.withOpacity(0.7)
-                                : AppTheme.textLight,
-                            fontSize: 10,
+                            color: message.isDeleted
+                                ? Colors.grey[600]
+                                : (message.isMe
+                                    ? AppTheme.messageSentText.withOpacity(0.7)
+                                    : Colors.grey[600]),
+                            fontSize: 11,
                           ),
                         ),
                         if (message.isEdited && !message.isDeleted) ...[
-                          SizedBox(width: 4),
-                          Text(
-                            'Editada',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.grey[600],
-                              fontStyle: FontStyle.italic,
-                            ),
+                          const SizedBox(width: 4),
+                           Icon(
+                            Icons.edit,
+                            size: 10,
+                            color: message.isMe
+                                ? AppTheme.messageSentText.withOpacity(0.7)
+                                : Colors.grey[600],
                           ),
                         ],
                         if (message.isMe && !message.isDeleted) ...[
-                          SizedBox(width: 4),
+                          const SizedBox(width: 4),
                           _buildStatusIcon(message.status),
                         ],
                       ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
-          ],
+          ),
         ),
+      ),
       ),
     );
   }
@@ -2625,5 +2665,76 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     // Permitir edição por até 15 minutos
     return difference.inMinutes <= 15;
+  }
+}
+
+class BubblePainter extends CustomPainter {
+  final Color color;
+  final Alignment alignment;
+  final bool tail;
+
+  BubblePainter({
+    required this.color,
+    required this.alignment,
+    required this.tail,
+  });
+
+  final double _radius = 10.0;
+  final double _x = 10.0;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (alignment == Alignment.topRight) {
+      // Desenho oficial WhatsApp-like (Sent)
+      // Com cauda somente, sem vértices estranhos no topo
+      final w = size.width;
+      final h = size.height;
+      var sentPath = Path();
+       sentPath.moveTo(_radius, 0); // Começa arredondado top-left
+       sentPath.lineTo(w - _radius, 0); // Vai até top-right (antes da curva)
+       
+       // Curva top-right normal (arredondada, sem bico)
+       sentPath.quadraticBezierTo(w, 0, w, _radius);
+       
+       sentPath.lineTo(w, h - _radius); // Desce até bottom-right
+       
+       // Inicio cauda no bottom-right
+       sentPath.quadraticBezierTo(w, h, w + 10, h); // Ponta da cauda
+       sentPath.lineTo(w - 10, h); // Volta para a base do balão
+       sentPath.quadraticBezierTo(w - 10, h, w - 10, h); // (Redundante, mas mantendo estrutura)
+       
+       sentPath.lineTo(_radius, h); // Linha inferior até bottom-left
+       sentPath.quadraticBezierTo(0, h, 0, h - _radius); // Curva bottom-left
+       sentPath.lineTo(0, _radius); // Sobe esquerda
+       sentPath.quadraticBezierTo(0, 0, _radius, 0); // Curva top-left
+       
+       canvas.drawPath(sentPath, Paint()..color = color);
+
+    } else {
+       // Received
+       var path = Path();
+       final w = size.width;
+       final h = size.height;
+       
+       path.moveTo(_radius, 0);
+       path.lineTo(w - _radius, 0);
+       path.quadraticBezierTo(w, 0, w, _radius);
+       path.lineTo(w, h - _radius);
+       path.quadraticBezierTo(w, h, w - _radius, h);
+       path.lineTo(_radius + 10, h); // Antes da cauda esquerd
+       // Cauda esquerda
+       path.quadraticBezierTo(0, h, -10, h); // Ponta esquerda
+       path.quadraticBezierTo(0, h, 0, h - _radius); // Volta para cima
+       
+       path.lineTo(0, _radius);
+       path.quadraticBezierTo(0, 0, _radius, 0);
+       
+       canvas.drawPath(path, Paint()..color = color);
+    }
+  }
+
+  @override
+  bool shouldRepaint(CustomPainter oldDelegate) {
+    return true;
   }
 }

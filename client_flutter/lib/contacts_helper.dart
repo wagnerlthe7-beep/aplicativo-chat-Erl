@@ -50,4 +50,40 @@ class ContactsHelper {
       return null;
     }
   }
+
+  // ✅ NOVO MÉTODO: Obter mapa de contatos locais (Telefone -> Nome)
+  static Future<Map<String, String>> getLocalContactsMap() async {
+    final Map<String, String> contactsMap = {};
+    try {
+      // Verificar permissão
+      if (!await FlutterContacts.requestPermission(readonly: true)) {
+        print('❌ Permissão de contatos negada');
+        return contactsMap;
+      }
+
+      // Buscar contatos com propriedades
+      final contacts = await FlutterContacts.getContacts(withProperties: true);
+      
+      for (final contact in contacts) {
+        for (final phone in contact.phones) {
+          // Normalizar telefone (remover espaços, traços, parênteses)
+          // Manter o '+' se existir, pois é importante para DDI
+          final cleanPhone = phone.number.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+          
+          if (cleanPhone.isNotEmpty) {
+            contactsMap[cleanPhone] = contact.displayName;
+            
+            // Também guardar sem o '+' para garantir match
+            if (cleanPhone.startsWith('+')) {
+               contactsMap[cleanPhone.substring(1)] = contact.displayName;
+            }
+          }
+        }
+      }
+      print('📱 ${contactsMap.length} contatos locais mapeados.');
+    } catch (e) {
+      print('❌ Erro ao mapear contatos locais: $e');
+    }
+    return contactsMap;
+  }
 }
