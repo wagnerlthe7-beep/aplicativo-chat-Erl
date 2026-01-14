@@ -761,6 +761,20 @@ class ChatService {
     print('⌨️ Sent typing indicator to $toUserId: $isTyping');
   }
 
+  // ✅ DELETAR CONVERSA (Adicionado para permitir apagar da lista)
+  static Future<void> deleteChat(String contactId) async {
+    try {
+      if (_chatContacts.containsKey(contactId)) {
+        _chatContacts.remove(contactId);
+        await _saveChatsToStorage();
+        _chatListController.add(_getSortedChatList());
+        print('🗑️ Conversa com $contactId removida da lista local');
+      }
+    } catch (e) {
+      print('❌ Erro ao deletar conversa: $e');
+    }
+  }
+
   static Future<List<Map<String, dynamic>>> loadChatHistory(
     String contactUserId,
   ) async {
