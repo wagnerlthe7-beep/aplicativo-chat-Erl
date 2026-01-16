@@ -2430,7 +2430,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     final isOwnMessage = message.isMe;
     final replyIsOwn = message.replyToSenderId == _currentUserId.toString();
-    final replySenderName = replyIsOwn ? 'Você' : (message.replyToSenderName ?? 'Desconhecido');
+    final replySenderName = replyIsOwn ? 'Eu' : (message.replyToSenderName ?? 'Desconhecido');
     
     // Cores baseadas no tipo de balão (Enviado vs Recebido)
     final backgroundColor = isOwnMessage 
@@ -2466,7 +2466,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 2), // Margem reduzida de 6 para 2
+      margin: const EdgeInsets.only(bottom: 0), // Margem 0 para colar no texto
+      padding: EdgeInsets.all(4),
       decoration: BoxDecoration(
         color: backgroundColor,
         borderRadius: BorderRadius.circular(6),
@@ -2474,47 +2475,50 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
          // Usamos um container interno recortado ou apenas BorderSide se funcionar bem.
          // O WhatsApp usa radius pequeno (4-6).
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(6),
-        child: IntrinsicHeight(
-          child: Row(
-            children: [
-              Container(
-                width: 4,
+      child: IntrinsicHeight(
+        child: Row(
+          mainAxisSize: MainAxisSize.min, // ✅ IMPORTANTE: Ocupar apenas o espaço necessário
+          children: [
+            Container(
+              width: 4,
+              decoration: BoxDecoration(
                 color: accentColor,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(2), bottom: Radius.circular(2))
               ),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        replySenderName,
-                        style: TextStyle(
-                          color: accentColor,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 13,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        message.replyToText!,
-                        style: TextStyle(
-                          color: textColor,
-                          fontSize: 13,
-                        ),
-                        maxLines: 3,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
+            ),
+            SizedBox(width: 8),
+            Flexible( // ✅ Usar Flexible em vez de Expanded para permitir encolher
+              fit: FlexFit.loose,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    replySenderName,
+                    style: TextStyle(
+                      color: accentColor,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                ),
+                  const SizedBox(height: 2),
+                  Text(
+                    message.replyToText!,
+                    style: TextStyle(
+                      color: textColor,
+                      fontSize: 13,
+                    ),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            SizedBox(width: 4),
+          ],
         ),
       ),
     );
@@ -2555,33 +2559,35 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     padding: const EdgeInsets.only(
                       left: 3,
                       right: 3,
-                      top: 2, // Topo reduzido de 5 para 2
-                      bottom: 18, // Fundo reduzido de 22 para 18
+                      top: 2,
+                      bottom: 18,
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (!message.isDeleted) _buildReplyPreview(message),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 5),
-                          child: Text(
-                            message.isDeleted ? message.text : message.text,
-                            style: TextStyle(
-                              color: message.isDeleted
-                                  ? Colors.grey[600]
-                                  : (message.isMe
-                                      ? AppTheme.messageSentText
-                                      : AppTheme.messageReceivedText),
-                              fontSize: 16,
-                              fontWeight: FontWeight.normal,
-                              fontStyle: message.isDeleted
-                                  ? FontStyle.italic
-                                  : FontStyle.normal,
+                    child: IntrinsicWidth(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (!message.isDeleted) _buildReplyPreview(message),
+                          Padding(
+                            padding: const EdgeInsets.only(left: 2, top: 1), // Top 1 para "quase colar", mas com leve respiro
+                            child: Text(
+                              message.isDeleted ? message.text : message.text,
+                              style: TextStyle(
+                                color: message.isDeleted
+                                    ? Colors.grey[600]
+                                    : (message.isMe
+                                        ? AppTheme.messageSentText
+                                        : AppTheme.messageReceivedText),
+                                fontSize: 16,
+                                fontWeight: FontWeight.normal,
+                                fontStyle: message.isDeleted
+                                    ? FontStyle.italic
+                                    : FontStyle.normal,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                   Positioned(
