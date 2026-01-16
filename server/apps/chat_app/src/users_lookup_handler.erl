@@ -68,8 +68,7 @@ lookup_users(Phones) ->
         Sql = "
             SELECT id, name, phone 
             FROM users 
-            WHERE $1 ILIKE '%' || phone || '%' 
-                OR phone ILIKE '%' || $1 || '%'
+            WHERE regexp_replace(phone, '[^0-9]', '', 'g') = $1
             LIMIT 10
             ",
             

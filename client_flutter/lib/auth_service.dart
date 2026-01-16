@@ -11,8 +11,8 @@ class AuthService {
   static final _uuid = Uuid();
 
   // URL do backend Erlang
-  static const String backendUrl = 'http://10.0.2.2:4000';
-  //static const String backendUrl = 'http://192.168.100.17:4000';
+  //static const String backendUrl = 'http://10.0.2.2:4000';
+  static const String backendUrl = 'http://192.168.100.35:4000';
 
   /// -----------------------------
   /// 1) Device UUID (uma vez por instalação)

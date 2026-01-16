@@ -3,6 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'chat_service.dart';
 
+@pragma('vm:entry-point')
+void onForegroundTaskStart() {
+  // Task que roda em background
+  FlutterForegroundTask.setTaskHandler(WebSocketTaskHandler());
+}
+
 class WebSocketForegroundService {
   static const String channelId = 'websocket_service';
   static const String channelName = 'Serviço de Conexão';
@@ -50,12 +56,6 @@ class WebSocketForegroundService {
 
   static Future<void> stopService() async {
     await FlutterForegroundTask.stopService();
-  }
-
-  @pragma('vm:entry-point')
-  static void onForegroundTaskStart() {
-    // Task que roda em background
-    FlutterForegroundTask.setTaskHandler(WebSocketTaskHandler());
   }
 
   static Future<void> updateNotification(String title, String text) async {
