@@ -68,8 +68,8 @@ class ChatService {
         return false;
       }
 
-      final url = 'ws://10.0.2.2:4000/ws?token=$token';
-      //final url = 'ws://192.168.100.17:4000/ws?token=$token';
+      //final url = 'ws://10.0.2.2:4000/ws?token=$token';
+      final url = 'ws://192.168.100.35:4000/ws?token=$token';
       _channel = WebSocketChannel.connect(Uri.parse(url));
 
       _channel!.stream.listen(
@@ -457,7 +457,6 @@ class ChatService {
 
   // ✅ MÉTODO FINAL PARA BUSCAR INFORMAÇÕES DO CONTATO
   static Future<Map<String, dynamic>> _getContactInfo(String contactId) async {
-
     // ✅ 1. BUSCA NO BACKEND PARA OBTER O TELEFONE
     try {
       final accessToken = await _secureStorage.read(key: 'access_token');
@@ -465,7 +464,8 @@ class ChatService {
         throw Exception('Token não disponível');
       }
 
-      final url = Uri.parse('http://10.0.2.2:4000/api/users/$contactId');
+      //final url = Uri.parse('http://10.0.2.2:4000/api/users/$contactId');
+      final url = Uri.parse('http://192.168.100.35:4000/api/users/$contactId');
       final headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $accessToken',
@@ -478,42 +478,43 @@ class ChatService {
       if (response.statusCode == 200) {
         final userData = json.decode(response.body);
         final backendPhone = userData['phone']?.toString();
-        
+
         // Verifica se temos um telefone válido do backend
         if (backendPhone != null && backendPhone.isNotEmpty) {
-           
-           // ✅ 2. VERIFICAR NA LISTA DE CONTATOS LOCAL
-           // Importante: Normalizar o telefone se necessário
-           final cleanBackendPhone = backendPhone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
-           // mapLocal: Telefone -> Nome na Agenda
-           final localContacts = await ContactsHelper.getLocalContactsMap();
-           
-           String finalDisplayName;
-           
-           if (localContacts.containsKey(cleanBackendPhone)) {
-             // ✅ ENCONTRADO NA AGENDA -> USAR NOME DA AGENDA
-             finalDisplayName = localContacts[cleanBackendPhone]!;
-           } else {
-             finalDisplayName = backendPhone;
-           }
+          // ✅ 2. VERIFICAR NA LISTA DE CONTATOS LOCAL
+          // Importante: Normalizar o telefone se necessário
+          final cleanBackendPhone = backendPhone.replaceAll(
+            RegExp(r'[\s\-\(\)]'),
+            '',
+          );
+          // mapLocal: Telefone -> Nome na Agenda
+          final localContacts = await ContactsHelper.getLocalContactsMap();
 
-           return {
-             'name': finalDisplayName,
-             'phone': backendPhone,
-             'photo': null, // Se quiser foto local, poderia buscar aqui também
-           };
+          String finalDisplayName;
+
+          if (localContacts.containsKey(cleanBackendPhone)) {
+            // ✅ ENCONTRADO NA AGENDA -> USAR NOME DA AGENDA
+            finalDisplayName = localContacts[cleanBackendPhone]!;
+          } else {
+            finalDisplayName = backendPhone;
+          }
+
+          return {
+            'name': finalDisplayName,
+            'phone': backendPhone,
+            'photo': null, // Se quiser foto local, poderia buscar aqui também
+          };
         } else {
-            print('⚠️ Telefone vazio no backend para ID $contactId');
+          print('⚠️ Telefone vazio no backend para ID $contactId');
         }
       }
-      
+
       // Fallback se backend falhar ou sem phone
       return {
         'name': contactId, // Fallback último caso
         'phone': contactId,
         'photo': null,
       };
-
     } catch (e) {
       print('💥 ERRO NA BUSCA DO NOME: $e');
       return {
@@ -629,10 +630,9 @@ class ChatService {
       }
 
       _saveChatsToStorage();
-      
+
       // ✅ IMPORTANTE: Notificar a UI sobre a mudança!
       _chatListController.add(_getSortedChatList());
-      
     } catch (e) {
       print('❌ Erro ao atualizar informações do contato $contactId: $e');
     }
@@ -786,13 +786,13 @@ class ChatService {
         return await _loadChatHistoryFromStorage('unknown', contactUserId);
       }
 
-      final url = Uri.parse(
-        'http://10.0.2.2:4000/api/messages/history/$currentUserId/$contactUserId',
-      );
-
       //final url = Uri.parse(
-      //  'http://192.168.100.17:4000/api/messages/history/$currentUserId/$contactUserId',
+      //  'http://10.0.2.2:4000/api/messages/history/$currentUserId/$contactUserId',
       //);
+
+      final url = Uri.parse(
+        'http://192.168.100.35:4000/api/messages/history/$currentUserId/$contactUserId',
+      );
 
       print('📨 Carregando histórico: $currentUserId -> $contactUserId');
 
@@ -944,12 +944,12 @@ class ChatService {
       final meId = await _secureStorage.read(key: 'user_id');
       final token = await _secureStorage.read(key: 'access_token');
       if (meId == null || token == null) return;
-      final url = Uri.parse(
-        'http://10.0.2.2:4000/api/messages/mark_read/$meId/$contactId',
-      );
       //final url = Uri.parse(
-      //  'http://192.168.100.17:4000/api/messages/mark_read/$meId/$contactId',
+      //  'http://10.0.2.2:4000/api/messages/mark_read/$meId/$contactId',
       //);
+      final url = Uri.parse(
+        'http://192.168.100.35:4000/api/messages/mark_read/$meId/$contactId',
+      );
 
       final headers = {
         'Content-Type': 'application/json',
@@ -1127,8 +1127,8 @@ class ChatService {
         return {'status': 'offline', 'last_seen': null};
       }
 
-      final url = Uri.parse('http://10.0.2.2:4000/api/presence/$userId');
-      //final url = Uri.parse('http://192.168.100.17:4000/api/presence/$userId');
+      //final url = Uri.parse('http://10.0.2.2:4000/api/presence/$userId');
+      final url = Uri.parse('http://192.168.100.35:4000/api/presence/$userId');
 
       final headers = {
         'Content-Type': 'application/json',

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'auth_service.dart';
 import 'chat_page.dart';
 import 'chat_service.dart';
@@ -671,13 +672,27 @@ class _ChatListPageState extends State<ChatListPage>
       if (!mounted) return;
 
       if (remoteUserId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Este contato ainda não está registrado no SpeekJoy.',
-            ),
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('Contato não registado'),
+            content: Text('${contact.displayName} ainda não usa o SpeekJoy. Quer convidá-lo?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Cancelar', style: TextStyle(color: Colors.grey)),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _sendInvite(contact);
+                },
+                child: Text('Convidar', style: TextStyle(color: AppTheme.appBarColor)),
+              ),
+            ],
           ),
         );
+        setState(() => _isLoading = false);
         return;
       }
 
@@ -1146,5 +1161,34 @@ class _ChatListPageState extends State<ChatListPage>
           ),
         ),
       );
+  }
+
+  // ✅ ENVIAR CONVITE VIA SMS
+  Future<void> _sendInvite(Contact contact) async {
+    if (contact.phones.isEmpty) return;
+    final phone = contact.phones.first.number;
+    
+    // Preparar URI para SMS
+    final Uri smsLaunchUri = Uri(
+      scheme: 'sms',
+      path: phone,
+      queryParameters: <String, String>{
+        'body': 'Olá! Venha conversar comigo no SpeekJoy! Baixe o app aqui: [LINK]',
+      },
+    );
+
+    try {
+      if (await canLaunchUrl(smsLaunchUri)) {
+        await launchUrl(smsLaunchUri);
+      } else {
+        // Fallback para alguns dispositivos Android
+        await launchUrl(smsLaunchUri, mode: LaunchMode.externalApplication);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Não foi possível abrir o app de SMS.')),
+      );
+    }
   }
 }
