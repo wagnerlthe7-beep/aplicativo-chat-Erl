@@ -231,6 +231,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   // Status de presença do contato
   String _contactPresenceStatus = 'offline'; // 'online', 'offline'
+  bool _isRemoteTyping = false; // ✅ Indica se o outro está digitando
+  StreamSubscription? _typingSubscription;
+  Timer? _typingTimer;
+  bool _iAmTyping = false;
+
   Timer? _presenceOnlineTimer;
   Timer? _presenceOfflineTimer;
 
@@ -243,6 +248,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     // Informar ao ChatService qual chat está ativo (para controle de unread)
     ChatService.setActiveChat(widget.remoteUserId);
     _initializeChat();
+    _setupTypingListener(); // ✅ Escutar se o outro digita
+    _setupMyTypingDetection(); // ✅ Detectar quando eu digito
 
     // Marcar como lido ao abrir o chat
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -281,11 +288,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       _markChatAsRead();
     }
 
-    // Limpar chat ativo
     ChatService.clearActiveChat(widget.remoteUserId);
 
     _messageSubscription?.cancel();
     _presenceSubscription?.cancel();
+    _typingSubscription?.cancel();
+    _typingTimer?.cancel();
+    
+    // Se eu estava digitando, avisar que parei ao sair
+    if (_iAmTyping) {
+      ChatService.sendTypingIndicator(widget.remoteUserId, false);
+    }
+
     _pendingMessageIds.clear();
     super.dispose();
   }
@@ -319,6 +333,64 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         break;
     }
   }
+
+  // ✅ Escutar se o outro está digitando
+  void _setupTypingListener() {
+    _typingSubscription = ChatService.typingStream.listen((data) {
+      if (data['from'] == widget.remoteUserId && mounted) {
+        setState(() {
+          _isRemoteTyping = data['is_typing'] ?? false;
+        });
+      }
+    });
+  }
+
+  // ✅ Detectar quando eu estou digitando
+  void _setupMyTypingDetection() {
+    _messageController.addListener(() {
+      final text = _messageController.text;
+      
+      if (text.isNotEmpty) {
+        if (!_iAmTyping) {
+          _iAmTyping = true;
+          ChatService.sendTypingIndicator(widget.remoteUserId, true);
+          
+          // Iniciar pulso/heartbeart para manter o status ativo no outro lado
+          // (evita que o timer de segurança do outro lado expire)
+          _typingHeartbeatTimer?.cancel();
+          _typingHeartbeatTimer = Timer.periodic(Duration(seconds: 4), (timer) {
+            if (_iAmTyping && mounted) {
+              ChatService.sendTypingIndicator(widget.remoteUserId, true);
+            } else {
+              timer.cancel();
+            }
+          });
+        }
+
+        // Reiniciar o timer de "parou de digitar" (2 segundos de silêncio)
+        _typingTimer?.cancel();
+        _typingTimer = Timer(Duration(seconds: 2), () {
+          if (_iAmTyping && mounted) {
+            _stopTyping();
+          }
+        });
+      } else {
+        // Se apagou tudo, parar imediatamente
+        if (_iAmTyping) {
+          _stopTyping();
+        }
+      }
+    });
+  }
+
+  void _stopTyping() {
+    _iAmTyping = false;
+    _typingHeartbeatTimer?.cancel();
+    _typingTimer?.cancel();
+    ChatService.sendTypingIndicator(widget.remoteUserId, false);
+  }
+
+  Timer? _typingHeartbeatTimer;
 
   // Carregar status de presença do contacto
   Future<void> _loadContactPresence() async {
@@ -356,6 +428,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   // Formatar status para exibição
   String _getPresenceText() {
+    if (_isRemoteTyping) return 'a escrever...'; // ✅ Prioridade máxima
     if (_contactPresenceStatus == 'online') {
       return 'online';
     }
