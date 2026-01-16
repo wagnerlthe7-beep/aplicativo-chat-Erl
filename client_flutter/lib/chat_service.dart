@@ -36,6 +36,7 @@ class ChatService {
   static final Map<String, int> _presenceTimestamps = {};
   static final Set<String> _sentMessageIds = {};
 
+
   // ✅ Controle de presença
   static Timer? _heartbeatTimer;
   static final Map<String, String> _userPresenceStatus =
@@ -280,6 +281,10 @@ class ChatService {
             });
             print('📡 Presença atualizada: $userId -> $status');
           }
+          break;
+        case 'typing':
+          print('⌨️ Evento typing recebido: $message');
+          _typingController.add(message);
           break;
         default:
           print('❓ Unknown message type: ${message['type']}');

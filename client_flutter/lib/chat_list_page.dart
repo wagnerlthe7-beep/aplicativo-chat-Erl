@@ -28,7 +28,10 @@ class _ChatListPageState extends State<ChatListPage>
   // ✅ SISTEMA DE CHATS REAL
   StreamSubscription<List<ChatContact>>? _chatSubscription;
   StreamSubscription<Map<String, dynamic>>? _messageSubscription;
+  StreamSubscription<Map<String, dynamic>>? _typingSubscription;
   List<ChatContact> _chats = [];
+  final Map<String, bool> _typingUsers = {};
+  final Map<String, Timer> _typingTimers = {};
   
   // ✅ ESTADO DE SELEÇÃO
   final Set<String> _selectedChatIds = {};
@@ -56,6 +59,7 @@ class _ChatListPageState extends State<ChatListPage>
     _tabController = TabController(length: 3, vsync: this);
     _startSessionValidationTimer();
     _initializeRealChats();
+    _setupTypingListener();
   }
 
   @override
@@ -64,6 +68,8 @@ class _ChatListPageState extends State<ChatListPage>
     _chatRefreshTimer?.cancel();
     _chatSubscription?.cancel();
     _messageSubscription?.cancel();
+    _typingSubscription?.cancel();
+    _typingTimers.values.forEach((timer) => timer.cancel());
     _tabController.dispose();
     _searchController.dispose();
     super.dispose();
@@ -761,12 +767,36 @@ class _ChatListPageState extends State<ChatListPage>
       await AuthService.logout();
       Navigator.pushNamedAndRemoveUntil(context, '/welcome', (route) => false);
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erro ao fazer logout: $e')));
+      print('❌ Erro no logout: $e');
     } finally {
       setState(() => _isLoading = false);
     }
+  }
+
+  // ✅ ESCUTAR QUEM ESTÁ DIGITANDO PARA MOSTRAR NA LISTA
+  void _setupTypingListener() {
+    _typingSubscription = ChatService.typingStream.listen((data) {
+      final fromId = data['from']?.toString();
+      final isTyping = data['is_typing'] == true;
+
+      if (fromId != null && mounted) {
+        setState(() {
+          _typingUsers[fromId] = isTyping;
+        });
+
+        // Segurança: limpar status após 6 segundos se não vier o 'stop'
+        _typingTimers[fromId]?.cancel();
+        if (isTyping) {
+          _typingTimers[fromId] = Timer(Duration(seconds: 6), () {
+            if (mounted) {
+              setState(() {
+                _typingUsers[fromId] = false;
+              });
+            }
+          });
+        }
+      }
+    });
   }
 
   Future<void> _revokeOtherSessions() async {
@@ -973,19 +1003,34 @@ class _ChatListPageState extends State<ChatListPage>
           },
           subtitle: Row(
             children: [
-              if (chat.lastMessageIsReply)
-                Icon(Icons.reply, size: 12, color: AppTheme.appBarColor),
-              if (chat.lastMessageEdited)
-                Icon(Icons.edit, size: 12, color: AppTheme.actionEdit),
-              SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  chat.lastMessage,
-                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+              if (_typingUsers[chat.contactId] == true) 
+                Expanded(
+                  child: Text(
+                    'a escrever...',
+                    style: TextStyle(
+                      color: AppTheme.appBarColor,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                )
+              else ...[
+                if (chat.lastMessageIsReply)
+                  Icon(Icons.reply, size: 12, color: AppTheme.appBarColor),
+                if (chat.lastMessageEdited)
+                  Icon(Icons.edit, size: 12, color: AppTheme.actionEdit),
+                SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    chat.lastMessage,
+                    style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
           trailing: Column(
