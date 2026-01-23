@@ -131,6 +131,8 @@ CREATE TABLE messages (
     status VARCHAR(20) DEFAULT 'sent' CHECK (status IN ('sent','delivered','read')),
     is_deleted BOOLEAN DEFAULT false,
     edited_at TIMESTAMPTZ,
+    client_message_id VARCHAR(50) UNIQUE, -- ID gerado pelo cliente para deduplicação
+    reply_to_id INT REFERENCES messages(id), -- ID da mensagem original (se for resposta)
     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,

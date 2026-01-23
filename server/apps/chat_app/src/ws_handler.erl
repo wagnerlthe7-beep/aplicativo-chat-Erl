@@ -36,7 +36,11 @@ init(Req0, _State) ->
                 {ok, Claims} ->
                     UserId = maps:get(<<"user_id">>, Claims),
                     io:format("✅ ✅ ✅ WebSocket AUTENTICADO para usuário: ~p~n", [UserId]),
-                    {cowboy_websocket, Req0, #state{user_id = UserId, claims = Claims}};
+                    %% ✅ CONFIGURAR IDLE_TIMEOUT MAIOR PARA EVITAR DESCONEXÕES
+                    WsOpts = #{
+                        idle_timeout => 300000  %% 5 minutos em milissegundos
+                    },
+                    {cowboy_websocket, Req0, #state{user_id = UserId, claims = Claims}, WsOpts};
                 {error, Reason} ->
                     io:format("❌ ❌ ❌ Token JWT inválido: ~p~n", [Reason]),
                     Req1 = cowboy_req:reply(401, #{
@@ -127,8 +131,10 @@ websocket_info(_Info, State) ->
 
 terminate(_Reason, _Req, #state{user_id = UserId}) ->
     %% ✅ REGISTAR USUÁRIO COMO OFFLINE (user_session + presence_manager)
-    user_session:user_offline(UserId),
-    presence_manager:user_offline(UserId),
+    %% ⚠️ Importante: ao reconectar, pode existir um WS novo vivo.
+    %% Só devemos marcar offline se este PID ainda for o WS atual.
+    user_session:user_offline(UserId, self()),
+    presence_manager:user_offline(UserId, self()),
     io:format("🔌 Usuário ~p desconectado e registado como offline~n", [UserId]),
     ok.
 
@@ -263,8 +269,8 @@ handle_websocket_message(#{<<"type">> := <<"presence_update">>} = Data, #state{u
 
 %% ✅ MENSAGENS EDITADAS (NOVO)
 handle_websocket_message(#{<<"type">> := <<"message_edited">>} = Data, #state{user_id = UserId}) ->
-    MessageId = maps:get(<<"message_id">>, Data),
-    NewContent = maps:get(<<"content">>, Data),
+    _MessageId = maps:get(<<"message_id">>, Data),
+    _NewContent = maps:get(<<"content">>, Data),
     
     io:format("✏️ Mensagem editada recebida: ~p~n", [UserId]),
     

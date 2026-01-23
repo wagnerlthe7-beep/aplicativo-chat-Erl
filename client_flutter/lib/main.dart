@@ -6,42 +6,66 @@ import 'phone_input_page.dart';
 import 'otp_page.dart';
 import 'name_input_page.dart';
 import 'permissions_page.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart'; // ✅ Storage
 import 'chat_list_page.dart';
 import 'chat_service.dart'; // Import necessário
 import 'websocket_foreground_service.dart'; // Foreground service
 import 'notification_service.dart'; // Serviço de notificações
+import 'services/message_sync_service.dart'; // ✅ Serviço de sincronização offline
 import 'app_theme.dart';
+import 'startup_page.dart'; // Ainda necessário para Fallback
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   print('🚀 Iniciando aplicação WhaClone...');
 
+  String initialRoute = '/';
+
   try {
     await Firebase.initializeApp();
     print('✅ Firebase inicializado');
 
+    // ✅ VERIFICAÇÃO DE SESSÃO RÁPIDA (Antes de renderizar)
+    final storage = FlutterSecureStorage();
+    final token = await storage.read(key: 'access_token');
+
+    if (token != null) {
+      print('🚀 Token encontrado! Pré-carregando chats...');
+      initialRoute = '/chatList';
+      
+      // ✅ PRÉ-AQUECIMENTO: Carregar chats locais na memória AGORA
+      await ChatService.loadLocalChats();
+      // Não esperar conectar no main, apenas carregar o local
+    } else {
+      print('👋 Nenhum token, indo para WelcomePage');
+      initialRoute = '/welcome';
+    }
+
     // ✅ INICIALIZAR FOREGROUND SERVICE
     await WebSocketForegroundService.initialize();
-    print('✅ Foreground Service inicializado');
-
+    
     // ✅ INICIALIZAR SERVIÇO DE NOTIFICAÇÕES
     await NotificationService().initialize();
     await NotificationService().requestPermission();
-    print('✅ Serviço de notificações inicializado');
+    
+    // ✅ INICIALIZAR SERVIÇO DE SINCRONIZAÇÃO OFFLINE-FIRST
+    if (token != null) {
+      await MessageSyncService.initialize();
+      print('✅ MessageSyncService inicializado');
+    }
 
-    // ✅ INICIALIZAR SISTEMA DE CHATS
-    //await ChatService.initializeChatList();
-    //print('✅ Sistema de chats inicializado');
   } catch (e) {
     print('❌ Erro na inicialização: $e');
   }
 
-  runApp(const MyApp());
+  runApp(MyApp(initialRoute: initialRoute));
 }
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  final String initialRoute; // ✅ Rota inicial dinâmica
+  
+  const MyApp({super.key, this.initialRoute = '/'});
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -80,7 +104,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       title: 'SpeekJoy',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      initialRoute: '/',
+      initialRoute: widget.initialRoute, // ✅ Usa a rota decidida no main()
       routes: {
         '/': (context) => StartupPage(),
         '/welcome': (context) => WelcomePage(),

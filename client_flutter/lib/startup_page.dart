@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'auth_service.dart';
 
 class StartupPage extends StatefulWidget {
   @override
@@ -16,53 +17,50 @@ class _StartupPageState extends State<StartupPage> {
   @override
   void initState() {
     super.initState();
-    _validateAndNavigate();
+    _bootstrap();
   }
 
-  Future<void> _validateAndNavigate() async {
+  Future<void> _bootstrap() async {
     final accessToken = await _storage.read(key: 'access_token');
 
     if (accessToken == null) {
-      // Não tem token - ir para login
       _goToWelcomePage();
       return;
     }
 
-    // ✅✅✅ VERIFICAR NO BACKEND se a sessão ainda é válida
-    final isValid = await _validateSessionWithBackend(accessToken);
+    // ✅ ENTRA IMEDIATAMENTE (Modelo WhatsApp - Offline First)
+    _goToChatListPage();
 
-    if (isValid) {
-      // Sessão VÁLIDA - ir para chats
-      _goToChatListPage();
-    } else {
-      // Sessão INVÁLIDA - limpar tokens e ir para login
-      await _storage.delete(key: 'access_token');
-      await _storage.delete(key: 'refresh_token');
-      _goToWelcomePage();
-    }
+    // 🔄 valida em background (não bloqueia UI)
+    _validateSessionInBackground(accessToken);
   }
 
-  Future<bool> _validateSessionWithBackend(String accessToken) async {
+  Future<void> _validateSessionInBackground(String accessToken) async {
     try {
-      final url = Uri.parse('$backendUrl/auth/validate-session');
+      // Usar a URL centralizada do app
+      final url = Uri.parse('${AuthService.backendUrl}/auth/validate-session');
       final response = await http.post(
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'access_token': accessToken}),
-      );
+      ).timeout(const Duration(seconds: 8));
 
-      print('🔍 Session validation response: ${response.statusCode}');
-
-      if (response.statusCode == 200) {
+      if (response.statusCode == 401) {
         final body = jsonDecode(response.body);
-        return body['status'] == 'valid';
-      } else {
-        print('❌ Session validation failed: ${response.body}');
-        return false;
+        final error = body['error'];
+
+        if (error == 'session_revoked' || error == 'session_not_found') {
+          print('🚫 Sessão revogada ou não encontrada. Redirecionando...');
+          await AuthService.clearLocalSession();
+
+          if (mounted) {
+            Navigator.pushReplacementNamed(context, '/welcome');
+          }
+        }
       }
     } catch (e) {
-      print('❌ Error validating session: $e');
-      return false;
+      // 🌐 erro de rede → IGNORA
+      print('⚠️ Backend indisponível, mantendo sessão ativa');
     }
   }
 
@@ -78,16 +76,7 @@ class _StartupPageState extends State<StartupPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 20),
-            Text('Verificando sessão...', style: TextStyle(fontSize: 16)),
-          ],
-        ),
-      ),
+      body: SizedBox.shrink(), // ✅ Tela limpa enquanto decide para onde ir
     );
   }
 }

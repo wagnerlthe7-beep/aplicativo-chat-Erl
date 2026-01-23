@@ -5,6 +5,7 @@
     start_link/0,
     user_online/2,
     user_offline/1,
+    user_offline/2,
     %% Compatibilidade: alguns pontos antigos chamam esta função
     user_offline_due_to_internet/2,
     get_user_status/1,
@@ -57,6 +58,17 @@ user_online(UserId, WsPid) ->
 user_offline(UserId) ->
     try
         gen_server:cast(?MODULE, {user_offline, UserId})
+    catch
+        exit:{noproc, _} ->
+            io:format("❌ ERRO: Presence Manager não está rodando ao tentar registrar usuário offline!~n"),
+            ok
+    end.
+
+%% ✅ Offline condicional: só marca offline se o WS que caiu ainda for o WS atual
+%% (evita alternância online/offline com reconexões rápidas).
+user_offline(UserId, WsPid) when is_pid(WsPid) ->
+    try
+        gen_server:cast(?MODULE, {user_offline, UserId, WsPid})
     catch
         exit:{noproc, _} ->
             io:format("❌ ERRO: Presence Manager não está rodando ao tentar registrar usuário offline!~n"),
@@ -208,7 +220,10 @@ handle_cast({user_online, UserId, WsPid}, State) ->
     %% ✅ BROADCAST APENAS se mudou de status
     case not WasOnline of
         true ->
-            broadcast_presence_change(UserId, online, Now);
+            broadcast_presence_change(UserId, online, Now),
+            
+            %% ✅ NOVO: Enviar presença dos usuários já online para o novo usuário
+            send_existing_presence_to_new_user(UserId, Now);
         false ->
             ok
     end,
@@ -231,6 +246,21 @@ handle_cast({user_offline, UserId}, State) ->
     broadcast_presence_change(UserId, offline, Now),
 
     {noreply, State};
+
+handle_cast({user_offline, UserId, WsPid}, State) ->
+    %% Offline condicional: só executar se o WsPid ainda for o WsPid atual em ETS
+    case ets:lookup(user_presence, UserId) of
+        [#user_presence{ws_pid = CurrentWsPid, is_connected = true}] when CurrentWsPid =:= WsPid ->
+            gen_server:cast(self(), {user_offline, UserId}),
+            {noreply, State};
+        [#user_presence{ws_pid = CurrentWsPid, is_connected = true}] ->
+            io:format("ℹ️  Ignorando offline para ~p: ws_pid antigo ~p (atual=~p)~n",
+                      [UserId, WsPid, CurrentWsPid]),
+            {noreply, State};
+        _ ->
+            %% Já está offline ou não existe entrada - nada a fazer
+            {noreply, State}
+    end;
 
 handle_cast({user_offline_due_to_internet, UserId, _Ts}, State) ->
     %% Reutiliza a mesma lógica de user_offline (forçado)
@@ -307,8 +337,6 @@ handle_info(cleanup, State) ->
 
 handle_info(_Info, State) ->
     {noreply, State}.
-
-%%%===================================================================
 %%% Funções Internas
 %%%===================================================================
 
@@ -331,9 +359,13 @@ broadcast_presence_change(UserId, Status, Timestamp) ->
     ),
     OnlineUserIds = [UId || #user_presence{user_id = UId} <- OnlineEntries],
     
+    io:format("   📋 Usuários online: ~p~n", [OnlineUserIds]),
+    
     %% ✅ BUSCAR CONTATOS E ENVIAR PARA ELES
     case get_contacts(UserId) of
         {ok, Contacts} ->
+            io:format("   📋 Contatos de ~p: ~p~n", [UserId, Contacts]),
+            
             RelevantContacts = lists:filter(
                 fun(ContactId) -> 
                     lists:member(ContactId, Contacts) 
@@ -341,20 +373,74 @@ broadcast_presence_change(UserId, Status, Timestamp) ->
                 OnlineUserIds
             ),
             
+            io:format("   🎯 Contatos relevantes (online + contatos): ~p~n", [RelevantContacts]),
+            
             lists:foreach(
                 fun(ContactId) ->
+                    io:format("   📤 Processando envio para ~p...~n", [ContactId]),
                     case ets:lookup(user_presence, ContactId) of
                         [#user_presence{ws_pid = WsPid}] when is_pid(WsPid) ->
+                            io:format("   📤 Enviando mensagem para cliente: ~p~n", [PresenceMsg]),
                             WsPid ! {send_message, PresenceMsg},
                             io:format("   📤 Enviado presença para ~p~n", [ContactId]);
                         _ ->
-                            ok
+                            io:format("   ❌ WebSocket não encontrado para ~p~n", [ContactId])
                     end
                 end,
                 RelevantContacts
             );
         _ ->
             io:format("   ⚠️ Não foi possível obter contatos para broadcast~n")
+    end.
+
+%% ✅ Enviar presença dos usuários já online para o novo usuário
+send_existing_presence_to_new_user(NewUserId, Now) ->
+    io:format("🔄 Enviando presença dos usuários já online para ~p~n", [NewUserId]),
+    
+    %% Obter todos os usuários online (exceto o novo usuário)
+    OnlineEntries = ets:match_object(
+        user_presence,
+        #user_presence{is_connected = true, _ = '_'}
+    ),
+    OnlineUsers = [UId || #user_presence{user_id = UId} <- OnlineEntries, UId =/= NewUserId],
+    
+    io:format("   📋 Usuários já online para enviar para ~p: ~p~n", [NewUserId, OnlineUsers]),
+    
+    %% Obter contatos do novo usuário
+    case get_contacts(NewUserId) of
+        {ok, Contacts} ->
+            %% Filtrar apenas os contatos que estão online
+            RelevantOnlineUsers = lists:filter(
+                fun(OnlineUserId) ->
+                    lists:member(OnlineUserId, Contacts)
+                end,
+                OnlineUsers
+            ),
+            
+            io:format("   🎯 Contatos online relevantes para ~p: ~p~n", [NewUserId, RelevantOnlineUsers]),
+            
+            %% Enviar presença de cada contato online para o novo usuário
+            lists:foreach(
+                fun(OnlineUserId) ->
+                    PresenceMsg = #{
+                        <<"type">> => <<"presence">>,
+                        <<"user_id">> => OnlineUserId,
+                        <<"status">> => <<"online">>,
+                        <<"timestamp">> => Now
+                    },
+                    
+                    case ets:lookup(user_presence, NewUserId) of
+                        [#user_presence{ws_pid = WsPid}] when is_pid(WsPid) ->
+                            io:format("   📤 Enviando presença de ~p para novo usuário ~p~n", [OnlineUserId, NewUserId]),
+                            WsPid ! {send_message, PresenceMsg};
+                        _ ->
+                            io:format("   ❌ WebSocket não encontrado para novo usuário ~p~n", [NewUserId])
+                    end
+                end,
+                RelevantOnlineUsers
+            );
+        _ ->
+            io:format("   ⚠️ Não foi possível obter contatos do novo usuário ~p~n", [NewUserId])
     end.
 
 %% ✅ Buscar contatos baseado em mensagens trocadas

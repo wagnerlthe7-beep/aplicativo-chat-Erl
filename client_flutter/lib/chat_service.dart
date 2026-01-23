@@ -4,17 +4,15 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'dart:io';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:flutter_contacts/flutter_contacts.dart';
-import 'package:flutter/widgets.dart';
 import 'chat_model.dart';
-import 'auth_service.dart';
-import 'chat_page.dart'; // ✅ Importar ChatMessage
 import 'contacts_helper.dart';
+import 'models/pending_message.dart';
+import 'services/pending_messages_storage.dart';
 
 class ChatService {
   static WebSocketChannel? _channel;
@@ -23,9 +21,14 @@ class ChatService {
 
   static final Uuid _uuid = Uuid();
   static bool _isReconnecting = false;
+  static bool _isConnecting =
+      false; // ✅ Lock para evitar múltiplas conexões simultâneas
   static bool _isManualDisconnect = false;
   static int _reconnectAttempts = 0;
   static const int _maxReconnectAttempts = 5;
+
+  // ✅ Flag para evitar tentativas redundantes quando já sabemos que caiu
+  static bool isServerDown = false;
 
   static final _messageController =
       StreamController<Map<String, dynamic>>.broadcast();
@@ -33,14 +36,21 @@ class ChatService {
       StreamController<Map<String, dynamic>>.broadcast();
   static final _presenceController =
       StreamController<Map<String, dynamic>>.broadcast();
+
+  // ✅ Stream de Status de Conexão (Novo)
+  static final _connectionStatusController = StreamController<bool>.broadcast();
+  static Stream<bool> get connectionStatusStream =>
+      _connectionStatusController.stream;
+
   static final Map<String, int> _presenceTimestamps = {};
   static final Set<String> _sentMessageIds = {};
-
 
   // ✅ Controle de presença
   static Timer? _heartbeatTimer;
   static final Map<String, String> _userPresenceStatus =
       {}; // user_id -> status
+
+  static final Map<String, String> _contactIdToPhoneCache = {};
 
   // ✅ SISTEMA DE CHATS DINÂMICO
   static final _chatListController =
@@ -48,15 +58,36 @@ class ChatService {
   static final Map<String, ChatContact> _chatContacts = {};
   static String? _activeChatContactId;
 
+  // ✅ Timer para debounce de salvamento
+  static Timer? _saveDebounceTimer;
+
   static String _generateMessageId() {
     return 'msg_${DateTime.now().millisecondsSinceEpoch}_${_uuid.v4().substring(0, 8)}';
   }
 
   static Future<bool> connect() async {
-    _isManualDisconnect = false;
-    if (_channel != null && !_isReconnecting) {
-      return true;
+    // ✅ EVITAR MÚLTIPLAS CONEXÕES SIMULTÂNEAS
+    if (_isConnecting) {
+      print('⏳ Conexão já em progresso, ignorando chamada duplicada...');
+      return false;
     }
+
+    // ✅ VERIFICAR SE JÁ ESTÁ CONECTADO E FUNCIONANDO
+    if (_channel != null && !_isReconnecting) {
+      try {
+        // Tentar enviar um ping para verificar se a conexão está realmente ativa
+        _channel!.sink.add(json.encode({'type': 'heartbeat'}));
+        print('✅ WebSocket já conectado e funcionando');
+        return true;
+      } catch (e) {
+        // Se falhar, a conexão está morta - limpar e reconectar
+        print('⚠️ WebSocket existente está morto, limpando e reconectando...');
+        _channel = null;
+      }
+    }
+
+    _isManualDisconnect = false;
+    _isConnecting = true; // ✅ LOCK: Marcar que estamos conectando
 
     try {
       _reconnectAttempts++;
@@ -69,18 +100,24 @@ class ChatService {
         return false;
       }
 
-      //final url = 'ws://10.0.2.2:4000/ws?token=$token';
+      // Usando WebSocket.connect diretamento para ter controle de timeout e erros
+      // final url = 'ws://10.0.2.2:4000/ws?token=$token';
       final url = 'ws://192.168.100.35:4000/ws?token=$token';
-      _channel = WebSocketChannel.connect(Uri.parse(url));
+
+      // print('🔌 Tentando conectar WebSocket...');
+
+      // ✅ Conexão manual segura com timeout
+      final ws = await WebSocket.connect(url).timeout(Duration(seconds: 5));
+      _channel = IOWebSocketChannel(ws);
 
       _channel!.stream.listen(
         _handleIncomingMessage,
         onError: (error) {
-          print('❌ WebSocket error: $error');
+          print('❌ WebSocket stream error: $error');
           _handleDisconnect();
         },
         onDone: () {
-          print('🔌 WebSocket disconnected');
+          print('🔌 WebSocket disconnected (Done)');
           _handleDisconnect();
         },
       );
@@ -90,24 +127,51 @@ class ChatService {
       // _reconnectAttempts = 0;
       print('✅ WebSocket connected for user $_currentUserId');
 
+      // ✅ RESETAR TIMESTAMPS ao conectar para evitar problemas de stale events
+      _presenceTimestamps.clear();
+      print('🔄 Presence timestamps resetados ao conectar');
+
+      // ✅ RESETAR VARIÁVEIS DE RECONEXÃO após conexão bem-sucedida
+      _reconnectAttempts = 0;
+      _isReconnecting = false;
+      _isConnecting = false; // ✅ UNLOCK: Conexão estabelecida
+      print('🔄 Variáveis de reconexão resetadas');
+
       // ✅ INICIAR SISTEMA DE HEARTBEAT
       _startHeartbeat();
 
-      // ✅ RECONSTRUIR CHATS APÓS CONECTAR
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        rebuildChatsFromHistory();
-      });
+      isServerDown = false; // ✅ Conexão estabelecida
+
+      // ✅ Notificar que estamos ONLINE
+      _connectionStatusController.add(true);
 
       return true;
+    } on SocketException catch (_) {
+      // ✅ Captura erro de servidor indisponível
+      isServerDown = true;
+      _isConnecting = false; // ✅ UNLOCK em caso de erro
+      print(
+        '⚠️ Servidor indisponível (SocketException) - Modo Offline Ativado',
+      );
+      return false;
+    } on TimeoutException catch (_) {
+      // ✅ Captura timeout
+      isServerDown = true;
+      _isConnecting = false; // ✅ UNLOCK em caso de erro
+      print('⚠️ Timeout na conexão WebSocket - Modo Offline Ativado');
+      return false;
     } catch (e) {
-      print('❌ WebSocket connection error: $e');
-      _handleDisconnect();
+      _isConnecting = false; // ✅ UNLOCK em caso de erro
+      print('❌ Erro genérico na conexão WebSocket: $e');
       return false;
     }
   }
 
   static void _handleDisconnect() {
     _channel = null;
+
+    // ✅ Notificar OFFLINE
+    _connectionStatusController.add(false);
 
     if (_isManualDisconnect) {
       print('🔌 Desconexão manual - não reconectando automaticamente');
@@ -117,7 +181,6 @@ class ChatService {
     // ✅ Quando desconectar (perda de internet / WS fechado),
     // marcar TODOS os contatos locais como offline para o cliente atual.
     if (_userPresenceStatus.isNotEmpty) {
-      print('📡 WS desconectado - limpando status de presença local');
       final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final ids = _userPresenceStatus.keys.toList();
       for (final userId in ids) {
@@ -166,7 +229,7 @@ class ChatService {
   static void _handleIncomingMessage(dynamic data) {
     try {
       final message = json.decode(data);
-      print('📨 Received: $message');
+      print('🔍 [WS DEBUG] Mensagem recebida: $message');
 
       final messageId = message['message_id']?.toString();
       final dbMessageId = message['db_message_id'];
@@ -191,15 +254,40 @@ class ChatService {
           print('✅ Authenticated with chat server');
           // ✅ Conexão estabelecida com sucesso - resetar contador de tentativas
           _reconnectAttempts = 0;
+
+          // ✅ Notificar reconexão para atualizar presença
+          _connectionStatusController.add(true);
           break;
         case 'message':
           _messageController.add(message);
           final shouldIncreaseUnread =
               message['should_increase_unread'] ?? true;
           _updateChatOnMessageReceived(message, shouldIncreaseUnread);
+
+          // ✅ OFFLINE-FIRST: Atualizar status de mensagem pendente quando receber confirmação
+          final tempMessageId = message['message_id']?.toString();
+          final dbMessageIdStr = message['db_message_id']?.toString();
+          if (tempMessageId != null && dbMessageIdStr != null) {
+            // ✅ Executar de forma assíncrona sem bloquear
+            updateMessageStatusFromServer(
+              tempMessageId,
+              'sent',
+              dbMessageId: dbMessageIdStr,
+            ).catchError((e) => print('❌ Erro ao atualizar status: $e'));
+          }
           break;
         case 'message_delivered':
           _messageController.add(message);
+
+          // ✅ OFFLINE-FIRST: Atualizar status para 'delivered'
+          final tempMessageId = message['message_id']?.toString();
+          if (tempMessageId != null) {
+            // ✅ Executar de forma assíncrona sem bloquear
+            updateMessageStatusFromServer(
+              tempMessageId,
+              'delivered',
+            ).catchError((e) => print('❌ Erro ao atualizar status: $e'));
+          }
           break;
         case 'message_read':
           _messageController.add(message);
@@ -222,21 +310,14 @@ class ChatService {
           _updateChatOnMessageReceived(message, shouldIncreaseUnread);
           break;
         case 'chat_list_update':
-          print('📋 Chat list update recebido: $message');
           final shouldIncreaseUnread = false; // Não aumenta unread para updates
 
           // Verificar se é uma edição para tratar adequadamente
           final action = message['action']?.toString();
           if (action == 'edit_message') {
-            print(
-              '   ✅ É uma edição de mensagem - atualizando conteúdo sem mover chat',
-            );
             // ✅ ATUALIZAR CONTEÚDO SEM REORDENAR CHAT LIST!
             _updateChatContentOnly(message);
           } else if (action == 'delete_message') {
-            print(
-              '   ✅ É uma deleção de mensagem - verificando se deve atualizar chat list',
-            );
             // ✅ VERIFICAR SE É A ÚLTIMA MENSAGEM ANTES DE ATUALIZAR
             _updateChatContentOnlyWithDeletedMessageIfLast(message);
           } else {
@@ -274,6 +355,9 @@ class ChatService {
             }
 
             _userPresenceStatus[userId] = status;
+            print(
+              '🔍 [PRESENCE SERVICE] Adicionando ao stream: userId=$userId, status=$status',
+            );
             _presenceController.add({
               'user_id': userId,
               'status': status,
@@ -320,10 +404,7 @@ class ChatService {
 
       // ✅ DETECTAR SE É UM REPLY
       final isReply = message['reply_to_id'] != null;
-      if (isReply) {
-        print('🔍 ATUALIZANDO CHAT PARA REPLY');
-        print('   reply_to_id: ${message['reply_to_id']}');
-      }
+      if (isReply) {}
 
       // ✅ LÓGICA DE UNREAD CORRIGIDA
       if (fromUserId == currentUserId) {
@@ -426,12 +507,6 @@ class ChatService {
       // ✅ ATUALIZAR CHAT EXISTENTE SEM MUDAR UNREAD
       if (_chatContacts.containsKey(contactId)) {
         final existing = _chatContacts[contactId]!;
-        print('🔍 DEBUG EDIÇÃO CHAT:');
-        print('   - Chat: ${contactInfo['name']}');
-        print('   - Timestamp ANTES: ${existing.lastMessageTime}');
-        print(
-          '   - Timestamp DEPOIS: ${existing.lastMessageTime}',
-        ); // ✅ VALOR REAL!
 
         _chatContacts[contactId] = existing.copyWith(
           name: contactInfo['name'],
@@ -443,90 +518,124 @@ class ChatService {
           unreadCount: existing.unreadCount, // ✅ MANTER UNREAD ATUAL
           lastMessageIsReply: false, // ✅ NÃO É REPLY
         );
-        print(
-          '   ✅ Chat atualizado com mensagem editada: ${contactInfo['name']}',
-        );
       }
 
       _saveChatsToStorage();
       // ✅ NÃO REORDENAR EM EDIÇÕES - APENAS ATUALIZAR CONTEÚDO
       _chatListController.add(_chatContacts.values.toList());
-
-      print(
-        '✅ Chat de edição atualizado: ${contactInfo['name']} (content: $content)',
-      );
     } catch (e) {
       print('❌ Erro ao atualizar chat de edição: $e');
     }
   }
 
   // ✅ MÉTODO FINAL PARA BUSCAR INFORMAÇÕES DO CONTATO
-  static Future<Map<String, dynamic>> _getContactInfo(String contactId) async {
-    // ✅ 1. BUSCA NO BACKEND PARA OBTER O TELEFONE
-    try {
-      final accessToken = await _secureStorage.read(key: 'access_token');
-      if (accessToken == null) {
-        throw Exception('Token não disponível');
-      }
+  static Future<Map<String, dynamic>> _getContactInfo(
+    String contactId, {
+    Map<String, String>? localContacts,
+  }) async {
+    String? phone =
+        _contactIdToPhoneCache[contactId] ??
+        _chatContacts[contactId]?.phoneNumber;
 
-      //final url = Uri.parse('http://10.0.2.2:4000/api/users/$contactId');
-      final url = Uri.parse('http://192.168.100.35:4000/api/users/$contactId');
-      final headers = {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $accessToken',
-      };
-
-      final response = await http
-          .get(url, headers: headers)
-          .timeout(Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final userData = json.decode(response.body);
-        final backendPhone = userData['phone']?.toString();
-
-        // Verifica se temos um telefone válido do backend
-        if (backendPhone != null && backendPhone.isNotEmpty) {
-          // ✅ 2. VERIFICAR NA LISTA DE CONTATOS LOCAL
-          // Importante: Normalizar o telefone se necessário
-          final cleanBackendPhone = backendPhone.replaceAll(
-            RegExp(r'[\s\-\(\)]'),
-            '',
+    // ✅ 1. TENTAR BUSCAR NO BACKEND SE NÃO TIVERMOS O TELEFONE
+    if (phone == null || phone == contactId) {
+      try {
+        final accessToken = await _secureStorage.read(key: 'access_token');
+        if (accessToken != null) {
+          final url = Uri.parse(
+            'http://192.168.100.35:4000/api/users/$contactId',
           );
-          // mapLocal: Telefone -> Nome na Agenda
-          final localContacts = await ContactsHelper.getLocalContactsMap();
+          final headers = {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $accessToken',
+          };
 
-          String finalDisplayName;
+          final response = await http
+              .get(url, headers: headers)
+              .timeout(Duration(seconds: 5));
 
-          if (localContacts.containsKey(cleanBackendPhone)) {
-            // ✅ ENCONTRADO NA AGENDA -> USAR NOME DA AGENDA
-            finalDisplayName = localContacts[cleanBackendPhone]!;
+          if (response.statusCode == 200) {
+            final userData = json.decode(response.body);
+            phone = userData['phone']?.toString();
+            if (phone != null && phone.isNotEmpty) {
+              _contactIdToPhoneCache[contactId] = phone;
+              _saveContactCacheToStorage();
+            }
           } else {
-            finalDisplayName = backendPhone;
+            print('   ⚠️ Backend retornou status: ${response.statusCode}');
+          }
+        } else {
+          print('   ⚠️ Access token não disponível');
+        }
+      } catch (e) {
+        print('   ⚠️ Falha ao buscar telefone no backend para $contactId: $e');
+      }
+    } else {
+      print('   ✅ Usando phone do cache: $phone');
+    }
+
+    // ✅ 2. SE TEMOS O TELEFONE (CACHED OU BACKEND), BUSCAR NA AGENDA
+    if (phone != null && phone.isNotEmpty && phone != contactId) {
+      try {
+        final cleanPhone = phone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+
+        // ✅ Usar agenda pré-carregada se disponível, senão carregar
+        final contacts =
+            localContacts ?? await ContactsHelper.getLocalContactsMap();
+
+        String finalDisplayName;
+        if (contacts.containsKey(cleanPhone)) {
+          finalDisplayName = contacts[cleanPhone]!;
+        } else {
+          // Tentar também sem o código do país
+          String? alternativePhone;
+          if (cleanPhone.startsWith('+')) {
+            alternativePhone = cleanPhone.substring(1);
+          } else if (cleanPhone.startsWith('258')) {
+            alternativePhone = cleanPhone.substring(3);
           }
 
-          return {
-            'name': finalDisplayName,
-            'phone': backendPhone,
-            'photo': null, // Se quiser foto local, poderia buscar aqui também
-          };
-        } else {
-          print('⚠️ Telefone vazio no backend para ID $contactId');
+          if (alternativePhone != null &&
+              contacts.containsKey(alternativePhone)) {
+            finalDisplayName = contacts[alternativePhone]!;
+          } else {
+            finalDisplayName = phone;
+          }
         }
-      }
 
-      // Fallback se backend falhar ou sem phone
-      return {
-        'name': contactId, // Fallback último caso
-        'phone': contactId,
-        'photo': null,
-      };
+        return {'name': finalDisplayName, 'phone': phone, 'photo': null};
+      } catch (e) {
+        print('   ❌ Erro ao buscar na agenda: $e');
+        return {'name': phone, 'phone': phone, 'photo': null};
+      }
+    }
+
+    // Fallback último caso: usar o contactId
+    print('   ⚠️ Fallback: usando contactId como nome');
+    return {'name': contactId, 'phone': contactId, 'photo': null};
+  }
+
+  // ✅ SALVAR/CARREGAR CACHE DE TELEFONES
+  static Future<void> _saveContactCacheToStorage() async {
+    try {
+      final jsonData = json.encode(_contactIdToPhoneCache);
+      await _secureStorage.write(key: 'contact_phone_cache', value: jsonData);
     } catch (e) {
-      print('💥 ERRO NA BUSCA DO NOME: $e');
-      return {
-        'name': contactId, // Fallback erro
-        'phone': contactId,
-        'photo': null,
-      };
+      print('❌ Erro ao salvar cache de telefones: $e');
+    }
+  }
+
+  static Future<void> _loadContactCacheFromStorage() async {
+    try {
+      final stored = await _secureStorage.read(key: 'contact_phone_cache');
+      if (stored != null) {
+        final Map<String, dynamic> data = json.decode(stored);
+        data.forEach((key, value) {
+          _contactIdToPhoneCache[key] = value.toString();
+        });
+      }
+    } catch (e) {
+      print('❌ Erro ao carregar cache de telefones: $e');
     }
   }
 
@@ -540,20 +649,11 @@ class ChatService {
   }) {
     final now = DateTime.now();
 
-    print('   🔧 DEBUG _updateOrCreateChatContact:');
-    print('      Contact: $contactName ($contactId)');
-    print('      Last Message: $lastMessage');
-    print('      Should Increase Unread: $shouldIncreaseUnread');
-    print('      Chat já existe?: ${_chatContacts.containsKey(contactId)}');
-
     if (_chatContacts.containsKey(contactId)) {
       final existing = _chatContacts[contactId]!;
       final newUnreadCount = shouldIncreaseUnread
           ? existing.unreadCount + 1
           : existing.unreadCount;
-
-      print('      Unread Count: ${existing.unreadCount} -> $newUnreadCount');
-      print('      🕵️ CHAT JÁ EXISTIA! Quem criou?');
 
       _chatContacts[contactId] = existing.copyWith(
         name: contactName,
@@ -563,12 +663,7 @@ class ChatService {
         lastMessage: lastMessage,
         unreadCount: newUnreadCount,
       );
-      print('   ✅ Chat existente atualizado (Unread: $newUnreadCount)');
     } else {
-      // ✅ DEBUG DETALHADO PARA NOVOS CHATS
-      print('      🆕 NOVO CHAT CRIADO!');
-      print('      Unread inicial: ${shouldIncreaseUnread ? 1 : 0}');
-
       _chatContacts[contactId] = ChatContact(
         contactId: contactId,
         name: contactName,
@@ -578,7 +673,6 @@ class ChatService {
         lastMessage: lastMessage,
         unreadCount: shouldIncreaseUnread ? 1 : 0,
       );
-      print('   ✅ Novo chat criado (Unread: ${shouldIncreaseUnread ? 1 : 0})');
     }
 
     _saveChatsToStorage();
@@ -586,40 +680,40 @@ class ChatService {
   }
 
   static Future<void> rebuildChatsFromHistory() async {
-    print('🎯🎯🎯 REBUILD CHATS FROM HISTORY CHAMADO 🎯🎯🎯');
-
     try {
       final currentUserId = await _secureStorage.read(key: 'user_id');
       if (currentUserId == null) return;
 
-      await _loadChatsFromStorage();
+      await loadLocalChats();
 
       // ✅ DEBUG: Mostrar unread counts atuais
-      _chatContacts.forEach((contactId, chat) {
-        print('   📊 Chat: ${chat.name} - Unread: ${chat.unreadCount}');
-      });
-
-      print('✅ Rebuild completo - unread counts PRESERVADOS');
+      _chatContacts.forEach((contactId, chat) {});
       _chatListController.add(_getSortedChatList());
 
-      // ✅ ⚡ FORÇAR ATUALIZAÇÃO DE NOMES/FOTOS EM BACKGROUND
-      // Isso garante que a lógica de "Nome da Agenda" seja aplicada
+      // ✅ ⚡ CARREGAR AGENDA UMA VEZ E REUTILIZAR
       print('🔄 Iniciando atualização de dados dos contatos em background...');
+      final localContacts = await ContactsHelper.getLocalContactsMap();
+      print('📱 ${localContacts.length} contatos locais mapeados.');
+
       for (final contactId in _chatContacts.keys) {
-        _updateContactInfoWithoutResettingUnread(contactId);
+        _updateContactInfoWithoutResettingUnread(contactId, localContacts);
       }
     } catch (e) {
       print('❌ Erro no rebuild: $e');
     }
   }
 
-  // ✅ ATUALIZAR APENAS INFORMAÇÕES DO CONTATO
+  // ✅ ATUALIZAR APENAS INFORMAÇÕES DO CONTATO (com agenda pré-carregada)
   static Future<void> _updateContactInfoWithoutResettingUnread(
     String contactId,
+    Map<String, String> localContacts,
   ) async {
     try {
-      // ✅ BUSCAR INFORMAÇÕES ATUALIZADAS DO CONTATO
-      final contactInfo = await _getContactInfo(contactId);
+      // ✅ BUSCAR INFORMAÇÕES ATUALIZADAS DO CONTATO (usando agenda pré-carregada)
+      final contactInfo = await _getContactInfo(
+        contactId,
+        localContacts: localContacts,
+      );
 
       if (_chatContacts.containsKey(contactId)) {
         final existingChat = _chatContacts[contactId]!;
@@ -671,40 +765,98 @@ class ChatService {
     }
   }
 
+  // ✅ OFFLINE-FIRST: Sempre salvar localmente primeiro
   static Future<void> sendMessage(
     String toUserId,
     String content, {
     String? tempId,
   }) async {
-    final okToSend = await canSendMessage();
-    if (!okToSend) {
-      throw Exception('Sem conexão com internet para enviar mensagem.');
-    }
-
-    if (_channel == null) {
-      throw Exception('WebSocket não está conectado.');
+    final currentUserId = await _secureStorage.read(key: 'user_id');
+    if (currentUserId == null) {
+      throw Exception('User ID não encontrado');
     }
 
     final messageId = tempId ?? _generateMessageId();
-    final message = {
-      'type': 'message',
-      'to': toUserId,
-      'content': content,
-      'message_id': messageId,
-    };
 
-    _sentMessageIds.add(messageId);
+    // ✅ 1. SEMPRE SALVAR LOCALMENTE PRIMEIRO (status: pending_local)
+    final pendingMessage = PendingMessage(
+      msgId: messageId,
+      to: toUserId,
+      from: currentUserId,
+      content: content,
+      status: 'pending_local',
+      createdAt: DateTime.now(),
+    );
 
-    try {
-      _channel!.sink.add(json.encode(message));
-      print('📤 Sent message to $toUserId (ID: $messageId): $content');
+    await PendingMessagesStorage.savePendingMessage(pendingMessage);
+    print('💾 Mensagem salva localmente: $messageId (status: pending_local)');
 
-      // ✅ ATUALIZA O CHAT LOCALMENTE (SEM UNREAD)
-      _updateChatOnMessageSent(toUserId, content);
-    } catch (e) {
-      print('❌ Error sending message: $e');
-      _sentMessageIds.remove(messageId);
-      rethrow;
+    // ✅ 2. ATUALIZAR UI IMEDIATAMENTE (mostrar mensagem com ícone 🕓)
+    _updateChatOnMessageSent(toUserId, content);
+
+    // ✅ 3. TENTAR ENVIAR AO SERVIDOR
+    final okToSend = await canSendMessage();
+    final isConnected = _channel != null && isWebSocketConnected();
+
+    if (okToSend && isConnected) {
+      // ✅ TEM INTERNET E SERVIDOR ONLINE -> TENTAR ENVIAR
+      try {
+        final message = {
+          'type': 'message',
+          'to': toUserId,
+          'content': content,
+          'message_id': messageId,
+        };
+
+        _sentMessageIds.add(messageId);
+        _channel!.sink.add(json.encode(message));
+        print('📤 Mensagem enviada ao servidor: $messageId');
+
+        // ✅ Status será atualizado quando receber confirmação do servidor
+        // (via handleIncomingMessage quando receber ACK)
+      } catch (e) {
+        print('❌ Erro ao enviar mensagem ao servidor: $e');
+        // ✅ Mensagem permanece como pending_local para retry automático
+        await PendingMessagesStorage.incrementRetryCount(messageId);
+      }
+    } else {
+      // ✅ SEM INTERNET OU SERVIDOR OFFLINE -> MENSAGEM FICA PENDING
+      print('⚠️ Sem conexão ou servidor offline -> Mensagem ficará pendente');
+      print(
+        '   Status: pending_local (será enviada automaticamente quando conexão voltar)',
+      );
+    }
+  }
+
+  // ✅ Atualizar status de mensagem quando receber confirmação do servidor
+  static Future<void> updateMessageStatusFromServer(
+    String messageId,
+    String newStatus, {
+    String? dbMessageId,
+  }) async {
+    final pendingMsg = await PendingMessagesStorage.getMessageById(messageId);
+
+    if (pendingMsg != null) {
+      // ✅ Atualizar status no storage local
+      await PendingMessagesStorage.updateMessageStatus(
+        messageId,
+        newStatus,
+        dbMessageId: dbMessageId,
+      );
+
+      // ✅ Se status for 'sent' ou superior, remover do sqflite após sincronização
+      // (mensagem já foi sincronizada com sucesso)
+      if (newStatus == 'sent' ||
+          newStatus == 'delivered' ||
+          newStatus == 'read') {
+        // ✅ Aguardar um pouco para garantir que tudo foi processado
+        Future.delayed(const Duration(seconds: 2), () async {
+          await PendingMessagesStorage.deleteMessage(messageId);
+          print('🧹 Mensagem sincronizada removida do sqflite: $messageId');
+        });
+      }
+
+      print('🔄 Status atualizado: $messageId -> $newStatus');
     }
   }
 
@@ -788,7 +940,7 @@ class ChatService {
 
       if (currentUserId == null) {
         print('❌ User ID não encontrado no SecureStorage');
-        return await _loadChatHistoryFromStorage('unknown', contactUserId);
+        return await loadLocalChatHistory('unknown', contactUserId);
       }
 
       //final url = Uri.parse(
@@ -807,21 +959,34 @@ class ChatService {
         if (accessToken != null) 'Authorization': 'Bearer $accessToken',
       };
 
-      final response = await http.get(url, headers: headers);
-      print('📡 Response status: ${response.statusCode}');
+      try {
+        final response = await http
+            .get(url, headers: headers)
+            .timeout(Duration(seconds: 5));
+        print('📡 Response status: ${response.statusCode}');
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final messages = (data['messages'] as List<dynamic>? ?? []);
-        print('✅ Histórico carregado: ${messages.length} mensagens');
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          final messages = (data['messages'] as List<dynamic>? ?? []);
+          print('✅ Histórico carregado: ${messages.length} mensagens');
 
-        // ✅ Salvar cópia local para uso offline
-        await _saveChatHistoryToStorage(currentUserId, contactUserId, messages);
+          // ✅ Salvar cópia local para uso offline
+          await _saveChatHistoryToStorage(
+            currentUserId,
+            contactUserId,
+            messages,
+          );
 
-        return messages.cast<Map<String, dynamic>>();
-      } else {
-        print('❌ Erro ao carregar histórico: ${response.statusCode}');
-        return await _loadChatHistoryFromStorage(currentUserId, contactUserId);
+          return messages.cast<Map<String, dynamic>>();
+        } else {
+          print('❌ Erro ao carregar histórico: ${response.statusCode}');
+          return await loadLocalChatHistory(currentUserId, contactUserId);
+        }
+      } on TimeoutException catch (_) {
+        print(
+          '⚠️ Servidor indisponível (timeout) - carregando histórico local',
+        );
+        return await loadLocalChatHistory(currentUserId, contactUserId);
       }
     } catch (e) {
       print('❌ Erro loadChatHistory: $e');
@@ -829,7 +994,7 @@ class ChatService {
       // Fallback: tentar histórico local em caso de erro (inclui sem internet)
       try {
         final currentUserId = await _secureStorage.read(key: 'user_id');
-        return await _loadChatHistoryFromStorage(
+        return await loadLocalChatHistory(
           currentUserId ?? 'unknown',
           contactUserId,
         );
@@ -860,7 +1025,8 @@ class ChatService {
     }
   }
 
-  static Future<List<Map<String, dynamic>>> _loadChatHistoryFromStorage(
+  // ✅ Agora PÚBLICO para acesso direto
+  static Future<List<Map<String, dynamic>>> loadLocalChatHistory(
     String meId,
     String contactId,
   ) async {
@@ -872,13 +1038,40 @@ class ChatService {
         return [];
       }
       final data = json.decode(raw) as List<dynamic>;
-      print(
-        '📂 Histórico local carregado: ${data.length} mensagens ($meId <-> $contactId)',
-      );
+      // Silenciar log de carregamento local para reduzir spam
+      // print('📂 Histórico local carregado: ${data.length} mensagens...');
       return data.cast<Map<String, dynamic>>();
     } catch (e) {
       print('❌ Erro ao carregar histórico local: $e');
       return [];
+    }
+  }
+
+  // ✅ NOVO: Salvar mensagem no histórico local (para persistência)
+  static Future<void> saveMessageToLocalHistory(
+    String meId,
+    String contactId,
+    Map<String, dynamic> message,
+  ) async {
+    try {
+      final key = _historyStorageKey(meId, contactId);
+      final existing = await loadLocalChatHistory(meId, contactId);
+
+      // ✅ Verificar se mensagem já existe (evitar duplicatas)
+      final messageId = message['message_id']?.toString();
+      final exists = existing.any(
+        (msg) =>
+            (msg['message_id']?.toString() == messageId) ||
+            (msg['id']?.toString() == messageId),
+      );
+
+      if (!exists) {
+        existing.add(message);
+        await _saveChatHistoryToStorage(meId, contactId, existing);
+        print('💾 Mensagem salva no histórico local: $messageId');
+      }
+    } catch (e) {
+      print('❌ Erro ao salvar mensagem no histórico local: $e');
     }
   }
 
@@ -960,8 +1153,15 @@ class ChatService {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer $token',
       };
-      final res = await http.post(url, headers: headers);
+      final res = await http
+          .post(url, headers: headers)
+          .timeout(Duration(seconds: 5));
       print('📡 markMessagesRead response: ${res.statusCode}');
+    } on TimeoutException catch (_) {
+      // ✅ Timeout esperado em modo offline - silenciar
+      print(
+        '⚠️ Servidor offline - mensagens não marcadas como lidas no servidor',
+      );
     } catch (e) {
       print('❌ markMessagesRead error: $e');
     }
@@ -988,20 +1188,29 @@ class ChatService {
 
   // ✅ STORAGE METHODS
   static Future<void> _saveChatsToStorage() async {
-    try {
-      final chatsMap = {};
-      _chatContacts.forEach((key, value) {
-        chatsMap[key] = value.toMap();
-      });
-      final jsonData = json.encode(chatsMap);
-      await _secureStorage.write(key: 'chat_contacts', value: jsonData);
-      print('💾 Chats salvos no storage: ${_chatContacts.length} chats');
-    } catch (e) {
-      print('❌ Erro ao salvar chats: $e');
-    }
+    // Cancelar timer anterior se existir
+    _saveDebounceTimer?.cancel();
+
+    // Agendar salvamento após 500ms de inatividade
+    _saveDebounceTimer = Timer(Duration(milliseconds: 500), () async {
+      try {
+        final chatsMap = {};
+        _chatContacts.forEach((key, value) {
+          chatsMap[key] = value.toMap();
+        });
+        final jsonData = json.encode(chatsMap);
+        await _secureStorage.write(key: 'chat_contacts', value: jsonData);
+        print('💾 Chats salvos no storage: ${_chatContacts.length} chats');
+
+        // Aproveitar e salvar o cache de telefones também
+        _saveContactCacheToStorage();
+      } catch (e) {
+        print('❌ Erro ao salvar chats: $e');
+      }
+    });
   }
 
-  static Future<void> _loadChatsFromStorage() async {
+  static Future<void> loadLocalChats() async {
     try {
       final stored = await _secureStorage.read(key: 'chat_contacts');
       if (stored != null) {
@@ -1027,6 +1236,9 @@ class ChatService {
       } else {
         print('📂 Nenhum chat encontrado no storage');
       }
+
+      // ✅ Carregar também o cache de IDs -> Phones
+      await _loadContactCacheFromStorage();
     } catch (e) {
       print('❌ Erro ao carregar chats: $e');
     }
@@ -1165,10 +1377,41 @@ class ChatService {
         print('❌ Erro HTTP: ${response.statusCode}');
         return {'status': 'offline', 'last_seen': null};
       }
+    } on TimeoutException catch (_) {
+      // ✅ Timeout esperado em modo offline - silenciar
+      // print('⚠️ Timeout ao obter presença (offline)');
+      return {'status': 'offline', 'last_seen': null};
     } catch (e, stackTrace) {
       print('❌ Erro ao obter presença: $e');
       print('📚 Stack trace: $stackTrace');
       return {'status': 'offline', 'last_seen': null};
+    }
+  }
+
+  // ✅ ATUALIZAR PRESENÇA DE UM USUÁRIO ESPECÍFICO (usar quando reconectar)
+  static Future<void> refreshUserPresence(String userId) async {
+    try {
+      print('🔄 Atualizando presença do usuário: $userId');
+
+      final presence = await getUserPresence(userId);
+      if (presence != null) {
+        final status = presence['status']?.toString() ?? 'offline';
+        final nowTs = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+        // Atualizar cache e notificar listeners
+        _userPresenceStatus[userId] = status;
+        _presenceTimestamps[userId] = nowTs;
+
+        _presenceController.add({
+          'user_id': userId,
+          'status': status,
+          'timestamp': nowTs,
+        });
+
+        print('✅ Presença atualizada: $userId -> $status');
+      }
+    } catch (e) {
+      print('❌ Erro ao atualizar presença: $e');
     }
   }
 
