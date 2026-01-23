@@ -13,6 +13,8 @@ import 'message_operations_service.dart';
 import 'auth_service.dart';
 import 'notification_service.dart';
 import 'app_theme.dart';
+import 'services/pending_messages_storage.dart';
+import 'models/pending_message.dart';
 import 'dart:math';
 
 class ChatMessage {
@@ -232,7 +234,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   // Status de presença do contato
   String _contactPresenceStatus = 'offline'; // 'online', 'offline'
   bool _isRemoteTyping = false; // ✅ Indica se o outro está digitando
+  bool _listenersConfigured = false; // ✅ Evitar múltiplos setups
   StreamSubscription? _typingSubscription;
+  StreamSubscription? _connectionSubscription; // ✅ Nova subscription de conexão
   Timer? _typingTimer;
   bool _iAmTyping = false;
 
@@ -242,6 +246,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    print(
+      '🔍 [INIT] ChatPage initState() - remoteUserId: ${widget.remoteUserId}',
+    );
     // Registrar observer para detectar background
     WidgetsBinding.instance.addObserver(this);
 
@@ -292,9 +299,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     _messageSubscription?.cancel();
     _presenceSubscription?.cancel();
+    _connectionSubscription?.cancel();
     _typingSubscription?.cancel();
     _typingTimer?.cancel();
-    
+
     // Se eu estava digitando, avisar que parei ao sair
     if (_iAmTyping) {
       ChatService.sendTypingIndicator(widget.remoteUserId, false);
@@ -349,12 +357,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void _setupMyTypingDetection() {
     _messageController.addListener(() {
       final text = _messageController.text;
-      
+
       if (text.isNotEmpty) {
         if (!_iAmTyping) {
           _iAmTyping = true;
           ChatService.sendTypingIndicator(widget.remoteUserId, true);
-          
+
           // Iniciar pulso/heartbeart para manter o status ativo no outro lado
           // (evita que o timer de segurança do outro lado expire)
           _typingHeartbeatTimer?.cancel();
@@ -394,6 +402,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   // Carregar status de presença do contacto
   Future<void> _loadContactPresence() async {
+    // ✅ Se estamos offline, não tentar carregar presença
+    if (!_isConnected) {
+      if (mounted) {
+        setState(() {
+          _contactPresenceStatus = 'offline';
+        });
+      }
+      return;
+    }
+
     try {
       print('🔍 Buscando presença para: ${widget.remoteUserId}');
       final presence = await ChatService.getUserPresence(widget.remoteUserId);
@@ -414,6 +432,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             '⚠️ Não foi possível carregar presença, definindo como offline',
           );
         }
+      }
+    } on TimeoutException catch (_) {
+      // ✅ Timeout é esperado em modo offline - silenciar
+      if (mounted) {
+        setState(() {
+          _contactPresenceStatus = 'offline';
+        });
       }
     } catch (e) {
       print('❌ Erro ao carregar presença: $e');
@@ -464,30 +489,47 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         return;
       }
 
-      await _setupRealChat();
-      await _loadChatHistory();
+      // ✅ MUDANÇA CRÍTICA: Carregar histórico PRIMEIRO (offline-first real)
+      // Não aguardar o setupRealChat que pode demorar 5s se o server estiver down
+      _loadChatHistory();
+
+      // Conectar em background (sem await para não bloquear a UI)
+      _setupRealChat();
     } catch (e) {
       print('❌ Erro na inicialização do chat: $e');
     }
   }
 
   Future<void> _setupRealChat() async {
+    print('🔍 [SETUP] _setupRealChat() chamado');
     final connected = await ChatService.connect();
+    print('🔍 [SETUP] Conectado: $connected');
 
-    if (connected && mounted) {
+    if (mounted) {
       setState(() {
-        _isConnected = true;
+        _isConnected = connected;
       });
+    }
 
+    if (connected) {
+      print('🔍 [SETUP] Entrou no if (connected) - configurando listeners');
+      // ✅ ONLINE: Configurar listeners em tempo real
       _messageSubscription = ChatService.messageStream.listen((message) {
         print('💬 Mensagem recebida: $message');
         _handleIncomingMessage(message);
       });
 
       // ESCUTAR EVENTOS DE PRESENÇA (com delay de 2s para aparecer/sumir)
+      print(
+        '🔍 [SETUP] Configurando presenceSubscription para remoteUserId: ${widget.remoteUserId}',
+      );
       _presenceSubscription = ChatService.presenceStream.listen((presence) {
         final userId = presence['user_id']?.toString();
         final status = presence['status']?.toString();
+
+        print(
+          '🔍 [PRESENCE DEBUG] Evento recebido: userId=$userId, status=$status, target=${widget.remoteUserId}',
+        );
 
         if (userId == widget.remoteUserId && status != null && mounted) {
           print('📡 Evento de presença recebido: $userId -> $status');
@@ -497,27 +539,37 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           _presenceOfflineTimer?.cancel();
 
           if (status == 'online') {
-            // Esperar 2 segundos antes de mostrar "online"
-            _presenceOnlineTimer = Timer(const Duration(seconds: 2), () {
-              if (!mounted) return;
+            // ATUALIZAR IMEDIATAMENTE (sem delay para testar)
+            print('⚡ Atualizando IMEDIATAMENTE para ONLINE: $userId');
+            if (mounted) {
               setState(() {
                 _contactPresenceStatus = 'online';
               });
-              print('✅ Presença aplicada (ONLINE) após delay');
-            });
+              print('✅ Presença aplicada (ONLINE) imediatamente');
+            }
           } else if (status == 'offline') {
-            // Esperar 2 segundos antes de remover o "online"
-            _presenceOfflineTimer = Timer(const Duration(seconds: 2), () async {
-              if (!mounted) return;
-
+            // ATUALIZAR IMEDIATAMENTE (sem delay para testar)
+            print('⚡ Atualizando IMEDIATAMENTE para OFFLINE: $userId');
+            if (mounted) {
               setState(() {
                 _contactPresenceStatus = 'offline';
               });
-
-              await _loadContactPresence();
-              print('✅ Presença aplicada (OFFLINE) após delay');
-            });
+              print('✅ Presença aplicada (OFFLINE) imediatamente');
+            }
           }
+        }
+      });
+
+      // ✅ ESCUTAR EVENTOS DE RECONEXÃO para atualizar presença
+      _connectionSubscription = ChatService.connectionStatusStream.listen((
+        isConnected,
+      ) {
+        if (isConnected && mounted) {
+          print(
+            '🔄 WebSocket reconectado - atualizando presença do contato...',
+          );
+          // Atualizar presença do contato atual quando reconectar
+          ChatService.refreshUserPresence(widget.remoteUserId);
         }
       });
 
@@ -527,8 +579,74 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           _loadContactPresence();
         }
       });
+
+      // ✅ NOVO: Listener para atualizar status em tempo real
+      _startStatusUpdateListener();
     } else {
-      print('❌ Falha na conexão WebSocket');
+      // ✅ OFFLINE: Modo offline - sem presença, sem listeners em tempo real
+      print('⚠️ Modo offline - histórico local será carregado');
+      if (mounted) {
+        setState(() {
+          _contactPresenceStatus = 'offline';
+        });
+      }
+
+      // NOVO: Configurar listener de conexão para quando voltar
+      _connectionSubscription = ChatService.connectionStatusStream.listen((
+        isConnected,
+      ) {
+        print(' [CONNECTION] Status mudou: $isConnected');
+        if (isConnected && mounted && !_listenersConfigured) {
+          print(' [CONNECTION] Conectou! Configurando listeners...');
+          _listenersConfigured = true; // ✅ Marcar como configurado
+
+          // ✅ CANCELAR LISTENERS ANTIGOS para evitar duplicação
+          _presenceSubscription?.cancel();
+          _messageSubscription?.cancel();
+
+          _presenceSubscription = ChatService.presenceStream.listen((presence) {
+            final userId = presence['user_id']?.toString();
+            final status = presence['status']?.toString();
+
+            print(
+              ' [PRESENCE DEBUG] Evento recebido: userId=$userId, status=$status, target=${widget.remoteUserId}',
+            );
+
+            if (userId == widget.remoteUserId && status != null && mounted) {
+              print(' Evento de presença recebido: $userId -> $status');
+
+              // Cancelar timers anteriores para evitar "piscar"
+              _presenceOnlineTimer?.cancel();
+              _presenceOfflineTimer?.cancel();
+
+              if (status == 'online') {
+                // ATUALIZAR IMEDIATAMENTE (sem delay para testar)
+                print('⚡ Atualizando IMEDIATAMENTE para ONLINE: $userId');
+                if (mounted) {
+                  setState(() {
+                    _contactPresenceStatus = 'online';
+                  });
+                  print('✅ Presença aplicada (ONLINE) imediatamente');
+                }
+              } else if (status == 'offline') {
+                // ATUALIZAR IMEDIATAMENTE (sem delay para testar)
+                print('⚡ Atualizando IMEDIATAMENTE para OFFLINE: $userId');
+                if (mounted) {
+                  setState(() {
+                    _contactPresenceStatus = 'offline';
+                  });
+                  print('✅ Presença aplicada (OFFLINE) imediatamente');
+                }
+              }
+            }
+          });
+
+          _messageSubscription = ChatService.messageStream.listen((message) {
+            print(' Mensagem recebida: $message');
+            _handleIncomingMessage(message);
+          });
+        }
+      });
     }
   }
 
@@ -1060,43 +1178,31 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     setState(() => _isLoadingHistory = true);
 
     try {
-      print('📜 Carregando histórico dinâmico...');
-      final history = await ChatService.loadChatHistory(widget.remoteUserId);
+      print('📜 Carregando histórico (Estratégia Offline-First)...');
 
-      if (mounted && history.isNotEmpty) {
-        setState(() {
-          _messages.addAll(
-            history.map((msg) {
-              final serverTimestamp = _parseMessageTimestamp(msg);
+      // 1. CARREGAMENTO RÁPIDO: Cache Local
+      final localHistory = await ChatService.loadLocalChatHistory(
+        _currentUserId!,
+        widget.remoteUserId,
+      );
 
-              return ChatMessage(
-                id: (msg['message_id'] ?? msg['id'] ?? _uuid.v4()).toString(),
-                text: _getDeletedMessageText(
-                  msg,
-                ), // ✅ PERSONALIZAR TEXTO DELETADO
-                isMe: _isMessageFromMe(msg),
-                timestamp: serverTimestamp,
-                status: (msg['status']?.toString() ?? 'sent'),
-                isEdited:
-                    (msg['is_edited'] ==
-                    true), // ✅ VERIFICAR is_edited DO BACKEND
-                isDeleted:
-                    (msg['is_deleted'] ==
-                    true), // ✅ VERIFICAR is_deleted DO BACKEND
-                // ✅ INFORMAÇÕES DE RESPOSTA DO HISTÓRICO
-                replyToId: msg['reply_to_id']?.toString(),
-                replyToText: msg['reply_to_text']?.toString(),
-                replyToSenderName: msg['reply_to_sender_name']?.toString(),
-                replyToSenderId: msg['reply_to_sender_id']?.toString(),
-              );
-            }).toList(),
-          );
-          print('✅ ${history.length} mensagens carregadas no histórico');
-        });
-        _scrollToBottom();
+      if (mounted && localHistory.isNotEmpty) {
+        _processAndAddMessages(localHistory, isLocal: true);
+      }
 
-        print('📊 RESUMO DO CARREGAMENTO:');
-        print('   - Total de mensagens carregadas: ${_messages.length}');
+      // ✅ NOVO: Carregar mensagens pending do sqflite para este chat
+      await _loadPendingMessagesFromStorage();
+
+      // 2. CARREGAMENTO LENTO: Rede (Background)
+      // O ChatService.loadChatHistory já tem timeout de 5s e fallback para local
+      // Mas como já carregamos o local, se der timeout/erro, ele vai retornar o local de novo.
+      // Isso garante que se houver msgs novas, elas apareçam.
+      final freshHistory = await ChatService.loadChatHistory(
+        widget.remoteUserId,
+      );
+
+      if (mounted) {
+        _processAndAddMessages(freshHistory, isLocal: false);
       }
     } catch (e) {
       print('❌ Erro ao carregar histórico: $e');
@@ -1104,6 +1210,203 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() => _isLoadingHistory = false);
       }
+    }
+  }
+
+  // ✅ Salvar mensagem no histórico local (para persistência)
+  Future<void> _saveMessageToLocalHistory(ChatMessage message) async {
+    try {
+      // ✅ Salvar no sqflite (pending_messages_storage)
+      if (message.status == 'pending_local' || message.status == 'sent') {
+        final pendingMsg = PendingMessage(
+          msgId: message.id,
+          to: widget.remoteUserId,
+          from: _currentUserId ?? 'unknown',
+          content: message.text,
+          status: message.status,
+          createdAt: message.timestamp,
+          // ✅ Campos de reply
+          replyToId: message.replyToId,
+          replyToText: message.replyToText,
+          replyToSenderName: message.replyToSenderName,
+          replyToSenderId: message.replyToSenderId,
+          // ✅ Campos de edição e deleção
+          isEdited: message.isEdited,
+          isDeleted: message.isDeleted,
+        );
+        await PendingMessagesStorage.savePendingMessage(pendingMsg);
+        print('💾 Mensagem salva no storage local: ${message.id}');
+      }
+
+      // ✅ Também salvar no histórico local do ChatService (para aparecer na lista de chats)
+      await ChatService.saveMessageToLocalHistory(
+        _currentUserId!,
+        widget.remoteUserId,
+        {
+          'message_id': message.id,
+          'content': message.text,
+          'sender_id': _currentUserId,
+          'receiver_id': widget.remoteUserId,
+          'sent_at': message.timestamp.toIso8601String(),
+          'status': message.status,
+          'is_edited': message.isEdited,
+          'is_deleted': message.isDeleted,
+          // ✅ Campos de reply
+          'reply_to_id': message.replyToId,
+          'reply_to_text': message.replyToText,
+          'reply_to_sender_name': message.replyToSenderName,
+          'reply_to_sender_id': message.replyToSenderId,
+        },
+      );
+    } catch (e) {
+      print('❌ Erro ao salvar mensagem no histórico local: $e');
+    }
+  }
+
+  // ✅ NOVO: Listener para atualizar status em tempo real
+  Timer? _statusUpdateTimer;
+  
+  void _startStatusUpdateListener() {
+    _statusUpdateTimer?.cancel();
+    // ✅ Verificar mudanças de status a cada 2 segundos
+    _statusUpdateTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      
+      await _updatePendingMessagesStatus();
+    });
+  }
+
+  // ✅ NOVO: Atualizar status de mensagens pending em tempo real
+  Future<void> _updatePendingMessagesStatus() async {
+    try {
+      // ✅ Buscar todas as mensagens pending deste chat
+      final pendingMessages = await PendingMessagesStorage.getPendingMessages(
+        toUserId: widget.remoteUserId,
+      );
+
+      if (pendingMessages.isEmpty) return;
+
+      // ✅ Atualizar status na UI se houver mudanças
+      bool hasChanges = false;
+      for (final pending in pendingMessages) {
+        final messageIndex = _messages.indexWhere((msg) => msg.id == pending.msgId);
+        if (messageIndex >= 0) {
+          final currentMsg = _messages[messageIndex];
+          // ✅ Se status mudou, atualizar na UI
+          if (currentMsg.status != pending.status) {
+            hasChanges = true;
+            if (mounted) {
+              setState(() {
+                _messages[messageIndex] = ChatMessage(
+                  id: currentMsg.id,
+                  text: currentMsg.text,
+                  isMe: currentMsg.isMe,
+                  timestamp: currentMsg.timestamp,
+                  status: pending.status, // ✅ Atualizar status
+                  isEdited: currentMsg.isEdited,
+                  isDeleted: currentMsg.isDeleted,
+                  replyToId: currentMsg.replyToId,
+                  replyToText: currentMsg.replyToText,
+                  replyToSenderName: currentMsg.replyToSenderName,
+                  replyToSenderId: currentMsg.replyToSenderId,
+                );
+              });
+              print('🔄 Status atualizado em tempo real: ${pending.msgId} -> ${pending.status}');
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print('❌ Erro ao atualizar status em tempo real: $e');
+    }
+  }
+
+  // ✅ NOVO: Carregar mensagens pending do sqflite
+  Future<void> _loadPendingMessagesFromStorage() async {
+    try {
+      final pendingMessages = await PendingMessagesStorage.getPendingMessages(
+        toUserId: widget.remoteUserId,
+      );
+
+      if (pendingMessages.isEmpty) {
+        print('📭 Nenhuma mensagem pending encontrada para este chat');
+        return;
+      }
+
+      print('📬 Carregando ${pendingMessages.length} mensagens pending do storage...');
+
+      final pendingChatMessages = pendingMessages.map((pending) {
+        return ChatMessage(
+          id: pending.msgId,
+          text: pending.isDeleted ? '⊗ Eliminou esta mensagem' : pending.content,
+          isMe: true,
+          timestamp: pending.createdAt,
+          status: pending.status, // pending_local, sent, delivered, etc
+          isEdited: pending.isEdited,
+          isDeleted: pending.isDeleted,
+          // ✅ Campos de reply carregados do sqflite
+          replyToId: pending.replyToId,
+          replyToText: pending.replyToText,
+          replyToSenderName: pending.replyToSenderName,
+          replyToSenderId: pending.replyToSenderId,
+        );
+      }).toList();
+
+      if (mounted) {
+        setState(() {
+          // ✅ Adicionar mensagens pending que ainda não estão na lista
+          for (final pendingMsg in pendingChatMessages) {
+            final exists = _messages.any((msg) => msg.id == pendingMsg.id);
+            if (!exists) {
+              _messages.add(pendingMsg);
+            }
+          }
+          _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+        });
+        print('✅ ${pendingChatMessages.length} mensagens pending adicionadas ao chat');
+      }
+    } catch (e) {
+      print('❌ Erro ao carregar mensagens pending: $e');
+    }
+  }
+
+  // Helper para processar e adicionar mensagens
+  void _processAndAddMessages(
+    List<Map<String, dynamic>> history, {
+    required bool isLocal,
+  }) {
+    final msgs = history.map((msg) {
+      final serverTimestamp = _parseMessageTimestamp(msg);
+
+      return ChatMessage(
+        id: (msg['message_id'] ?? msg['id'] ?? _uuid.v4()).toString(),
+        text: _getDeletedMessageText(msg),
+        isMe: _isMessageFromMe(msg),
+        timestamp: serverTimestamp,
+        status: (msg['status']?.toString() ?? 'sent'),
+        isEdited: (msg['is_edited'] == true),
+        isDeleted: (msg['is_deleted'] == true),
+        replyToId: msg['reply_to_id']?.toString(),
+        replyToText: msg['reply_to_text']?.toString(),
+        replyToSenderName: msg['reply_to_sender_name']?.toString(),
+        replyToSenderId: msg['reply_to_sender_id']?.toString(),
+      );
+    }).toList();
+
+    setState(() {
+      _messages.clear(); // Limpar para evitar duplicatas ao recarregar
+      _messages.addAll(msgs);
+      print(
+        '✅ ${msgs.length} mensagens carregadas (${isLocal ? "LOCAL" : "SERVER"})',
+      );
+    });
+
+    // Scroll só se for a primeira carga ou se for server (mais confiável)
+    if (isLocal || msgs.isNotEmpty) {
+      _scrollToBottom();
     }
   }
 
@@ -1133,9 +1436,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         }
       }
 
-      // CORREÇÃO: ADICIONAR 2 HORAS
-      final correctedDateTime = parsedDateTime.add(const Duration(hours: 2));
-      return correctedDateTime;
+      // ✅ REMOVIDO: Não adicionar 2 horas - usar timestamp original
+      // O servidor já retorna o timestamp correto
+      return parsedDateTime;
     } catch (e) {
       print('❌ Erro ao parsear timestamp: $e');
     }
@@ -1175,8 +1478,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
-    if (text.isEmpty || !_isConnected || _currentUserId == null) return;
+    if (text.isEmpty || _currentUserId == null) return;
 
+    // ✅ OFFLINE-FIRST: Permitir enviar mesmo sem conexão (será salvo localmente)
     final tempMessageId =
         'temp_${DateTime.now().millisecondsSinceEpoch}_${_currentUserId}_${_uuid.v4().substring(0, 6)}';
 
@@ -1184,46 +1488,51 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     _pendingMessageIds.add(tempMessageId);
 
-    setState(() {
-      _messages.add(
-        ChatMessage(
-          id: tempMessageId,
-          text: text,
-          isMe: true,
-          timestamp: DateTime.now(),
-          status: 'sent', // ícone de enviado só se realmente for ao servidor
-          isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
-          isDeleted: false, // ✅ NOVA MENSAGEM NÃO É DELETADA
-        ),
-      );
+    // ✅ OFFLINE-FIRST: Status inicial é 'pending_local' (será atualizado quando servidor confirmar)
+    final initialStatus = _isConnected ? 'pending_local' : 'pending_local';
 
+    final newMessage = ChatMessage(
+      id: tempMessageId,
+      text: text,
+      isMe: true,
+      timestamp: DateTime.now(),
+      status: initialStatus, // ✅ Status inicial: pending_local (será atualizado quando servidor confirmar)
+      isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
+      isDeleted: false, // ✅ NOVA MENSAGEM NÃO É DELETADA
+    );
+
+    setState(() {
+      _messages.add(newMessage);
       // ✅ ORDENAR MENSAGENS POR TIMESTAMP APÓS ADICIONAR
       _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
     });
+
+    // ✅ OFFLINE-FIRST: Salvar no histórico local para persistência
+    await _saveMessageToLocalHistory(newMessage);
 
     _messageController.clear();
     _scrollToBottom();
 
     try {
-      // Envia efetivamente (com verificação de internet)
+      // ✅ OFFLINE-FIRST: ChatService.sendMessage salva localmente primeiro
+      // Se não houver conexão, mensagem fica como pending_local e será sincronizada depois
       await ChatService.sendMessage(
         widget.remoteUserId,
         text,
         tempId: tempMessageId,
       );
+      
+      // ✅ Status será atualizado automaticamente quando receber confirmação do servidor
+      // (via _handleIncomingMessage quando receber ACK com db_message_id)
     } catch (e) {
       print('❌ Falha ao enviar mensagem: $e');
-
-      setState(() {
-        _messages.removeWhere((m) => m.id == tempMessageId);
-      });
-      _pendingMessageIds.remove(tempMessageId);
-      _messageController.text = text;
-
+      // ✅ Mensagem já está salva localmente como pending_local
+      // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
+      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Sem conexão com a internet. Mensagem não enviada.'),
+            content: Text('Mensagem salva localmente. Será enviada quando conexão voltar.'),
           ),
         );
       }
@@ -1961,6 +2270,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             );
           });
 
+          // ✅ OFFLINE-FIRST: Atualizar no sqflite se for mensagem pending
+          final pendingMsg = await PendingMessagesStorage.getMessageById(_editingMessageId!);
+          if (pendingMsg != null) {
+            await PendingMessagesStorage.updateMessageContent(
+              _editingMessageId!,
+              result['edited_message']['content'],
+            );
+            print('💾 Edição salva no sqflite: ${_editingMessageId}');
+          }
+
           // ✅ Mensagem editada sem popup de sucesso
         }
       } catch (e) {
@@ -2019,11 +2338,43 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     try {
       print('🗑️ Apagando mensagem ${message.id}');
 
-      // Chamar backend para deletar mensagem
-      final result = await MessageOperationsService.deleteMessage(message.id);
+      // ✅ OFFLINE-FIRST: Atualizar localmente primeiro
+      setState(() {
+        final messageIndex = _messages.indexWhere((msg) => msg.id == message.id);
+        if (messageIndex != -1) {
+          final oldMessage = _messages[messageIndex];
+          _messages[messageIndex] = ChatMessage(
+            id: oldMessage.id,
+            text: '⊗ Eliminou esta mensagem',
+            isMe: oldMessage.isMe,
+            timestamp: oldMessage.timestamp,
+            status: oldMessage.status,
+            isEdited: oldMessage.isEdited,
+            isDeleted: true, // ✅ MARCAR COMO DELETADA
+            replyToId: oldMessage.replyToId,
+            replyToText: oldMessage.replyToText,
+            replyToSenderName: oldMessage.replyToSenderName,
+            replyToSenderId: oldMessage.replyToSenderId,
+          );
+        }
+      });
 
-      if (result['success'] == true) {
-        print('🗑️Mensagem apagada  ${message.id}');
+      // ✅ OFFLINE-FIRST: Atualizar no sqflite se for mensagem pending
+      final pendingMsg = await PendingMessagesStorage.getMessageById(message.id);
+      if (pendingMsg != null) {
+        await PendingMessagesStorage.markMessageAsDeleted(message.id);
+        print('💾 Deleção salva no sqflite: ${message.id}');
+      }
+
+      // Chamar backend para deletar mensagem
+      try {
+        final result = await MessageOperationsService.deleteMessage(message.id);
+        if (result['success'] == true) {
+          print('🗑️ Mensagem apagada no servidor: ${message.id}');
+        }
+      } catch (e) {
+        print('⚠️ Erro ao apagar no servidor (mas salvo localmente): $e');
+        // ✅ Mensagem já está marcada como deletada localmente
       }
     } catch (e) {
       print('❌ Erro ao apagar mensagem: $e');
@@ -2107,12 +2458,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       print('   ID Temporário: $tempReplyId');
 
       // ✅ 3. CRIAR MENSAGEM LOCAL COM INFORMAÇÕES COMPLETAS
+      // ✅ OFFLINE-FIRST: Status inicial é 'pending_local' (será atualizado quando servidor confirmar)
+      final initialStatus = 'pending_local';
+      
       final localReply = ChatMessage(
         id: tempReplyId,
         text: replyText,
         isMe: true,
         timestamp: DateTime.now(),
-        status: 'sent',
+        status: initialStatus, // ✅ Status inicial: pending_local
         isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
         isDeleted: false, // ✅ NOVA MENSAGEM NÃO É DELETADA
         // ✅ INFORMAÇÕES DE REPLY PRESERVADAS
@@ -2134,83 +2488,101 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         _messageController.clear();
       });
 
-      // ✅ 5. SCROLL PARA BAIXO
+      // ✅ 5. OFFLINE-FIRST: Salvar no histórico local e sqflite
+      await _saveMessageToLocalHistory(localReply);
+
+      // ✅ 6. SCROLL PARA BAIXO
       _scrollToBottom();
 
-      // ✅ 6. ADICIONAR À LISTA DE PENDENTES (PARA EVITAR DUPLICAÇÃO)
+      // ✅ 7. ADICIONAR À LISTA DE PENDENTES (PARA EVITAR DUPLICAÇÃO)
       _pendingMessageIds.add(tempReplyId);
 
-      // ✅ 7. ENVIAR PARA O BACKEND - USAR VARIÁVEL LOCAL SALVA
+      // ✅ 8. ENVIAR PARA O BACKEND - USAR VARIÁVEL LOCAL SALVA
       print('🔄 Enviando reply para o backend...');
-      final result = await MessageOperationsService.replyToMessage(
-        originalMessageId,
-        replyText,
-        receiverId: widget.remoteUserId,
-      );
+      try {
+        final result = await MessageOperationsService.replyToMessage(
+          originalMessageId,
+          replyText,
+          receiverId: widget.remoteUserId,
+        );
 
-      if (result['success'] == true) {
-        final replyMessage = result['reply_message'];
-        final dbMessageId = replyMessage['id']?.toString();
+        if (result['success'] == true) {
+          final replyMessage = result['reply_message'];
+          final dbMessageId = replyMessage['id']?.toString();
 
-        print('✅ REPLY ENVIADO COM SUCESSO');
-        print('   ID Banco: $dbMessageId');
+          print('✅ REPLY ENVIADO COM SUCESSO');
+          print('   ID Banco: $dbMessageId');
 
-        if (dbMessageId != null) {
-          // ✅ 8. ATUALIZAR MENSAGEM LOCAL COM ID REAL DO BANCO
-          final messageIndex = _messages.indexWhere(
-            (msg) => msg.id == tempReplyId,
-          );
+          if (dbMessageId != null) {
+            // ✅ 9. ATUALIZAR MENSAGEM LOCAL COM ID REAL DO BANCO
+            final messageIndex = _messages.indexWhere(
+              (msg) => msg.id == tempReplyId,
+            );
 
-          if (messageIndex != -1) {
-            setState(() {
-              _messages[messageIndex] = ChatMessage(
-                id: dbMessageId,
-                text: _messages[messageIndex].text,
-                isMe: _messages[messageIndex].isMe,
-                timestamp: DateTime.parse(
-                  replyMessage['sent_at'] ?? DateTime.now().toIso8601String(),
-                ),
-                status: replyMessage['status']?.toString() ?? 'sent',
-                isEdited: _messages[messageIndex]
-                    .isEdited, // ✅ PRESERVAR STATUS DE EDIÇÃO!
-                isDeleted: _messages[messageIndex]
-                    .isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
-                replyToId: _messages[messageIndex].replyToId,
-                replyToText: _messages[messageIndex].replyToText,
-                replyToSenderName: _messages[messageIndex].replyToSenderName,
-                replyToSenderId: _messages[messageIndex].replyToSenderId,
-              );
-            });
+            if (messageIndex != -1) {
+              setState(() {
+                _messages[messageIndex] = ChatMessage(
+                  id: dbMessageId,
+                  text: _messages[messageIndex].text,
+                  isMe: _messages[messageIndex].isMe,
+                  timestamp: DateTime.parse(
+                    replyMessage['sent_at'] ?? DateTime.now().toIso8601String(),
+                  ),
+                  status: replyMessage['status']?.toString() ?? 'sent',
+                  isEdited: _messages[messageIndex]
+                      .isEdited, // ✅ PRESERVAR STATUS DE EDIÇÃO!
+                  isDeleted: _messages[messageIndex]
+                      .isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
+                  replyToId: _messages[messageIndex].replyToId,
+                  replyToText: _messages[messageIndex].replyToText,
+                  replyToSenderName: _messages[messageIndex].replyToSenderName,
+                  replyToSenderId: _messages[messageIndex].replyToSenderId,
+                );
+              });
+            }
+
+            // ✅ Atualizar status no sqflite
+            await PendingMessagesStorage.updateMessageStatus(
+              tempReplyId,
+              replyMessage['status']?.toString() ?? 'sent',
+              dbMessageId: dbMessageId,
+            );
+
+            _pendingMessageIds.remove(tempReplyId);
+          } else {
+            print('⚠️ Reply enviado mas dbMessageId é nulo');
           }
 
-          _pendingMessageIds.remove(tempReplyId);
+          // ✅ 10. ATUALIZAR CHAT LIST
+          ChatService.updateChatAfterReply(widget.remoteUserId, replyText);
+
+          print('✅ Reply processado com sucesso!');
         } else {
-          print('⚠️ Reply enviado mas dbMessageId é nulo');
+          print('❌ ERRO NO BACKEND AO ENVIAR REPLY: ${result['error']}');
+          // ✅ SE FALHAR, MENSAGEM JÁ ESTÁ SALVA COMO pending_local
+          // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
+          
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Resposta salva localmente. Será enviada quando conexão voltar.'),
+                duration: Duration(seconds: 3),
+              ),
+            );
+          }
         }
-
-        // ✅ 9. ATUALIZAR CHAT LIST
-        ChatService.updateChatAfterReply(widget.remoteUserId, replyText);
-
-        print('✅ Reply processado com sucesso!');
-      } else {
-        print('❌ ERRO NO BACKEND AO ENVIAR REPLY: ${result['error']}');
-        // ✅ SE FALHAR, REMOVER A MENSAGEM LOCAL
-        setState(() {
-          _messages.removeWhere((msg) => msg.id == tempReplyId);
-        });
-        _pendingMessageIds.remove(tempReplyId);
-
-        // ✅ RESTAURAR O ESTADO DE REPLY
-        _selectedMessageId = originalMessageId;
-        _messageController.text = replyText;
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Erro ao enviar resposta: ${result['error']}'),
-            backgroundColor: Colors.red,
-            duration: Duration(seconds: 3),
-          ),
-        );
+      } catch (e) {
+        print('❌ Falha ao enviar reply: $e');
+        // ✅ Mensagem já está salva localmente como pending_local
+        // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Resposta salva localmente. Será enviada quando conexão voltar.'),
+            ),
+          );
+        }
       }
     } catch (e, stackTrace) {
       print('❌ ERRO CRÍTICO AO ENVIAR REPLY: $e');
@@ -2462,9 +2834,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               const SizedBox(width: 8),
               Container(
                 decoration: BoxDecoration(
-                  color: _isConnected
-                      ? AppTheme.appBarColor
-                      : AppTheme.textLight,
+                  // ✅ OFFLINE-FIRST: Sempre verde, independente de conexão
+                  color: AppTheme.appBarColor,
                   shape: BoxShape.circle,
                 ),
                 child: IconButton(
@@ -2474,19 +2845,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         : Icons.send,
                     color: AppTheme.textOnGreen,
                   ),
-                  onPressed: _isConnected
-                      ? () {
-                          if (_editingMessageId != null) {
-                            _updateMessage();
-                          } else if (_selectedMessageId != null) {
-                            _sendReply();
-                          } else if (_messageController.text.trim().isEmpty) {
-                            _toggleVoiceRecording();
-                          } else {
-                            _sendMessage();
-                          }
-                        }
-                      : null,
+                  // ✅ OFFLINE-FIRST: Permitir enviar mesmo sem conexão (será salvo localmente)
+                  onPressed: () {
+                      if (_editingMessageId != null) {
+                        _updateMessage();
+                      } else if (_selectedMessageId != null) {
+                        _sendReply();
+                      } else if (_messageController.text.trim().isEmpty) {
+                        _toggleVoiceRecording();
+                      } else {
+                        _sendMessage();
+                      }
+                    },
                 ),
               ),
             ],
@@ -2503,38 +2873,40 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     final isOwnMessage = message.isMe;
     final replyIsOwn = message.replyToSenderId == _currentUserId.toString();
-    final replySenderName = replyIsOwn ? 'Eu' : (message.replyToSenderName ?? 'Desconhecido');
-    
+    final replySenderName = replyIsOwn
+        ? 'Eu'
+        : (message.replyToSenderName ?? 'Desconhecido');
+
     // Cores baseadas no tipo de balão (Enviado vs Recebido)
-    final backgroundColor = isOwnMessage 
+    final backgroundColor = isOwnMessage
         ? Colors.black.withOpacity(0.1) // Escurece levemente o verde
         : const Color(0xFFF5F5F5).withOpacity(0.6); // Cinza no balão branco
-        
+
     final textColor = isOwnMessage
         ? Colors.white.withOpacity(0.9)
         : Colors.black.withOpacity(0.6);
 
     // DEFINIÇÃO DE CORES DE DESTAQUE (Barra e Nome)
     Color accentColor;
-    
+
     if (isOwnMessage) {
       // ESTAMOS NO BALÃO VERDE (Enviado) -> Precisamos de cores Claras
       if (replyIsOwn) {
-         // Respondendo a mim mesmo: "Você" em Branco para máximo contraste
-         accentColor = Colors.white;
+        // Respondendo a mim mesmo: "Você" em Branco para máximo contraste
+        accentColor = Colors.white;
       } else {
-         // Respondendo a outro: Nome dele. O Roxo escuro não aparece no verde.
-         // Usamos um Roxo Claro/Lilás ou Laranja que contraste bem com verde escuro.
-         accentColor = const Color(0xFFE1BEE7); // Purple 100 (Lilás claro)
+        // Respondendo a outro: Nome dele. O Roxo escuro não aparece no verde.
+        // Usamos um Roxo Claro/Lilás ou Laranja que contraste bem com verde escuro.
+        accentColor = const Color(0xFFE1BEE7); // Purple 100 (Lilás claro)
       }
     } else {
       // ESTAMOS NO BALÃO BRANCO (Recebido) -> Cores Escuras normais
       if (replyIsOwn) {
-         // Respondendo a mim: Verde escuro
-         accentColor = AppTheme.appBarColor; 
+        // Respondendo a mim: Verde escuro
+        accentColor = AppTheme.appBarColor;
       } else {
-         // Respondendo a outro: Roxo escuro
-         accentColor = const Color(0xFF6B4B9E);
+        // Respondendo a outro: Roxo escuro
+        accentColor = const Color(0xFF6B4B9E);
       }
     }
 
@@ -2544,23 +2916,28 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       decoration: BoxDecoration(
         color: backgroundColor,
         borderRadius: BorderRadius.circular(6),
-         // Gambiarra visual para a borda esquerda ficar dentro do arredondamento:
-         // Usamos um container interno recortado ou apenas BorderSide se funcionar bem.
-         // O WhatsApp usa radius pequeno (4-6).
+        // Gambiarra visual para a borda esquerda ficar dentro do arredondamento:
+        // Usamos um container interno recortado ou apenas BorderSide se funcionar bem.
+        // O WhatsApp usa radius pequeno (4-6).
       ),
       child: IntrinsicHeight(
         child: Row(
-          mainAxisSize: MainAxisSize.min, // ✅ IMPORTANTE: Ocupar apenas o espaço necessário
+          mainAxisSize: MainAxisSize
+              .min, // ✅ IMPORTANTE: Ocupar apenas o espaço necessário
           children: [
             Container(
               width: 4,
               decoration: BoxDecoration(
                 color: accentColor,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(2), bottom: Radius.circular(2))
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(2),
+                  bottom: Radius.circular(2),
+                ),
               ),
             ),
             SizedBox(width: 8),
-            Flexible( // ✅ Usar Flexible em vez de Expanded para permitir encolher
+            Flexible(
+              // ✅ Usar Flexible em vez de Expanded para permitir encolher
               fit: FlexFit.loose,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2580,10 +2957,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   const SizedBox(height: 2),
                   Text(
                     message.replyToText!,
-                    style: TextStyle(
-                      color: textColor,
-                      fontSize: 13,
-                    ),
+                    style: TextStyle(color: textColor, fontSize: 13),
                     maxLines: 3,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -2603,106 +2977,120 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Align(
-        alignment: message.isMe ? Alignment.centerRight : Alignment.centerLeft,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.80,
-            minWidth: 100, // Garantir largura mínima para hora
-          ),
-          child: CustomPaint(
-            painter: BubblePainter(
-              color: message.isDeleted
-                  ? Colors.grey[200]!
-                  : (message.isMe
-                      ? AppTheme.appBarColor // Cor exata da AppBar
-                      : AppTheme.messageReceived),
-              alignment: message.isMe ? Alignment.topRight : Alignment.topLeft,
-              tail: true,
+          alignment: message.isMe
+              ? Alignment.centerRight
+              : Alignment.centerLeft,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.of(context).size.width * 0.80,
+              minWidth: 100, // Garantir largura mínima para hora
             ),
-            child: Container(
-              margin: EdgeInsets.fromLTRB(
-                message.isMe ? 8 : 16, // Margem esquerda (maior se recebido para tail)
-                4,
-                message.isMe ? 16 : 8, // Margem direita (maior se enviado para tail)
-                4,
+            child: CustomPaint(
+              painter: BubblePainter(
+                color: message.isDeleted
+                    ? Colors.grey[200]!
+                    : (message.isMe
+                          ? AppTheme
+                                .appBarColor // Cor exata da AppBar
+                          : AppTheme.messageReceived),
+                alignment: message.isMe
+                    ? Alignment.topRight
+                    : Alignment.topLeft,
+                tail: true,
               ),
-              child: Stack(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(
-                      left: 3,
-                      right: 3,
-                      top: 2,
-                      bottom: 18,
-                    ),
-                    child: IntrinsicWidth(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          if (!message.isDeleted) _buildReplyPreview(message),
-                          Padding(
-                            padding: const EdgeInsets.only(left: 2, top: 1), // Top 1 para "quase colar", mas com leve respiro
-                            child: Text(
-                              message.isDeleted ? message.text : message.text,
-                              style: TextStyle(
-                                color: message.isDeleted
-                                    ? Colors.grey[600]
-                                    : (message.isMe
-                                        ? AppTheme.messageSentText
-                                        : AppTheme.messageReceivedText),
-                                fontSize: 16,
-                                fontWeight: FontWeight.normal,
-                                fontStyle: message.isDeleted
-                                    ? FontStyle.italic
-                                    : FontStyle.normal,
+              child: Container(
+                margin: EdgeInsets.fromLTRB(
+                  message.isMe
+                      ? 8
+                      : 16, // Margem esquerda (maior se recebido para tail)
+                  4,
+                  message.isMe
+                      ? 16
+                      : 8, // Margem direita (maior se enviado para tail)
+                  4,
+                ),
+                child: Stack(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(
+                        left: 3,
+                        right: 3,
+                        top: 2,
+                        bottom: 18,
+                      ),
+                      child: IntrinsicWidth(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (!message.isDeleted) _buildReplyPreview(message),
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                left: 2,
+                                top: 1,
+                              ), // Top 1 para "quase colar", mas com leve respiro
+                              child: Text(
+                                message.isDeleted ? message.text : message.text,
+                                style: TextStyle(
+                                  color: message.isDeleted
+                                      ? Colors.grey[600]
+                                      : (message.isMe
+                                            ? AppTheme.messageSentText
+                                            : AppTheme.messageReceivedText),
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.normal,
+                                  fontStyle: message.isDeleted
+                                      ? FontStyle.italic
+                                      : FontStyle.normal,
+                                ),
                               ),
                             ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      bottom: 2, // Subir a hora (de 4 para 2)
+                      right: 8, // Ajuste lateral leve
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _formatTime(message.timestamp),
+                            style: TextStyle(
+                              color: message.isDeleted
+                                  ? Colors.grey[600]
+                                  : (message.isMe
+                                        ? AppTheme.messageSentText.withOpacity(
+                                            0.7,
+                                          )
+                                        : Colors.grey[600]),
+                              fontSize: 11,
+                            ),
                           ),
+                          if (message.isEdited && !message.isDeleted) ...[
+                            const SizedBox(width: 4),
+                            Icon(
+                              Icons.edit,
+                              size: 10,
+                              color: message.isMe
+                                  ? AppTheme.messageSentText.withOpacity(0.7)
+                                  : Colors.grey[600],
+                            ),
+                          ],
+                          if (message.isMe && !message.isDeleted) ...[
+                            const SizedBox(width: 4),
+                            _buildStatusIcon(message.status),
+                          ],
                         ],
                       ),
                     ),
-                  ),
-                  Positioned(
-                    bottom: 2, // Subir a hora (de 4 para 2)
-                    right: 8, // Ajuste lateral leve
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          _formatTime(message.timestamp),
-                          style: TextStyle(
-                            color: message.isDeleted
-                                ? Colors.grey[600]
-                                : (message.isMe
-                                    ? AppTheme.messageSentText.withOpacity(0.7)
-                                    : Colors.grey[600]),
-                            fontSize: 11,
-                          ),
-                        ),
-                        if (message.isEdited && !message.isDeleted) ...[
-                          const SizedBox(width: 4),
-                           Icon(
-                            Icons.edit,
-                            size: 10,
-                            color: message.isMe
-                                ? AppTheme.messageSentText.withOpacity(0.7)
-                                : Colors.grey[600],
-                          ),
-                        ],
-                        if (message.isMe && !message.isDeleted) ...[
-                          const SizedBox(width: 4),
-                          _buildStatusIcon(message.status),
-                        ],
-                      ],
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -2716,6 +3104,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     Color color;
 
     switch (status) {
+      case 'pending_local':
+        // ✅ Ícone de relógio para mensagens pendentes (offline)
+        icon = Icons.access_time;
+        color = AppTheme.statusSent.withOpacity(0.5); // Cinza claro
+        break;
       case 'read':
         icon = Icons.done_all;
         color = AppTheme.statusRead;
@@ -2769,46 +3162,50 @@ class BubblePainter extends CustomPainter {
       final w = size.width;
       final h = size.height;
       var sentPath = Path();
-       sentPath.moveTo(_radius, 0); // Começa arredondado top-left
-       sentPath.lineTo(w - _radius, 0); // Vai até top-right (antes da curva)
-       
-       // Curva top-right normal (arredondada, sem bico)
-       sentPath.quadraticBezierTo(w, 0, w, _radius);
-       
-       sentPath.lineTo(w, h - _radius); // Desce até bottom-right
-       
-       // Inicio cauda no bottom-right
-       sentPath.quadraticBezierTo(w, h, w + 10, h); // Ponta da cauda
-       sentPath.lineTo(w - 10, h); // Volta para a base do balão
-       sentPath.quadraticBezierTo(w - 10, h, w - 10, h); // (Redundante, mas mantendo estrutura)
-       
-       sentPath.lineTo(_radius, h); // Linha inferior até bottom-left
-       sentPath.quadraticBezierTo(0, h, 0, h - _radius); // Curva bottom-left
-       sentPath.lineTo(0, _radius); // Sobe esquerda
-       sentPath.quadraticBezierTo(0, 0, _radius, 0); // Curva top-left
-       
-       canvas.drawPath(sentPath, Paint()..color = color);
+      sentPath.moveTo(_radius, 0); // Começa arredondado top-left
+      sentPath.lineTo(w - _radius, 0); // Vai até top-right (antes da curva)
 
+      // Curva top-right normal (arredondada, sem bico)
+      sentPath.quadraticBezierTo(w, 0, w, _radius);
+
+      sentPath.lineTo(w, h - _radius); // Desce até bottom-right
+
+      // Inicio cauda no bottom-right
+      sentPath.quadraticBezierTo(w, h, w + 10, h); // Ponta da cauda
+      sentPath.lineTo(w - 10, h); // Volta para a base do balão
+      sentPath.quadraticBezierTo(
+        w - 10,
+        h,
+        w - 10,
+        h,
+      ); // (Redundante, mas mantendo estrutura)
+
+      sentPath.lineTo(_radius, h); // Linha inferior até bottom-left
+      sentPath.quadraticBezierTo(0, h, 0, h - _radius); // Curva bottom-left
+      sentPath.lineTo(0, _radius); // Sobe esquerda
+      sentPath.quadraticBezierTo(0, 0, _radius, 0); // Curva top-left
+
+      canvas.drawPath(sentPath, Paint()..color = color);
     } else {
-       // Received
-       var path = Path();
-       final w = size.width;
-       final h = size.height;
-       
-       path.moveTo(_radius, 0);
-       path.lineTo(w - _radius, 0);
-       path.quadraticBezierTo(w, 0, w, _radius);
-       path.lineTo(w, h - _radius);
-       path.quadraticBezierTo(w, h, w - _radius, h);
-       path.lineTo(_radius + 10, h); // Antes da cauda esquerd
-       // Cauda esquerda
-       path.quadraticBezierTo(0, h, -10, h); // Ponta esquerda
-       path.quadraticBezierTo(0, h, 0, h - _radius); // Volta para cima
-       
-       path.lineTo(0, _radius);
-       path.quadraticBezierTo(0, 0, _radius, 0);
-       
-       canvas.drawPath(path, Paint()..color = color);
+      // Received
+      var path = Path();
+      final w = size.width;
+      final h = size.height;
+
+      path.moveTo(_radius, 0);
+      path.lineTo(w - _radius, 0);
+      path.quadraticBezierTo(w, 0, w, _radius);
+      path.lineTo(w, h - _radius);
+      path.quadraticBezierTo(w, h, w - _radius, h);
+      path.lineTo(_radius + 10, h); // Antes da cauda esquerd
+      // Cauda esquerda
+      path.quadraticBezierTo(0, h, -10, h); // Ponta esquerda
+      path.quadraticBezierTo(0, h, 0, h - _radius); // Volta para cima
+
+      path.lineTo(0, _radius);
+      path.quadraticBezierTo(0, 0, _radius, 0);
+
+      canvas.drawPath(path, Paint()..color = color);
     }
   }
 

@@ -1,6 +1,6 @@
 %% user_info_handler.erl - NOVO ARQUIVO
 -module(user_info_handler).
--export([init/2]).
+-export([init/2, get_user_from_db/1]).
 
 -include_lib("kernel/include/logger.hrl").
 

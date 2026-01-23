@@ -1,7 +1,16 @@
 -module(user_session).
 -behaviour(gen_server).
 
--export([start_link/1, user_online/2, user_offline/1, get_status/1, send_message/3, get_online_users/0, is_websocket_alive/1]).
+-export([
+    start_link/1,
+    user_online/2,
+    user_offline/1,
+    user_offline/2,
+    get_status/1,
+    send_message/3,
+    get_online_users/0,
+    is_websocket_alive/1
+]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(state, {
@@ -28,6 +37,14 @@ user_offline(UserId) ->
     case whereis(get_process_name(UserId)) of
         undefined -> ok;
         Pid -> gen_server:cast(Pid, user_offline)
+    end.
+
+%% ✅ Offline condicional: só marca offline se o WS que caiu ainda for o WS atual
+%% (evita "flapping" quando existe reconexão e o socket antigo termina depois).
+user_offline(UserId, WsPid) when is_pid(WsPid) ->
+    case whereis(get_process_name(UserId)) of
+        undefined -> ok;
+        Pid -> gen_server:cast(Pid, {user_offline, WsPid})
     end.
 
 get_status(UserId) ->
@@ -84,7 +101,18 @@ handle_cast({user_online, WsPid}, State) ->
 
 handle_cast(user_offline, State) ->
     io:format("🔌 User ~p is now offline~n", [State#state.user_id]),
-    {noreply, State#state{ws_pid = undefined, status = offline}}.
+    {noreply, State#state{ws_pid = undefined, status = offline}};
+
+handle_cast({user_offline, WsPid}, State = #state{ws_pid = CurrentWsPid}) ->
+    case CurrentWsPid of
+        WsPid ->
+            io:format("🔌 User ~p is now offline (ws_pid match)~n", [State#state.user_id]),
+            {noreply, State#state{ws_pid = undefined, status = offline}};
+        _Other ->
+            io:format("ℹ️  Ignorando offline para ~p: ws_pid antigo ~p (atual=~p)~n",
+                      [State#state.user_id, WsPid, CurrentWsPid]),
+            {noreply, State}
+    end.
 
 handle_call({send_message, FromId, Message}, _From, State = #state{ws_pid = WsPid, status = online}) ->
     io:format("🎯🎯🎯 DEBUG USER_SESSION (CALL) 🎯🎯🎯~n", []),

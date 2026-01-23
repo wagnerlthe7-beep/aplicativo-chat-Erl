@@ -80,7 +80,6 @@ class ContactsHelper {
           }
         }
       }
-      print('📱 ${contactsMap.length} contatos locais mapeados.');
     } catch (e) {
       print('❌ Erro ao mapear contatos locais: $e');
     }

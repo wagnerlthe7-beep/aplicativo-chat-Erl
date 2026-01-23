@@ -18,7 +18,6 @@ class ChatListPage extends StatefulWidget {
 
 class _ChatListPageState extends State<ChatListPage>
     with TickerProviderStateMixin {
-  bool _isLoading = false;
   Timer? _sessionTimer;
   Timer? _chatRefreshTimer;
   late TabController _tabController;
@@ -30,9 +29,10 @@ class _ChatListPageState extends State<ChatListPage>
   StreamSubscription<Map<String, dynamic>>? _messageSubscription;
   StreamSubscription<Map<String, dynamic>>? _typingSubscription;
   List<ChatContact> _chats = [];
+  bool _isLoading = true; // ✅ Controle de loading inicial
   final Map<String, bool> _typingUsers = {};
   final Map<String, Timer> _typingTimers = {};
-  
+
   // ✅ ESTADO DE SELEÇÃO
   final Set<String> _selectedChatIds = {};
   bool get _isSelectionMode => _selectedChatIds.isNotEmpty;
@@ -74,7 +74,7 @@ class _ChatListPageState extends State<ChatListPage>
     _searchController.dispose();
     super.dispose();
   }
-  
+
   // ✅ APP BAR NORMAL
   AppBar _buildNormalAppBar() {
     return AppBar(
@@ -224,7 +224,8 @@ class _ChatListPageState extends State<ChatListPage>
             // Deletar selecionados
             if (_selectedChatIds.isNotEmpty) {
               final chat = _chats.firstWhere(
-                  (c) => c.contactId == _selectedChatIds.first);
+                (c) => c.contactId == _selectedChatIds.first,
+              );
               _showDeleteChatDialog(chat);
             }
           },
@@ -241,7 +242,10 @@ class _ChatListPageState extends State<ChatListPage>
           icon: Icon(Icons.more_vert, color: AppTheme.textOnGreen),
           itemBuilder: (context) => [
             PopupMenuItem(value: 'view_contact', child: Text('Ver contacto')),
-            PopupMenuItem(value: 'add_favorite', child: Text('Adicionar aos favoritos')),
+            PopupMenuItem(
+              value: 'add_favorite',
+              child: Text('Adicionar aos favoritos'),
+            ),
             PopupMenuItem(value: 'lock_chat', child: Text('Trancar conversa')),
             PopupMenuItem(value: 'add_list', child: Text('Adicionar a lista')),
             PopupMenuItem(value: 'block', child: Text('Bloquear')),
@@ -310,17 +314,52 @@ class _ChatListPageState extends State<ChatListPage>
   void _initializeRealChats() {
     print('🚀 Inicializando chats reais...');
 
-    // CONECTAR AO WEBSOCKET PRIMEIRO
+    // CONECTAR AO WEBSOCKET PRIMEIRO (AGORA: DEPOIS DO LOCAL)
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await ChatService.connect();
+      print('🚀 Inicializando chats: Verificando pré-carregamento...');
 
-      // DEPOIS CARREGAR CHATS DO STORAGE
-      final currentChats = ChatService.currentChatList;
-      if (mounted) {
-        setState(() {
-          _chats = currentChats;
-        });
+      // ✅ 1. VERIFICAR SE JÁ TEMOS DADOS (Do main.dart)
+      var currentChats = ChatService.currentChatList;
+
+      if (currentChats.isNotEmpty) {
+        print('✅ Usando dados pré-carregados do main: ${currentChats.length}');
+        if (mounted) {
+          setState(() {
+            _chats = currentChats;
+            _isLoading = false;
+          });
+        }
+      } else {
+        // Se não tiver, aí sim carrega do disco
+        print('📂 Sem pré-carregamento, lendo do disco...');
+        await ChatService.loadLocalChats();
+        currentChats = ChatService.currentChatList;
+
+        if (mounted) {
+          setState(() {
+            _chats = currentChats;
+            _isLoading = false;
+          });
+        }
       }
+      print('📊 Chats locais exibidos: ${_chats.length}');
+
+      if (_chats.isEmpty) {
+        // Se ainda estiver vazio APÓS carregar local, então mostrar estado vazio
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+        }
+        print('🔄 Nenhum chat local, tentando reconstruir do histórico...');
+        await ChatService.rebuildChatsFromHistory();
+      }
+
+      // 2. CONECTAR EM BACKGROUND (sem await para não bloquear UI)
+      print('🔌 Iniciando conexão WebSocket em background...');
+      ChatService.connect().then((_) {
+        // Opcional: Se precisar fazer algo após conectar
+      });
 
       print('📊 Chats iniciais carregados: ${_chats.length}');
 
@@ -362,7 +401,21 @@ class _ChatListPageState extends State<ChatListPage>
   void _startSessionValidationTimer() {
     _sessionTimer = Timer.periodic(Duration(seconds: 10), (timer) async {
       final isValid = await AuthService.validateCurrentSession();
-      if (!isValid && mounted) {
+
+      // ✅ INTELIGÊNCIA DE RECONEXÃO:
+      // Apenas se isValid == true (Server Online e 200 OK) E não estiver conectado
+      if (isValid == true &&
+          ChatService.isServerDown &&
+          !ChatService.isConnected) {
+        print(
+          '🌍 Servidor detectado ONLINE (HTTP OK). Tentando reconectar WebSocket...',
+        );
+        ChatService.connect();
+      }
+
+      // ✅ Apenas faz logout se isValid == false (Sessão Revogada).
+      // Se for null (offline), ignora.
+      if (isValid == false && mounted) {
         timer.cancel();
         _showSessionExpiredDialog();
       }
@@ -682,7 +735,9 @@ class _ChatListPageState extends State<ChatListPage>
           context: context,
           builder: (context) => AlertDialog(
             title: Text('Contato não registado'),
-            content: Text('${contact.displayName} ainda não usa o SpeekJoy. Quer convidá-lo?'),
+            content: Text(
+              '${contact.displayName} ainda não usa o SpeekJoy. Quer convidá-lo?',
+            ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
@@ -693,7 +748,10 @@ class _ChatListPageState extends State<ChatListPage>
                   Navigator.pop(context);
                   _sendInvite(contact);
                 },
-                child: Text('Convidar', style: TextStyle(color: AppTheme.appBarColor)),
+                child: Text(
+                  'Convidar',
+                  style: TextStyle(color: AppTheme.appBarColor),
+                ),
               ),
             ],
           ),
@@ -834,20 +892,25 @@ class _ChatListPageState extends State<ChatListPage>
       builder: (context) => AlertDialog(
         title: Text('Eliminar esta conversa?'),
         content: Text(
-            'A conversa com "${chat.name}" será removida desta lista.'),
+          'A conversa com "${chat.name}" será removida desta lista.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Cancelar',
-                style: TextStyle(color: AppTheme.primaryGreen)),
+            child: Text(
+              'Cancelar',
+              style: TextStyle(color: AppTheme.primaryGreen),
+            ),
           ),
           TextButton(
             onPressed: () {
               Navigator.pop(context);
               _deleteChat(chat);
             },
-            child: Text('Eliminar conversa',
-                style: TextStyle(color: AppTheme.primaryGreen)),
+            child: Text(
+              'Eliminar conversa',
+              style: TextStyle(color: AppTheme.primaryGreen),
+            ),
           ),
         ],
       ),
@@ -958,11 +1021,15 @@ class _ChatListPageState extends State<ChatListPage>
             children: [
               CircleAvatar(
                 radius: 25,
-                backgroundImage:
-                    chat.photo != null ? MemoryImage(chat.photo!) : null,
+                backgroundImage: chat.photo != null
+                    ? MemoryImage(chat.photo!)
+                    : null,
                 child: chat.photo == null
-                    ? Icon(Icons.person,
-                        color: AppTheme.textSecondary, size: 28)
+                    ? Icon(
+                        Icons.person,
+                        color: AppTheme.textSecondary,
+                        size: 28,
+                      )
                     : null,
                 backgroundColor: chat.photo == null
                     ? AppTheme.avatarBackground
@@ -977,14 +1044,13 @@ class _ChatListPageState extends State<ChatListPage>
                       // ✅ Checkmark usando a cor exata da AppBar
                       color: AppTheme.appBarColor,
                       shape: BoxShape.circle,
-                      border: Border.all(color: AppTheme.surfaceColor, width: 2),
+                      border: Border.all(
+                        color: AppTheme.surfaceColor,
+                        width: 2,
+                      ),
                     ),
                     padding: EdgeInsets.all(2),
-                    child: Icon(
-                      Icons.check,
-                      size: 14,
-                      color: Colors.white,
-                    ),
+                    child: Icon(Icons.check, size: 14, color: Colors.white),
                   ),
                 ),
             ],
@@ -1003,7 +1069,7 @@ class _ChatListPageState extends State<ChatListPage>
           },
           subtitle: Row(
             children: [
-              if (_typingUsers[chat.contactId] == true) 
+              if (_typingUsers[chat.contactId] == true)
                 Expanded(
                   child: Text(
                     'a escrever...',
@@ -1025,7 +1091,10 @@ class _ChatListPageState extends State<ChatListPage>
                 Expanded(
                   child: Text(
                     chat.lastMessage,
-                    style: TextStyle(color: AppTheme.textSecondary, fontSize: 14),
+                    style: TextStyle(
+                      color: AppTheme.textSecondary,
+                      fontSize: 14,
+                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1073,6 +1142,11 @@ class _ChatListPageState extends State<ChatListPage>
 
   // ESTADO VAZIO PARA CHATS
   Widget _buildEmptyChatsState() {
+    // ✅ Se estiver carregando, mostrar nada (tela limpa) para sensação de rapidez
+    if (_isLoading) {
+      return const SizedBox.shrink();
+    }
+
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -1192,33 +1266,32 @@ class _ChatListPageState extends State<ChatListPage>
 
   // Novo método auxiliar para abrir chat do item
   void _startNewChatFromItem(ChatContact chat) {
-     print('👆 Clicado no chat: ${chat.name} (Unread: ${chat.unreadCount})');
-     
-     // ✅ RESTAURADO: MARCAR COMO LIDO ANTES DE ABRIR
-     ChatService.markChatAsRead(chat.contactId);
-     
-     Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => ChatPage(
-            contact: chat,
-            remoteUserId: chat.contactId,
-          ),
-        ),
-      );
+    print('👆 Clicado no chat: ${chat.name} (Unread: ${chat.unreadCount})');
+
+    // ✅ RESTAURADO: MARCAR COMO LIDO ANTES DE ABRIR
+    ChatService.markChatAsRead(chat.contactId);
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) =>
+            ChatPage(contact: chat, remoteUserId: chat.contactId),
+      ),
+    );
   }
 
   // ✅ ENVIAR CONVITE VIA SMS
   Future<void> _sendInvite(Contact contact) async {
     if (contact.phones.isEmpty) return;
     final phone = contact.phones.first.number;
-    
+
     // Preparar URI para SMS
     final Uri smsLaunchUri = Uri(
       scheme: 'sms',
       path: phone,
       queryParameters: <String, String>{
-        'body': 'Olá! Venha conversar comigo no SpeekJoy! Baixe o app aqui: [LINK]',
+        'body':
+            'Olá! Venha conversar comigo no SpeekJoy! Baixe o app aqui: [LINK]',
       },
     );
 

@@ -667,6 +667,12 @@ binary_to_integer_wrapper(Integer) when is_integer(Integer) ->
 %% @doc Enviar atualização para chat list page
 send_chat_list_update(FromId, ToId, Content, MessageId) ->
     try
+        %% Buscar telefone do remetente para facilitar resolução na agenda do cliente
+        FromPhone = case user_info_handler:get_user_from_db(FromId) of
+            {ok, UserInfo} -> maps:get(<<"phone">>, UserInfo, <<"">>);
+            _ -> <<"">>
+        end,
+
         %% Notificação para o remetente (atualizar chat list dele)
         SenderUpdate = #{
             <<"type">> => <<"chat_list_update">>,
@@ -674,6 +680,7 @@ send_chat_list_update(FromId, ToId, Content, MessageId) ->
             <<"from">> => FromId,
             <<"to">> => ToId,
             <<"content">> => Content,
+            <<"phone">> => FromPhone, %% Incluir telefone
             <<"timestamp">> => erlang:system_time(second),
             <<"action">> => <<"new_message">>
         },
@@ -686,13 +693,14 @@ send_chat_list_update(FromId, ToId, Content, MessageId) ->
             <<"from">> => FromId,
             <<"to">> => ToId,
             <<"content">> => Content,
+            <<"phone">> => FromPhone, %% Incluir telefone
             <<"timestamp">> => erlang:system_time(second),
             <<"action">> => <<"new_message">>
         },
         user_session:send_message(FromId, ToId, ReceiverUpdate),
         
-        io:format("   📋 Chat list update sent for message ~p~n", [MessageId])
+        io:format("   📋 Chat list update sent for message ~p (Phone: ~s)~n", [MessageId, FromPhone])
     catch
-        _:_ ->
-            io:format("   ❌ Error sending chat list update~n")
+        Error:Reason ->
+            io:format("   ❌ Error sending chat list update: ~p:~p~n", [Error, Reason])
     end.

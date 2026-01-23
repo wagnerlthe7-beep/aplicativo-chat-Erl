@@ -244,7 +244,7 @@ class AuthService {
   /// -----------------------------
   /// 9) NOVA: Validar sessão com backend
   /// -----------------------------
-  static Future<bool> validateCurrentSession() async {
+  static Future<bool?> validateCurrentSession() async {
     final accessToken = await _storage.read(key: 'access_token');
 
     if (accessToken == null) {
@@ -260,35 +260,37 @@ class AuthService {
       );
 
       if (response.statusCode == 200) {
-        // Sessão válida
+        // ✅ Sessão válida E servidor online
         return true;
       }
 
       if (response.statusCode == 401) {
-        // Tentar entender se foi realmente revogada
         try {
           final body = jsonDecode(response.body);
           final error = body['error']?.toString();
 
           if (error == 'session_revoked' || error == 'session_not_found') {
-            // Apenas aqui consideramos a sessão inválida de verdade
+            // ✅ Sessão inválida de verdade
             return false;
           }
-        } catch (_) {
-          // Ignora erros de parse e trata como erro genérico
-        }
+        } catch (_) {}
       }
 
-      // Para outros códigos (500, 400, erro inesperado), NÃO derruba sessão.
-      // Apenas loga e considera ainda válida do ponto de vista do app.
-      print(
-        '⚠️ validateCurrentSession: status inesperado ${response.statusCode} ${response.body}',
-      );
-      return true;
+      print('⚠️ validateCurrentSession: status inesperado ${response.statusCode}');
+      // Retorna null pois não sabemos se está válida ou não (erro 500 etc)
+      return null;
     } catch (e) {
-      // Importante: erro de rede NÃO deve matar a sessão.
-      print('❌ Error validating session (mantendo sessão): $e');
-      return true;
+      // ✅ OFF-LINE: Se for erro de rede, retorna NULL (incerto / offline)
+      // Isso evita que o ChatList ache que "tudo bem" e tente reconectar.
+      final errorMessage = e.toString();
+      if (errorMessage.contains('SocketException') || 
+          errorMessage.contains('Connection timed out') ||
+          errorMessage.contains('ClientException')) {
+         // Silêncio
+      } else {
+        print('❌ Error validating session: $e');
+      }
+      return null; // ⚠️ NULL = Offline / Erro de Rede
     }
   }
 
