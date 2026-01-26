@@ -242,6 +242,8 @@ class ChatService {
             '🔄 Confirmação de envio recebida (permitindo para SWAP): $messageId -> $dbMessageId',
           );
           _sentMessageIds.remove(messageId);
+          // ✅ CRÍTICO: Adicionar ao messageController para processamento na UI
+          _messageController.add(message);
         } else {
           print('🔄 Ignorando mensagem duplicada (echo simples): $messageId');
           _sentMessageIds.remove(messageId);
@@ -263,6 +265,55 @@ class ChatService {
           final shouldIncreaseUnread =
               message['should_increase_unread'] ?? true;
           _updateChatOnMessageReceived(message, shouldIncreaseUnread);
+
+          // ✅ CRÍTICO: Salvar mensagem recebida no histórico local para persistência offline
+          // Isso garante que mensagens recebidas quando o chat não está aberto ainda sejam visíveis offline
+          final fromUserId = message['from']?.toString();
+          final toUserId = message['to']?.toString();
+          final content = message['content']?.toString() ?? '';
+          final messageId = message['message_id']?.toString();
+          final dbMessageId = message['db_message_id']?.toString();
+          final timestamp = message['timestamp']?.toString();
+
+          if (fromUserId != null && toUserId != null && content.isNotEmpty) {
+            // Determinar quem é o usuário atual (quem está rodando o app)
+            final isFromCurrentUser = fromUserId == _currentUserId;
+
+            // ✅ CORREÇÃO: Sempre salvar no histórico local do usuário atual
+            // O receiverId é sempre o outro usuário (com quem estamos conversando)
+            final contactId = isFromCurrentUser ? toUserId : fromUserId;
+
+            print(
+              '🔍 DEBUG: Salvando mensagem - fromUserId=$fromUserId, toUserId=$toUserId, _currentUserId=$_currentUserId, isFromCurrentUser=$isFromCurrentUser, contactId=$contactId',
+            );
+
+            // Salvar no histórico local do usuário atual
+            saveMessageToLocalHistory(_currentUserId!, contactId, {
+              'message_id': dbMessageId ?? messageId,
+              'content': content,
+              'sender_id': fromUserId,
+              'receiver_id': toUserId,
+              'sent_at': timestamp != null
+                  ? (int.tryParse(timestamp) != null
+                        ? DateTime.fromMillisecondsSinceEpoch(
+                            int.parse(timestamp) * 1000,
+                          ).toIso8601String()
+                        : DateTime.now().toIso8601String())
+                  : DateTime.now().toIso8601String(),
+              'status': message['status']?.toString() ?? 'delivered',
+              'is_edited': message['is_edited'] ?? false,
+              'is_deleted': false,
+              // Campos de reply
+              'reply_to_id': message['reply_to_id']?.toString(),
+              'reply_to_text': message['reply_to_text']?.toString(),
+              'reply_to_sender_name': message['reply_to_sender_name']
+                  ?.toString(),
+              'reply_to_sender_id': message['reply_to_sender_id']?.toString(),
+            });
+            print(
+              '💾 Mensagem recebida salva no histórico local (offline-first): $content',
+            );
+          }
 
           // ✅ OFFLINE-FIRST: Atualizar status de mensagem pendente quando receber confirmação
           final tempMessageId = message['message_id']?.toString();
@@ -402,6 +453,36 @@ class ChatService {
         currentUserId = auth['userId'];
       }
 
+      // ✅ EXTRAIR TIMESTAMP DA MENSAGEM (se disponível)
+      DateTime? messageTimestamp;
+      if (message['timestamp'] != null) {
+        try {
+          final ts = message['timestamp'];
+          if (ts is int) {
+            // ✅ Timestamp em segundos - usar diretamente (já vem no fuso correto do servidor)
+            if (ts > 1000000000000) {
+              messageTimestamp = DateTime.fromMillisecondsSinceEpoch(ts);
+            } else {
+              messageTimestamp = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
+            }
+          } else if (ts is String) {
+            final tsInt = int.tryParse(ts);
+            if (tsInt != null) {
+              // ✅ Timestamp em segundos - usar diretamente (já vem no fuso correto do servidor)
+              if (tsInt > 1000000000000) {
+                messageTimestamp = DateTime.fromMillisecondsSinceEpoch(tsInt);
+              } else {
+                messageTimestamp = DateTime.fromMillisecondsSinceEpoch(
+                  tsInt * 1000,
+                );
+              }
+            }
+          }
+        } catch (e) {
+          print('⚠️ Erro ao parsear timestamp da mensagem: $e');
+        }
+      }
+
       // ✅ DETECTAR SE É UM REPLY
       final isReply = message['reply_to_id'] != null;
       if (isReply) {}
@@ -433,40 +514,28 @@ class ChatService {
       // ✅ BUSCAR INFORMAÇÕES DO CONTATO
       final contactInfo = await _getContactInfo(contactId);
 
-      // ✅ ATUALIZAR CHAT
-      if (_chatContacts.containsKey(contactId)) {
-        final existing = _chatContacts[contactId]!;
-        final newUnreadCount = shouldIncreaseUnread
-            ? existing.unreadCount + 1
-            : existing.unreadCount;
+      // ✅ USAR _updateOrCreateChatContact COM TIMESTAMP DA MENSAGEM
+      _updateOrCreateChatContact(
+        contactId: contactId,
+        contactName: contactInfo['name'],
+        lastMessage: content,
+        shouldIncreaseUnread: shouldIncreaseUnread,
+        phoneNumber: contactInfo['phone'],
+        photo: contactInfo['photo'],
+        messageTimestamp: messageTimestamp, // ✅ PASSAR TIMESTAMP DA MENSAGEM
+      );
 
-        _chatContacts[contactId] = existing.copyWith(
-          name: contactInfo['name'],
-          phoneNumber: contactInfo['phone'],
-          photo: contactInfo['photo'],
-          lastMessageTime: DateTime.now(),
-          lastMessage: content,
-          unreadCount: newUnreadCount,
-          lastMessageIsReply: isReply, // ✅ MARCAR COMO REPLY
-        );
-      } else {
-        _chatContacts[contactId] = ChatContact(
-          contactId: contactId,
-          name: contactInfo['name'],
-          phoneNumber: contactInfo['phone'],
-          photo: contactInfo['photo'],
-          lastMessageTime: DateTime.now(),
-          lastMessage: content,
-          unreadCount: shouldIncreaseUnread ? 1 : 0,
-          lastMessageIsReply: isReply, // ✅ MARCAR COMO REPLY
-        );
+      // ✅ ATUALIZAR lastMessageIsReply SE FOR REPLY
+      if (isReply && _chatContacts.containsKey(contactId)) {
+        final existing = _chatContacts[contactId]!;
+        _chatContacts[contactId] = existing.copyWith(lastMessageIsReply: true);
       }
 
       _saveChatsToStorage();
       _chatListController.add(_getSortedChatList());
 
       print(
-        '✅ Chat atualizado: ${contactInfo['name']} (unread: ${_chatContacts[contactId]!.unreadCount})',
+        '✅ Chat atualizado: ${contactInfo['name']} (unread: ${_chatContacts[contactId]!.unreadCount}, timestamp: ${messageTimestamp ?? 'now'})',
       );
     } catch (e) {
       print('❌ Erro ao atualizar chat: $e');
@@ -646,11 +715,35 @@ class ChatService {
     required bool shouldIncreaseUnread,
     required String? phoneNumber,
     required Uint8List? photo,
+    DateTime? messageTimestamp,
   }) {
-    final now = DateTime.now();
+    // ✅ Usar timestamp da mensagem se disponível, senão usar DateTime.now()
+    final messageTime = messageTimestamp ?? DateTime.now();
 
     if (_chatContacts.containsKey(contactId)) {
       final existing = _chatContacts[contactId]!;
+
+      // ✅ VERIFICAR SE O TIMESTAMP DA MENSAGEM É MAIS RECENTE
+      // IMPORTANTE: Para mensagens sincronizadas (que vêm do servidor), sempre atualizar
+      // mesmo que o timestamp seja mais antigo, pois pode ser a última mensagem do chat
+      // Apenas ignorar se a diferença for muito grande (mais de 1 minuto) para evitar problemas
+      if (messageTimestamp != null &&
+          messageTimestamp.isBefore(existing.lastMessageTime)) {
+        final timeDiff = existing.lastMessageTime.difference(messageTimestamp);
+        // ✅ Se a diferença for pequena (menos de 1 minuto), atualizar mesmo assim
+        // Isso garante que mensagens sincronizadas sempre atualizem o chat_list
+        if (timeDiff.inMinutes > 1) {
+          print(
+            '⚠️ Ignorando atualização de chat_list: timestamp da mensagem ($messageTimestamp) é muito anterior ao timestamp atual (${existing.lastMessageTime}, diff: ${timeDiff.inMinutes}min)',
+          );
+          return; // Não atualizar se a diferença for muito grande
+        } else {
+          print(
+            '✅ Atualizando chat_list mesmo com timestamp mais antigo (diff: ${timeDiff.inSeconds}s) - pode ser mensagem sincronizada',
+          );
+        }
+      }
+
       final newUnreadCount = shouldIncreaseUnread
           ? existing.unreadCount + 1
           : existing.unreadCount;
@@ -659,7 +752,7 @@ class ChatService {
         name: contactName,
         phoneNumber: phoneNumber,
         photo: photo,
-        lastMessageTime: now,
+        lastMessageTime: messageTime,
         lastMessage: lastMessage,
         unreadCount: newUnreadCount,
       );
@@ -669,7 +762,7 @@ class ChatService {
         name: contactName,
         phoneNumber: phoneNumber,
         photo: photo,
-        lastMessageTime: now,
+        lastMessageTime: messageTime,
         lastMessage: lastMessage,
         unreadCount: shouldIncreaseUnread ? 1 : 0,
       );
@@ -844,6 +937,15 @@ class ChatService {
         dbMessageId: dbMessageId,
       );
 
+      // ✅ NOVO: Atualizar status no histórico local também
+      await updateMessageStatusInHistory(
+        pendingMsg.from,
+        pendingMsg.to,
+        messageId,
+        newStatus,
+        dbMessageId: dbMessageId,
+      );
+
       // ✅ Se status for 'sent' ou superior, remover do sqflite após sincronização
       // (mensagem já foi sincronizada com sucesso)
       if (newStatus == 'sent' ||
@@ -860,6 +962,46 @@ class ChatService {
     }
   }
 
+  // ✅ NOVO: Atualizar status de mensagem no histórico local
+  static Future<void> updateMessageStatusInHistory(
+    String meId,
+    String contactId,
+    String messageId,
+    String newStatus, {
+    String? dbMessageId,
+  }) async {
+    try {
+      final history = await loadLocalChatHistory(meId, contactId);
+
+      // ✅ Encontrar e atualizar a mensagem
+      for (int i = 0; i < history.length; i++) {
+        final msg = history[i];
+        final msgId = (msg['message_id'] ?? msg['id'])?.toString();
+
+        if (msgId == messageId) {
+          // ✅ Atualizar status
+          history[i] = Map<String, dynamic>.from(msg);
+          history[i]['status'] = newStatus;
+
+          if (dbMessageId != null) {
+            history[i]['db_message_id'] = dbMessageId;
+          }
+
+          // ✅ Salvar histórico atualizado
+          await _saveChatHistoryToStorage(meId, contactId, history);
+          print(
+            '💾 Status atualizado no histórico local: $messageId -> $newStatus',
+          );
+          return;
+        }
+      }
+
+      print('⚠️ Mensagem não encontrada no histórico local: $messageId');
+    } catch (e) {
+      print('❌ Erro ao atualizar status no histórico local: $e');
+    }
+  }
+
   // ✅ ATUALIZAR CHAT AO ENVIAR MENSAGEM (SEM UNREAD)
   static void _updateChatOnMessageSent(String toUserId, String content) async {
     try {
@@ -868,6 +1010,8 @@ class ChatService {
 
       final contactInfo = await _getContactInfo(toUserId);
 
+      // ✅ Usar DateTime.now() para mensagens enviadas localmente
+      // O timestamp correto será atualizado quando receber confirmação do servidor
       _updateOrCreateChatContact(
         contactId: toUserId,
         contactName: contactInfo['name'],
@@ -875,6 +1019,8 @@ class ChatService {
         shouldIncreaseUnread: false, // ✅ MENSAGEM ENVIADA NÃO AUMENTA UNREAD
         phoneNumber: contactInfo['phone'],
         photo: contactInfo['photo'],
+        messageTimestamp:
+            DateTime.now(), // ✅ Timestamp local para mensagens pending
       );
     } catch (e) {
       print('❌ Erro ao atualizar chat após enviar mensagem: $e');
@@ -889,6 +1035,8 @@ class ChatService {
 
       final contactInfo = await _getContactInfo(toUserId);
 
+      // ✅ Usar DateTime.now() para replies enviadas localmente
+      // O timestamp correto será atualizado quando receber confirmação do servidor
       _updateOrCreateChatContact(
         contactId: toUserId,
         contactName: contactInfo['name'],
@@ -896,6 +1044,8 @@ class ChatService {
         shouldIncreaseUnread: false, // ✅ REPLY ENVIADO NÃO AUMENTA UNREAD
         phoneNumber: contactInfo['phone'],
         photo: contactInfo['photo'],
+        messageTimestamp:
+            DateTime.now(), // ✅ Timestamp local para replies pending
       );
 
       print('✅ Chat atualizado após reply para: ${contactInfo['name']}');
