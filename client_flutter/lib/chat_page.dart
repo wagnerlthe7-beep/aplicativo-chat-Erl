@@ -667,7 +667,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   // ======================
   // MELHORIA NO _handleIncomingMessage()
   // ======================
-  void _handleIncomingMessage(Map<String, dynamic> message) {
+  void _handleIncomingMessage(Map<String, dynamic> message) async {
     final type = message['type']?.toString();
 
     switch (type) {
@@ -814,12 +814,21 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final messageId = message['message_id']?.toString();
     final content = message['content']?.toString() ?? '';
 
+    final isFromMe = fromUserId == _currentUserId;
+    final dbMessageId = message['db_message_id']?.toString();
+
     final isMessageForThisChat =
         (fromUserId == widget.remoteUserId && toUserId == _currentUserId) ||
         (fromUserId == _currentUserId && toUserId == widget.remoteUserId);
 
     if (isMessageForThisChat && mounted) {
       print('📨 Mensagem recebida: $message');
+      print(
+        '🔍 DEBUG: isFromMe=$isFromMe, fromUserId=$fromUserId, toUserId=$toUserId',
+      );
+      print(
+        '🔍 DEBUG: _currentUserId=$_currentUserId, widget.remoteUserId=${widget.remoteUserId}',
+      );
 
       // ✅ DETECTAR SE É UMA RESPOSTA
       final isReply = message['reply_to_id'] != null;
@@ -829,9 +838,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         print('   reply_to_text: ${message['reply_to_text']}');
         print('   reply_to_sender_name: ${message['reply_to_sender_name']}');
       }
-
-      final isFromMe = fromUserId == _currentUserId;
-      final dbMessageId = message['db_message_id']?.toString();
 
       // ✅ CORREÇÃO: VERIFICAR SE É UM SWAP DE REPLY
       if (isFromMe && messageId != null && dbMessageId != null) {
@@ -854,7 +860,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               id: dbMessageId,
               text: old.text,
               isMe: old.isMe,
-              timestamp: old.timestamp,
+              timestamp: _parseRealTimeMessageTimestamp(
+                message,
+              ), // ✅ Usar timestamp do servidor
               status: finalStatus,
               isEdited: old.isEdited, // ✅ PRESERVAR STATUS DE EDIÇÃO!
               isDeleted: old.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
@@ -864,6 +872,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               replyToSenderName: old.replyToSenderName,
               replyToSenderId: old.replyToSenderId,
             );
+
+            // ✅ NOVO: Atualizar status no histórico local para consistência offline
+            if (_currentUserId != null) {
+              ChatService.updateMessageStatusInHistory(
+                _currentUserId!,
+                widget.remoteUserId,
+                messageId,
+                finalStatus,
+                dbMessageId: dbMessageId,
+              );
+            }
           });
           _pendingMessageIds.remove(messageId);
           return;
@@ -899,7 +918,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               id: dbMessageId,
               text: old.text,
               isMe: old.isMe,
-              timestamp: old.timestamp,
+              timestamp: _parseRealTimeMessageTimestamp(
+                message,
+              ), // ✅ Usar timestamp do servidor
               status: finalStatus,
               isEdited: old.isEdited, // ✅ PRESERVAR STATUS DE EDIÇÃO!
               isDeleted: old.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
@@ -908,6 +929,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               replyToSenderName: old.replyToSenderName,
               replyToSenderId: old.replyToSenderId,
             );
+
+            // ✅ NOVO: Atualizar status no histórico local para consistência offline
+            if (_currentUserId != null) {
+              ChatService.updateMessageStatusInHistory(
+                _currentUserId!,
+                widget.remoteUserId,
+                old.id,
+                finalStatus,
+                dbMessageId: dbMessageId,
+              );
+            }
           });
           _pendingMessageIds.remove(old.id);
           return;
@@ -949,6 +981,32 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         });
 
         _scrollToBottom();
+
+        // ✅ NOVO: Salvar mensagem recebida no histórico local para persistência offline
+        if (!isFromMe) {
+          print('💾 Salvando mensagem recebida no histórico local: $finalId');
+          await ChatService.saveMessageToLocalHistory(
+            _currentUserId!,
+            widget.remoteUserId,
+            {
+              'message_id': finalId,
+              'content': content,
+              'sender_id': message['sender_id'],
+              'receiver_id': _currentUserId,
+              'sent_at': serverTimestamp.toIso8601String(),
+              'status': message['status']?.toString() ?? 'sent',
+              'is_edited': message['is_edited'] ?? false,
+              'is_deleted': false,
+              // ✅ Campos de reply
+              'reply_to_id': message['reply_to_id']?.toString(),
+              'reply_to_text': message['reply_to_text']?.toString(),
+              'reply_to_sender_name': message['reply_to_sender_name']
+                  ?.toString(),
+              'reply_to_sender_id': message['reply_to_sender_id']?.toString(),
+            },
+          );
+          print('✅ Mensagem recebida salva no histórico local');
+        }
 
         if (isFromMe && messageId != null) {
           _pendingMessageIds.remove(messageId);
@@ -1158,12 +1216,25 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
       if (timestamp is int) {
         if (timestamp > 1000000000000) {
+          // ✅ Timestamp em milissegundos - usar mesma lógica do chat_list
+          // O chat_list usa DateTime.fromMillisecondsSinceEpoch(ts * 1000) sem isUtc
           return DateTime.fromMillisecondsSinceEpoch(timestamp);
         } else {
+          // ✅ Timestamp em segundos - usar mesma lógica do chat_list
+          // O chat_list usa DateTime.fromMillisecondsSinceEpoch(ts * 1000) sem isUtc
           return DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
         }
       } else if (timestamp is String) {
-        return DateTime.parse(timestamp);
+        // ✅ DateTime.parse() já trata ISO strings corretamente
+        final parsed = DateTime.parse(timestamp);
+        // ✅ Se for UTC (tem 'Z'), converter para local
+        // Se não tem 'Z', assume que já está no timezone local do servidor (igual ao chat_list)
+        if (timestamp.endsWith('Z')) {
+          return parsed.toLocal();
+        }
+        // ✅ Se tem offset (+/-), DateTime.parse já ajusta automaticamente
+        // Se não tem offset, assume local (timezone do servidor) - igual ao chat_list
+        return parsed;
       }
     } catch (e) {
       print('❌ Erro ao parsear timestamp em tempo real: $e');
@@ -1178,20 +1249,49 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     setState(() => _isLoadingHistory = true);
 
     try {
-      print('📜 Carregando histórico (Estratégia Offline-First)...');
+      print(' Carregando histórico (Estratégia Offline-First)...');
 
-      // 1. CARREGAMENTO RÁPIDO: Cache Local
+      // Se já há mensagens no chat, tenta atualizar do servidor
+      // Se servidor offline, mantém as mensagens existentes (não limpa)
+      if (_messages.isNotEmpty) {
+        print(' Chat já tem conteúdo, tentando atualizar do servidor...');
+        try {
+          final freshHistory = await ChatService.loadChatHistory(
+            widget.remoteUserId,
+          );
+
+          if (mounted) {
+            _processAndAddMessages(freshHistory, isLocal: false);
+          }
+        } catch (e) {
+          print(
+            ' Servidor offline, mantendo mensagens existentes com status atual',
+          );
+          // Se servidor offline, não faz nada - mantém as mensagens existentes
+          // Elas já têm o status correto do último carregamento
+        }
+        return;
+      }
+
+      // 1. CARREGAMENTO RÁPIDO: Cache Local (só se chat estiver vazio)
       final localHistory = await ChatService.loadLocalChatHistory(
         _currentUserId!,
         widget.remoteUserId,
       );
 
+      print(
+        '🔍 DEBUG: Histórico local carregado: ${localHistory.length} mensagens',
+      );
+      for (int i = 0; i < localHistory.length; i++) {
+        final msg = localHistory[i];
+        print(
+          '   Mensagem ${i + 1}: ID=${msg['message_id']}, conteúdo="${msg['content']}", de=${msg['sender_id']} para=${msg['receiver_id']}',
+        );
+      }
+
       if (mounted && localHistory.isNotEmpty) {
         _processAndAddMessages(localHistory, isLocal: true);
       }
-
-      // ✅ NOVO: Carregar mensagens pending do sqflite para este chat
-      await _loadPendingMessagesFromStorage();
 
       // 2. CARREGAMENTO LENTO: Rede (Background)
       // O ChatService.loadChatHistory já tem timeout de 5s e fallback para local
@@ -1204,6 +1304,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) {
         _processAndAddMessages(freshHistory, isLocal: false);
       }
+
+      // ✅ NOVO: Carregar mensagens pending do sqflite DEPOIS de todos os carregamentos
+      // Isso garante que as mensagens pending não sejam perdidas quando _messages é limpo
+      await _loadPendingMessagesFromStorage();
     } catch (e) {
       print('❌ Erro ao carregar histórico: $e');
     } finally {
@@ -1265,16 +1369,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   // ✅ NOVO: Listener para atualizar status em tempo real
   Timer? _statusUpdateTimer;
-  
+
   void _startStatusUpdateListener() {
     _statusUpdateTimer?.cancel();
     // ✅ Verificar mudanças de status a cada 2 segundos
-    _statusUpdateTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+    _statusUpdateTimer = Timer.periodic(const Duration(seconds: 2), (
+      timer,
+    ) async {
       if (!mounted) {
         timer.cancel();
         return;
       }
-      
+
       await _updatePendingMessagesStatus();
     });
   }
@@ -1292,7 +1398,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       // ✅ Atualizar status na UI se houver mudanças
       bool hasChanges = false;
       for (final pending in pendingMessages) {
-        final messageIndex = _messages.indexWhere((msg) => msg.id == pending.msgId);
+        final messageIndex = _messages.indexWhere(
+          (msg) => msg.id == pending.msgId,
+        );
         if (messageIndex >= 0) {
           final currentMsg = _messages[messageIndex];
           // ✅ Se status mudou, atualizar na UI
@@ -1314,7 +1422,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   replyToSenderId: currentMsg.replyToSenderId,
                 );
               });
-              print('🔄 Status atualizado em tempo real: ${pending.msgId} -> ${pending.status}');
+              print(
+                '🔄 Status atualizado em tempo real: ${pending.msgId} -> ${pending.status}',
+              );
             }
           }
         }
@@ -1336,12 +1446,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         return;
       }
 
-      print('📬 Carregando ${pendingMessages.length} mensagens pending do storage...');
+      print(
+        '📬 Carregando ${pendingMessages.length} mensagens pending do storage...',
+      );
 
       final pendingChatMessages = pendingMessages.map((pending) {
         return ChatMessage(
           id: pending.msgId,
-          text: pending.isDeleted ? '⊗ Eliminou esta mensagem' : pending.content,
+          text: pending.isDeleted
+              ? '⊗ Eliminou esta mensagem'
+              : pending.content,
           isMe: true,
           timestamp: pending.createdAt,
           status: pending.status, // pending_local, sent, delivered, etc
@@ -1366,7 +1480,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           }
           _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
         });
-        print('✅ ${pendingChatMessages.length} mensagens pending adicionadas ao chat');
+        print(
+          '✅ ${pendingChatMessages.length} mensagens pending adicionadas ao chat',
+        );
       }
     } catch (e) {
       print('❌ Erro ao carregar mensagens pending: $e');
@@ -1381,8 +1497,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final msgs = history.map((msg) {
       final serverTimestamp = _parseMessageTimestamp(msg);
 
+      // ✅ Gerar ID consistente para mensagens sem message_id
+      String messageId;
+      if (msg['message_id'] != null && msg['message_id'].toString() != 'null') {
+        messageId = msg['message_id'].toString();
+      } else if (msg['id'] != null && msg['id'].toString() != 'null') {
+        messageId = msg['id'].toString();
+      } else {
+        // ✅ Gerar ID baseado em conteúdo + timestamp + remetente para consistência
+        final content = msg['content']?.toString() ?? '';
+        final senderId = msg['sender_id']?.toString() ?? '';
+        final timestampHash = serverTimestamp.millisecondsSinceEpoch.toString();
+        messageId = 'local_${content.length}_${senderId}_$timestampHash';
+      }
+
       return ChatMessage(
-        id: (msg['message_id'] ?? msg['id'] ?? _uuid.v4()).toString(),
+        id: messageId,
         text: _getDeletedMessageText(msg),
         isMe: _isMessageFromMe(msg),
         timestamp: serverTimestamp,
@@ -1397,11 +1527,55 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }).toList();
 
     setState(() {
-      _messages.clear(); // Limpar para evitar duplicatas ao recarregar
-      _messages.addAll(msgs);
-      print(
-        '✅ ${msgs.length} mensagens carregadas (${isLocal ? "LOCAL" : "SERVER"})',
-      );
+      // ✅ Só limpar se houver mensagens para adicionar
+      if (msgs.isNotEmpty) {
+        if (isLocal) {
+          // ✅ Para carregamento local, limpar tudo (é o primeiro carregamento)
+          _messages.clear();
+        } else {
+          // ✅ Para carregamento do servidor, remover duplicatas inteligentemente
+          // Considera mudança de ID (temp → real) e conteúdo da mensagem
+          _messages.removeWhere((existingMsg) {
+            return msgs.any((newMsg) {
+              // ✅ Mesmo ID exato
+              if (newMsg.id == existingMsg.id) return true;
+
+              // ✅ Mesmo conteúdo e mesmo remetente (possível mudança de ID)
+              if (newMsg.text == existingMsg.text &&
+                  newMsg.isMe == existingMsg.isMe &&
+                  newMsg.timestamp.difference(existingMsg.timestamp).inSeconds <
+                      60) {
+                print(
+                  '🔄 Removendo duplicata por conteúdo: ${existingMsg.id} → ${newMsg.id}',
+                );
+                return true;
+              }
+
+              return false;
+            });
+          });
+        }
+
+        print('🔍 DEBUG: Adicionando ${msgs.length} mensagens à UI');
+        for (int i = 0; i < msgs.length; i++) {
+          final msg = msgs[i];
+          print(
+            '   UI Mensagem ${i + 1}: ID=${msg.id}, texto="${msg.text}", isMe=${msg.isMe}',
+          );
+        }
+
+        _messages.addAll(msgs);
+        // ✅ Ordenar por timestamp após adicionar
+        _messages.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+        print(
+          '✅ ${msgs.length} mensagens carregadas (${isLocal ? "LOCAL" : "SERVER"})',
+        );
+        print('🔍 DEBUG: Total de mensagens na UI agora: ${_messages.length}');
+      } else {
+        print(
+          '⚠️ Nenhuma mensagem para carregar (${isLocal ? "LOCAL" : "SERVER"})',
+        );
+      }
     });
 
     // Scroll só se for a primeira carga ou se for server (mais confiável)
@@ -1416,17 +1590,38 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       DateTime parsedDateTime;
 
       if (sentAt is String && sentAt.contains('{{')) {
+        // ✅ Erlang tuple - já está no timezone local do servidor (Moçambique)
         parsedDateTime = _parseErlangTupleTimestamp(sentAt);
       } else if (sentAt is String) {
+        // ✅ DateTime.parse() já trata ISO strings corretamente
+        // Se a string não tem 'Z' ou offset, assume local (timezone do servidor)
         parsedDateTime = DateTime.parse(sentAt);
+        print('🔍 DEBUG String ISO: $sentAt -> parsed: $parsedDateTime');
+
+        // ✅ Se a string não tem timezone info, tratar como local (fuso do servidor)
+        if (!sentAt.contains('Z') &&
+            !sentAt.contains('+') &&
+            !sentAt.contains('-')) {
+          // DateTime.parse() sem timezone assume UTC, então convertemos para local
+          parsedDateTime = parsedDateTime.toLocal();
+          print('🔍 DEBUG Convertido para local: $parsedDateTime');
+        }
+        // ✅ Se tem timezone info, DateTime.parse() já ajusta automaticamente
       } else if (sentAt is int) {
+        // ✅ Timestamps Unix são sempre UTC - converter para local
+        // Mas o chat_list usa DateTime.fromMillisecondsSinceEpoch(ts * 1000) sem isUtc
+        // Vamos usar a mesma lógica do chat_list para consistência
         parsedDateTime = DateTime.fromMillisecondsSinceEpoch(sentAt * 1000);
       } else {
         final timestamp = message['timestamp'];
         if (timestamp != null && timestamp is int) {
           if (timestamp > 1000000000000) {
+            // ✅ Timestamp em milissegundos - usar mesma lógica do chat_list
+            // O chat_list usa DateTime.fromMillisecondsSinceEpoch(ts * 1000) sem isUtc
             parsedDateTime = DateTime.fromMillisecondsSinceEpoch(timestamp);
           } else {
+            // ✅ Timestamp em segundos - usar mesma lógica do chat_list
+            // O chat_list usa DateTime.fromMillisecondsSinceEpoch(ts * 1000) sem isUtc
             parsedDateTime = DateTime.fromMillisecondsSinceEpoch(
               timestamp * 1000,
             );
@@ -1436,8 +1631,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         }
       }
 
-      // ✅ REMOVIDO: Não adicionar 2 horas - usar timestamp original
-      // O servidor já retorna o timestamp correto
       return parsedDateTime;
     } catch (e) {
       print('❌ Erro ao parsear timestamp: $e');
@@ -1462,7 +1655,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         final secondWithMs = double.parse(match.group(6)!);
         final second = secondWithMs.toInt();
 
-        return DateTime(year, month, day, hour, minute, second);
+        // ✅ O servidor PostgreSQL retorna timestamps no timezone do servidor (Moçambique UTC+2)
+        // As Erlang tuples chegam como UTC+2, então precisamos adicionar +2 horas para exibir corretamente
+        return DateTime(
+          year,
+          month,
+          day,
+          hour,
+          minute,
+          second,
+        ).add(const Duration(hours: 2));
       }
     } catch (e) {
       print('❌ Erro no parse Erlang: $e');
@@ -1495,8 +1697,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       id: tempMessageId,
       text: text,
       isMe: true,
-      timestamp: DateTime.now(),
-      status: initialStatus, // ✅ Status inicial: pending_local (será atualizado quando servidor confirmar)
+      timestamp: DateTime.now(), // ✅ Hora local real para pending
+      status:
+          initialStatus, // ✅ Status inicial: pending_local (será atualizado quando servidor confirmar)
       isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
       isDeleted: false, // ✅ NOVA MENSAGEM NÃO É DELETADA
     );
@@ -1521,18 +1724,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         text,
         tempId: tempMessageId,
       );
-      
+
       // ✅ Status será atualizado automaticamente quando receber confirmação do servidor
       // (via _handleIncomingMessage quando receber ACK com db_message_id)
     } catch (e) {
       print('❌ Falha ao enviar mensagem: $e');
       // ✅ Mensagem já está salva localmente como pending_local
       // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Mensagem salva localmente. Será enviada quando conexão voltar.'),
+            content: Text(
+              'Mensagem salva localmente. Será enviada quando conexão voltar.',
+            ),
           ),
         );
       }
@@ -2271,7 +2476,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           });
 
           // ✅ OFFLINE-FIRST: Atualizar no sqflite se for mensagem pending
-          final pendingMsg = await PendingMessagesStorage.getMessageById(_editingMessageId!);
+          final pendingMsg = await PendingMessagesStorage.getMessageById(
+            _editingMessageId!,
+          );
           if (pendingMsg != null) {
             await PendingMessagesStorage.updateMessageContent(
               _editingMessageId!,
@@ -2340,7 +2547,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
       // ✅ OFFLINE-FIRST: Atualizar localmente primeiro
       setState(() {
-        final messageIndex = _messages.indexWhere((msg) => msg.id == message.id);
+        final messageIndex = _messages.indexWhere(
+          (msg) => msg.id == message.id,
+        );
         if (messageIndex != -1) {
           final oldMessage = _messages[messageIndex];
           _messages[messageIndex] = ChatMessage(
@@ -2360,7 +2569,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       });
 
       // ✅ OFFLINE-FIRST: Atualizar no sqflite se for mensagem pending
-      final pendingMsg = await PendingMessagesStorage.getMessageById(message.id);
+      final pendingMsg = await PendingMessagesStorage.getMessageById(
+        message.id,
+      );
       if (pendingMsg != null) {
         await PendingMessagesStorage.markMessageAsDeleted(message.id);
         print('💾 Deleção salva no sqflite: ${message.id}');
@@ -2460,12 +2671,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       // ✅ 3. CRIAR MENSAGEM LOCAL COM INFORMAÇÕES COMPLETAS
       // ✅ OFFLINE-FIRST: Status inicial é 'pending_local' (será atualizado quando servidor confirmar)
       final initialStatus = 'pending_local';
-      
+
       final localReply = ChatMessage(
         id: tempReplyId,
         text: replyText,
         isMe: true,
-        timestamp: DateTime.now(),
+        timestamp: DateTime.now().add(
+          const Duration(hours: 2),
+        ), // ✅ Já no fuso de Moçambique
         status: initialStatus, // ✅ Status inicial: pending_local
         isEdited: false, // ✅ NOVA MENSAGEM NÃO É EDITADA
         isDeleted: false, // ✅ NOVA MENSAGEM NÃO É DELETADA
@@ -2561,11 +2774,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           print('❌ ERRO NO BACKEND AO ENVIAR REPLY: ${result['error']}');
           // ✅ SE FALHAR, MENSAGEM JÁ ESTÁ SALVA COMO pending_local
           // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
-          
+
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('Resposta salva localmente. Será enviada quando conexão voltar.'),
+                content: Text(
+                  'Resposta salva localmente. Será enviada quando conexão voltar.',
+                ),
                 duration: Duration(seconds: 3),
               ),
             );
@@ -2575,11 +2790,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         print('❌ Falha ao enviar reply: $e');
         // ✅ Mensagem já está salva localmente como pending_local
         // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
-        
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Resposta salva localmente. Será enviada quando conexão voltar.'),
+              content: Text(
+                'Resposta salva localmente. Será enviada quando conexão voltar.',
+              ),
             ),
           );
         }
@@ -2847,16 +3064,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   ),
                   // ✅ OFFLINE-FIRST: Permitir enviar mesmo sem conexão (será salvo localmente)
                   onPressed: () {
-                      if (_editingMessageId != null) {
-                        _updateMessage();
-                      } else if (_selectedMessageId != null) {
-                        _sendReply();
-                      } else if (_messageController.text.trim().isEmpty) {
-                        _toggleVoiceRecording();
-                      } else {
-                        _sendMessage();
-                      }
-                    },
+                    if (_editingMessageId != null) {
+                      _updateMessage();
+                    } else if (_selectedMessageId != null) {
+                      _sendReply();
+                    } else if (_messageController.text.trim().isEmpty) {
+                      _toggleVoiceRecording();
+                    } else {
+                      _sendMessage();
+                    }
+                  },
                 ),
               ),
             ],
@@ -3056,7 +3273,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Text(
-                            _formatTime(message.timestamp),
+                            _formatTime(
+                              message.timestamp,
+                              isPending: message.status == 'pending_local',
+                            ),
                             style: TextStyle(
                               color: message.isDeleted
                                   ? Colors.grey[600]
@@ -3095,8 +3315,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
   }
 
-  String _formatTime(DateTime timestamp) {
-    return '${timestamp.hour.toString().padLeft(2, '0')}:${timestamp.minute.toString().padLeft(2, '0')}';
+  String _formatTime(DateTime timestamp, {bool isPending = false}) {
+    // Mensagens pending já vêm com timestamp no fuso correto, não adicionar +2 horas
+    // Outras mensagens também já vêm com timestamp no fuso correto do servidor
+    final adjustedTime = timestamp;
+
+    // Todas as mensagens devem mostrar a hora para facilitar auditoria e leitura
+    return '${adjustedTime.hour.toString().padLeft(2, '0')}:${adjustedTime.minute.toString().padLeft(2, '0')}';
   }
 
   Widget _buildStatusIcon(String status) {
