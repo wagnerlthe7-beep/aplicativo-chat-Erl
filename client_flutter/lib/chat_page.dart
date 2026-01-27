@@ -233,7 +233,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   // Status de presença do contato
   String _contactPresenceStatus = 'offline'; // 'online', 'offline'
+  int? _contactLastSeen; // ✅ Timestamp Unix da última vez online
   bool _isRemoteTyping = false; // ✅ Indica se o outro está digitando
+  bool _isMarqueePaused = false; // ✅ Controla se o marquee está pausado
+  final ScrollController _marqueeController =
+      ScrollController(); // ✅ Controller para marquee
+  Timer? _marqueeAnimationTimer; // ✅ Timer para animação do marquee
+  GlobalKey? _marqueeTextKey; // ✅ Key para medir largura do texto
   bool _listenersConfigured = false; // ✅ Evitar múltiplos setups
   StreamSubscription? _typingSubscription;
   StreamSubscription? _connectionSubscription; // ✅ Nova subscription de conexão
@@ -309,6 +315,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
 
     _pendingMessageIds.clear();
+
+    // ✅ Limpar controller e timer do marquee
+    _marqueeAnimationTimer?.cancel();
+    _marqueeController.dispose();
     super.dispose();
   }
 
@@ -407,6 +417,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           _contactPresenceStatus = 'offline';
+          _contactLastSeen = null;
         });
       }
       return;
@@ -424,8 +435,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (presence != null && mounted) {
         setState(() {
           _contactPresenceStatus = presence['status'] ?? 'offline';
+          // ✅ Armazenar last_seen (pode ser int ou null)
+          final lastSeen = presence['last_seen'];
+          if (lastSeen != null) {
+            _contactLastSeen = lastSeen is int
+                ? lastSeen
+                : int.tryParse(lastSeen.toString());
+          } else {
+            _contactLastSeen = null;
+          }
+          // ✅ Resetar marquee quando status mudar
+          _isMarqueePaused = false;
+          _resetMarquee();
         });
-        print('✅ Status atualizado: $_contactPresenceStatus');
+        print(
+          '✅ Status atualizado: $_contactPresenceStatus, last_seen: $_contactLastSeen',
+        );
       } else {
         // Se não conseguir buscar, definir como offline
         if (mounted) {
@@ -442,6 +467,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           _contactPresenceStatus = 'offline';
+          _contactLastSeen = null;
         });
       }
     } catch (e) {
@@ -450,6 +476,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           _contactPresenceStatus = 'offline';
+          _contactLastSeen = null;
         });
       }
     }
@@ -462,9 +489,207 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return 'online';
     }
 
-    // REQUISITO: quando offline, NÃO mostrar nada (campo vazio)
-    // Isso significa "offline" de forma silenciosa.
+    // ✅ Quando offline, mostrar "última vez online: [tempo]"
+    if (_contactLastSeen != null) {
+      return _formatLastSeen(_contactLastSeen!);
+    }
+
+    // Se não há last_seen, não mostrar nada
     return '';
+  }
+
+  // ✅ Formatar last_seen de forma amigável
+  String _formatLastSeen(int timestamp) {
+    final lastSeenDate = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
+    final now = DateTime.now();
+    final difference = now.difference(lastSeenDate);
+
+    if (difference.inSeconds < 10) {
+      return 'última vez online: agora';
+    } else if (difference.inSeconds < 60) {
+      return 'última vez online: há ${difference.inSeconds} seg';
+    } else if (difference.inMinutes < 60) {
+      return 'última vez online: há ${difference.inMinutes} min';
+    } else if (difference.inHours < 24) {
+      return 'última vez online: há ${difference.inHours} h';
+    } else if (difference.inDays == 1) {
+      return 'última vez online: ontem às ${lastSeenDate.hour.toString().padLeft(2, '0')}:${lastSeenDate.minute.toString().padLeft(2, '0')}';
+    } else if (difference.inDays < 7) {
+      return 'última vez online: há ${difference.inDays} dias';
+    } else {
+      // Mais de uma semana - mostrar data completa
+      final day = lastSeenDate.day.toString().padLeft(2, '0');
+      final month = lastSeenDate.month.toString().padLeft(2, '0');
+      final year = lastSeenDate.year;
+      return 'última vez online: $day/$month/$year';
+    }
+  }
+
+  // ✅ Widget de marquee para texto que rola da direita para esquerda
+  Widget _buildMarqueeText() {
+    final text = _getPresenceText();
+    final isOnline = _contactPresenceStatus == 'online';
+
+    // ✅ Se é "online", não precisa marquee
+    if (isOnline) {
+      return Text(
+        text,
+        style: TextStyle(
+          color: AppTheme.textOnGreen.withOpacity(0.8),
+          fontSize: 12,
+        ),
+      );
+    }
+
+    // ✅ Inicializar key se necessário
+    _marqueeTextKey ??= GlobalKey();
+
+    // ✅ Iniciar animação se não estiver pausada
+    if (!_isMarqueePaused) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _startMarqueeAnimation(text);
+      });
+    }
+
+    // ✅ Para "last_seen", usar marquee (como WhatsApp)
+    return GestureDetector(
+      onTap: () {
+        // ✅ Pausar quando usuário tocar
+        setState(() {
+          _isMarqueePaused = true;
+          _marqueeAnimationTimer?.cancel();
+        });
+      },
+      child: SizedBox(
+        height: 16,
+        child: ClipRect(
+          child: SingleChildScrollView(
+            controller: _marqueeController,
+            scrollDirection: Axis.horizontal,
+            physics: _isMarqueePaused
+                ? NeverScrollableScrollPhysics()
+                : ClampingScrollPhysics(),
+            child: Text(
+              text,
+              key: _marqueeTextKey,
+              style: TextStyle(
+                color: AppTheme.textOnGreen.withOpacity(0.6),
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ✅ Resetar marquee (com verificação de controller anexado)
+  void _resetMarquee() {
+    if (!mounted) return;
+    // ✅ Verificar se controller está anexado antes de usar
+    if (_marqueeController.hasClients) {
+      _marqueeController.jumpTo(0);
+    } else {
+      // ✅ Se não está anexado, aguardar e tentar novamente
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _marqueeController.hasClients) {
+          _marqueeController.jumpTo(0);
+        }
+      });
+    }
+  }
+
+  // ✅ Iniciar animação do marquee
+  void _startMarqueeAnimation(String text) {
+    if (_isMarqueePaused || !mounted) return;
+
+    // ✅ Cancelar timer anterior
+    _marqueeAnimationTimer?.cancel();
+
+    // ✅ Aguardar para garantir que o widget está renderizado
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (!mounted || _isMarqueePaused) return;
+
+      // ✅ Medir largura do texto
+      final RenderBox? renderBox =
+          _marqueeTextKey?.currentContext?.findRenderObject() as RenderBox?;
+      if (renderBox == null) {
+        // ✅ Tentar novamente após um delay
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted && !_isMarqueePaused) {
+            _startMarqueeAnimation(text);
+          }
+        });
+        return;
+      }
+
+      final textWidth = renderBox.size.width;
+
+      // ✅ Obter largura do container do contexto do ScrollView
+      final ScrollController? controller = _marqueeController;
+      if (controller == null || !controller.hasClients) {
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (mounted && !_isMarqueePaused) {
+            _startMarqueeAnimation(text);
+          }
+        });
+        return;
+      }
+
+      // ✅ Obter largura do container através do ScrollPosition
+      final containerWidth = controller.position.viewportDimension;
+
+      // ✅ Se o texto cabe no container, não precisa rolar
+      if (textWidth <= containerWidth) {
+        return;
+      }
+
+      // ✅ Verificar se controller está anexado antes de animar
+      if (!_marqueeController.hasClients) {
+        // ✅ Tentar novamente após um delay
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted && !_isMarqueePaused) {
+            _startMarqueeAnimation(text);
+          }
+        });
+        return;
+      }
+
+      // ✅ Calcular distância para rolar (da direita para esquerda)
+      // Começar em 0 (mostra início cortado) e rolar até mostrar o texto completo
+      final scrollDistance =
+          textWidth -
+          containerWidth +
+          20; // +20 para margem final e garantir que hora completa está visível
+
+      // ✅ Aguardar 1.5 segundos antes de começar a rolar (como WhatsApp)
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        if (!mounted || _isMarqueePaused || !_marqueeController.hasClients)
+          return;
+
+        // ✅ Rolar da direita (0) para esquerda (scrollDistance)
+        // Isso faz o texto rolar da direita para esquerda mostrando o final (a hora)
+        // O texto começa mostrando "última vez online: ontem às" e rola para mostrar "ontem às 14:30"
+        _marqueeController
+            .animateTo(
+              scrollDistance,
+              duration: Duration(
+                milliseconds: (scrollDistance * 30).toInt().clamp(1000, 5000),
+              ), // Velocidade: 30ms por pixel (min 1s, max 5s) - mais lento para ler
+              curve: Curves.linear,
+            )
+            .then((_) {
+              // ✅ Quando terminar de rolar, manter na posição final (pausado)
+              // O texto completo (incluindo a hora) estará visível
+              if (mounted && !_isMarqueePaused) {
+                setState(() {
+                  _isMarqueePaused =
+                      true; // ✅ Parar quando mostrar texto completo
+                });
+              }
+            });
+      });
+    });
   }
 
   // MELHORADO: Marcar como lido com verificação
@@ -548,6 +773,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             if (mounted) {
               setState(() {
                 _contactPresenceStatus = 'online';
+                // ✅ Resetar marquee quando ficar online
+                _isMarqueePaused = false;
+                _resetMarquee();
               });
               print('✅ Presença aplicada (ONLINE) imediatamente');
             }
@@ -557,9 +785,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             if (mounted) {
               setState(() {
                 _contactPresenceStatus = 'offline';
+                // ✅ Resetar marquee quando ficar offline
+                _isMarqueePaused = false;
+                _resetMarquee();
               });
               print('✅ Presença aplicada (OFFLINE) imediatamente');
             }
+            // ✅ Buscar last_seen quando usuário fica offline
+            _loadContactPresence();
           }
         }
       });
@@ -592,6 +825,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       if (mounted) {
         setState(() {
           _contactPresenceStatus = 'offline';
+          _contactLastSeen = null;
         });
       }
 
@@ -1917,16 +2151,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     overflow: TextOverflow.ellipsis,
                   ),
                   if (_getPresenceText().isNotEmpty)
-                    Text(
-                      _getPresenceText(),
-                      style: TextStyle(
-                        color: _contactPresenceStatus == 'online'
-                            ? AppTheme.textOnGreen.withOpacity(0.8)
-                            : AppTheme.textOnGreen.withOpacity(0.6),
-                        fontSize: 12,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    )
+                    _buildMarqueeText()
                   else
                     SizedBox.shrink(),
                 ],
