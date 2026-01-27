@@ -28,24 +28,9 @@ get_user_presence(Req0, State) ->
         Result = presence_manager:get_user_status(UserId),
         case Result of
             {ok, Status, LastSeen} ->
-                %% ✅ CORREÇÃO IMPORTANTE:
-                %% Se o Presence Manager diz "offline", mas o user_session ainda
-                %% está com status "online" (WebSocket vivo), vamos CONFIAR
-                %% no user_session e forçar "online". Isso evita o bug onde
-                %% /api/presence/:id sempre devolve offline mesmo com o app aberto.
-                EffectiveStatus =
-                    case Status of
-                        online ->
-                            online;
-                        offline ->
-                            case catch user_session:get_status(UserId) of
-                                {ok, online} ->
-                                    ?LOG_INFO("✅ Override de presença: PresenceManager=offline mas user_session=online para ~p", [UserId]),
-                                    online;
-                                _ ->
-                                    offline
-                            end
-                    end,
+                %% ✅ CONFIAR NO PRESENCE_MANAGER - ele já verifica heartbeat e WebSocket
+                %% Não fazer override - se presence_manager diz offline, o usuário está offline
+                EffectiveStatus = Status,
 
                 Response =
                     case EffectiveStatus of

@@ -4,14 +4,6 @@
 
 -module(message_router).
 
-% Definir o record localmente para acesso ao ETS
--record(user_presence, {
-    user_id :: binary(),
-    ws_pid :: pid(),
-    last_heartbeat :: integer(),
-    is_connected :: boolean()
-}).
-
 -record(pending_messages, {
     message_id :: binary(),
     receiver_id :: binary(), 
@@ -80,18 +72,26 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                                 <<"status">> => <<"delivered">>,  %% para o destinatário, já entregue
                                 <<"should_increase_unread">> => true},
             
-            IsWsAlive = user_session:is_websocket_alive(ToId),
-            io:format("   🔍 WebSocket alive para ~p: ~p~n", [ToId, IsWsAlive]),
+            %% ✅ CORREÇÃO CRÍTICA: Verificar presença REAL antes de tentar enviar
+            %% Não confiar apenas em is_websocket_alive - verificar também se usuário está realmente online
+            IsUserReallyOnline = case presence_manager:is_user_online(ToId) of
+                {ok, true} -> true;
+                _ -> false
+            end,
             
-            %% ✅ ESTRATÉGIA MELHORADA: Grace period para Android background
-            case IsWsAlive of
+            IsWsAlive = user_session:is_websocket_alive(ToId),
+            io:format("   🔍 WebSocket alive para ~p: ~p, Usuário realmente online: ~p~n", [ToId, IsWsAlive, IsUserReallyOnline]),
+            
+            %% ✅ ESTRATÉGIA CORRIGIDA: Só tentar entregar se usuário está REALMENTE online
+            %% Se não estiver online, mensagem fica como 'sent' (não 'delivered')
+            case IsWsAlive andalso IsUserReallyOnline of
                 true ->
-                    %% WebSocket ativo - tentar enviar mensagem
+                    %% WebSocket ativo E usuário realmente online - tentar enviar mensagem
                     case user_session:send_message(FromId, ToId, MessageToReceiver) of
                         ok ->
-                            io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p (WS vivo)~n", [ToId]),
+                            io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p (WS vivo E online)~n", [ToId]),
                             
-                            %% ✅ ATUALIZAR BD: status = 'delivered'
+                            %% ✅ ATUALIZAR BD: status = 'delivered' (SÓ quando REALMENTE entregue)
                             message_repo:mark_message_delivered(DbMessageId),
                             
                             %% ✅ ENVIAR ATUALIZAÇÃO PARA CHAT LIST PAGE
@@ -102,38 +102,20 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                             {ok, MessageToReceiver, delivered};
                             
                         {error, Reason} ->
-                            io:format("   ❌ Erro ao enviar para WS ativo: ~p~n", [Reason]),
-                            {error, Reason}
-                    end;
-                false ->
-                    %% WebSocket não está ativo - verificar grace period
-                    case check_grace_period(ToId) of
-                        {ok, within_grace} ->
-                            io:format("   ⏰ Usuário ~p em grace period (Android background) - tentando delivery~n", [ToId]),
-                            %% Tentar entregar mesmo sem WebSocket (pode reconectar)
-                            case user_session:send_message(FromId, ToId, MessageToReceiver) of
-                                ok ->
-                                    message_repo:mark_message_delivered(DbMessageId),
-                                    
-                                    %% ✅ ENVIAR ATUALIZAÇÃO PARA CHAT LIST PAGE
-                                    send_chat_list_update(FromId, ToId, Content, DbMessageId),
-                                    
-                                    io:format("   ✅ Delivery bem-sucedido em grace period~n"),
-                                    {ok, MessageToReceiver, delivered};
-                                {error, _} ->
-                                    io:format("   💾 Grace period expirou para ~p - armazenando mensagem (status=sent)~n", [ToId]),
-                                    store_offline_message(ToId, MessageToReceiver#{
-                                      <<"status">> => <<"sent">>
-                                    }),
-                                    {ok, MessageToReceiver, sent}
-                            end;
-                        {ok, expired} ->
-                            io:format("   💾 Grace period expirou para ~p - armazenando mensagem (status=sent)~n", [ToId]),
+                            io:format("   ❌ Erro ao enviar para WS ativo: ~p - marcando como sent~n", [Reason]),
+                            %% ✅ Se falhar ao enviar, mensagem fica como 'sent' (não delivered)
                             store_offline_message(ToId, MessageToReceiver#{
                               <<"status">> => <<"sent">>
                             }),
                             {ok, MessageToReceiver, sent}
-                    end
+                    end;
+                false ->
+                    %% ✅ Usuário NÃO está realmente online - mensagem fica como 'sent' (não delivered)
+                    io:format("   💾 Usuário ~p NÃO está realmente online - armazenando mensagem (status=sent)~n", [ToId]),
+                    store_offline_message(ToId, MessageToReceiver#{
+                      <<"status">> => <<"sent">>
+                    }),
+                    {ok, MessageToReceiver, sent}
             end;
             
         {error, DbError} ->
@@ -447,41 +429,6 @@ store_offline_message(UserId, Message) ->
     end),
     
     io:format("💾 Stored offline message for ~p: ~p~n", [UserId, MessageId]).
-
-%% @doc Verifica se usuário está em grace period (Android background)
-check_grace_period(UserId) ->
-    try
-        % Verificar se há um registro recente de desconexão
-        case ets:lookup(user_presence, UserId) of
-            [#user_presence{is_connected = false, last_heartbeat = LastHeartbeat}] ->
-                Now = erlang:system_time(second),
-                GracePeriodSeconds = 120,  % 2 minutos de grace period
-                
-                io:format("   ⏰ Grace period check: Now=~p, LastHeartbeat=~p, Diff=~p~n", 
-                          [Now, LastHeartbeat, Now - LastHeartbeat]),
-                
-                case (Now - LastHeartbeat) =< GracePeriodSeconds of
-                    true ->
-                        io:format("   ⏰ Usuário dentro do grace period~n"),
-                        {ok, within_grace};
-                    false ->
-                        io:format("   ⏰ Grace period expirou~n"),
-                        {ok, expired}
-                end;
-            [#user_presence{is_connected = true}] ->
-                % Usuário está conectado - não precisa de grace period
-                io:format("   ℹ️ Usuário está conectado, grace period não aplicável~n"),
-                {ok, expired};
-            _ ->
-                % Sem registro - expirado
-                io:format("   ℹ️ Sem registro de presença, grace period expirado~n"),
-                {ok, expired}
-        end
-    catch
-        _:_ ->
-            io:format("   ❌ Erro ao verificar grace period~n"),
-            {ok, expired}
-    end.
 
 %% @doc Limpa mensagens offline de um usuário
 clear_offline_messages(UserId) ->

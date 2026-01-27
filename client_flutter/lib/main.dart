@@ -33,7 +33,7 @@ void main() async {
     if (token != null) {
       print('🚀 Token encontrado! Pré-carregando chats...');
       initialRoute = '/chatList';
-      
+
       // ✅ PRÉ-AQUECIMENTO: Carregar chats locais na memória AGORA
       await ChatService.loadLocalChats();
       // Não esperar conectar no main, apenas carregar o local
@@ -44,17 +44,16 @@ void main() async {
 
     // ✅ INICIALIZAR FOREGROUND SERVICE
     await WebSocketForegroundService.initialize();
-    
+
     // ✅ INICIALIZAR SERVIÇO DE NOTIFICAÇÕES
     await NotificationService().initialize();
     await NotificationService().requestPermission();
-    
+
     // ✅ INICIALIZAR SERVIÇO DE SINCRONIZAÇÃO OFFLINE-FIRST
     if (token != null) {
       await MessageSyncService.initialize();
       print('✅ MessageSyncService inicializado');
     }
-
   } catch (e) {
     print('❌ Erro na inicialização: $e');
   }
@@ -64,7 +63,7 @@ void main() async {
 
 class MyApp extends StatefulWidget {
   final String initialRoute; // ✅ Rota inicial dinâmica
-  
+
   const MyApp({super.key, this.initialRoute = '/'});
 
   @override
