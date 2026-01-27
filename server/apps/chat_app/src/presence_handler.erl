@@ -44,9 +44,18 @@ get_user_presence(Req0, State) ->
                                 try
                                     case LastSeen of
                                         null -> null;
+                                        {{Y, M, D}, {H, Min, Sec}} when is_float(Sec) ->
+                                            %% ✅ PostgreSQL retorna com microssegundos (float)
+                                            %% Converter para segundos inteiros primeiro
+                                            SecInt = trunc(Sec),
+                                            DateTime = {{Y, M, D}, {H, Min, SecInt}},
+                                            calendar:datetime_to_gregorian_seconds(DateTime) - 62167219200;
+                                        {{Y, M, D}, {H, Min, Sec}} when is_integer(Sec) ->
+                                            %% ✅ Já está em segundos inteiros
+                                            DateTime = {{Y, M, D}, {H, Min, Sec}},
+                                            calendar:datetime_to_gregorian_seconds(DateTime) - 62167219200;
                                         _ when is_tuple(LastSeen) ->
-                                            %% É uma tupla datetime do Erlang
-                                            %% Converter para timestamp Unix
+                                            %% ✅ Tentar conversão genérica (fallback)
                                             calendar:datetime_to_gregorian_seconds(LastSeen) - 62167219200;
                                         _ -> null
                                     end
@@ -71,8 +80,8 @@ get_user_presence(Req0, State) ->
                 send_json(Req0, 200, DefaultErrorResponse)
         end
     catch
-        Error:Reason2 ->
-            ?LOG_ERROR("❌ Erro em get_user_presence: ~p:~p", [Error, Reason2]),
+        _:_ ->
+            ?LOG_ERROR("❌ Erro em get_user_presence"),
             %% Retornar offline em caso de exceção
             send_json(Req0, 200, DefaultErrorResponse)
     end,
