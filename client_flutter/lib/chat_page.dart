@@ -414,7 +414,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     try {
       print('🔍 Buscando presença para: ${widget.remoteUserId}');
-      final presence = await ChatService.getUserPresence(widget.remoteUserId);
+      // ✅ FORÇAR refresh ao entrar no chat para garantir status atualizado
+      final presence = await ChatService.getUserPresence(
+        widget.remoteUserId,
+        forceRefresh: true,
+      );
       print('📊 Presença recebida: $presence');
 
       if (presence != null && mounted) {
@@ -1252,7 +1256,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       print(' Carregando histórico (Estratégia Offline-First)...');
 
       // Se já há mensagens no chat, tenta atualizar do servidor
-      // Se servidor offline, mantém as mensagens existentes (não limpa)
+      // Se sem internet, mantém as mensagens existentes (não limpa)
       if (_messages.isNotEmpty) {
         print(' Chat já tem conteúdo, tentando atualizar do servidor...');
         try {
@@ -1265,9 +1269,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           }
         } catch (e) {
           print(
-            ' Servidor offline, mantendo mensagens existentes com status atual',
+            ' Sem conexão com internet, mantendo mensagens existentes com status atual',
           );
-          // Se servidor offline, não faz nada - mantém as mensagens existentes
+          // Se sem internet, não faz nada - mantém as mensagens existentes
           // Elas já têm o status correto do último carregamento
         }
         return;
@@ -1369,6 +1373,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   // ✅ NOVO: Listener para atualizar status em tempo real
   Timer? _statusUpdateTimer;
+  // ✅ Mapa para rastrear último refresh de presença por usuário
+  final Map<String, DateTime> _lastPresenceRefresh = {};
 
   void _startStatusUpdateListener() {
     _statusUpdateTimer?.cancel();
@@ -1382,6 +1388,19 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       }
 
       await _updatePendingMessagesStatus();
+
+      // ✅ REFRESH PERIÓDICO DE PRESENÇA (a cada 10 segundos) para garantir UI sincronizada
+      // Isso garante que mesmo se eventos de presença forem perdidos, a UI será atualizada
+      final now = DateTime.now();
+      if (!_lastPresenceRefresh.containsKey(widget.remoteUserId) ||
+          now.difference(_lastPresenceRefresh[widget.remoteUserId]!) >
+              const Duration(seconds: 10)) {
+        _lastPresenceRefresh[widget.remoteUserId] = now;
+        if (_isConnected) {
+          print('🔄 Refresh periódico de presença para ${widget.remoteUserId}');
+          await _loadContactPresence();
+        }
+      }
     });
   }
 

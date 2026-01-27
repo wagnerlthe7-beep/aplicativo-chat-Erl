@@ -63,14 +63,18 @@ class MessageSyncService {
       return;
     }
 
-    // ✅ Verificar conectividade
-    final connectivityResult = await Connectivity().checkConnectivity();
-    if (connectivityResult == ConnectivityResult.none) {
-      print('❌ Sem conectividade -> Não sincronizando');
+    // ✅ VERIFICAR INTERNET REAL (não apenas conectividade de rede)
+    // Connectivity pode reportar wifi/mobile mesmo sem internet (modo avião)
+    final status = await ChatService.checkConnectionStatus();
+    if (status == 'no_internet') {
+      print('❌ No Internet Connection -> Não sincronizando');
+      return;
+    } else if (status == 'server_unavailable') {
+      print('❌ Server Unavailable -> Não sincronizando');
       return;
     }
 
-    // ✅ Verificar se servidor está online
+    // ✅ Verificar se há conexão (internet + servidor)
     if (ChatService.isServerDown) {
       print('❌ Servidor offline -> Não sincronizando');
       return;

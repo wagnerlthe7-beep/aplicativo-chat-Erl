@@ -95,10 +95,15 @@ class WebSocketTaskHandler extends TaskHandler {
   Future<void> _sendHeartbeat() async {
     // Enviar heartbeat para manter WebSocket vivo
     try {
-      // Aqui você pode enviar um heartbeat através do WebSocket
-      // ou garantir que a conexão está ativa
-      print('💓 Heartbeat do Foreground Service');
-      await ChatService.sendHeartbeat();
+      // ✅ Verificar conexão antes de enviar heartbeat
+      // O sendHeartbeat já verifica internamente, mas garantimos aqui também
+      if (ChatService.isWebSocketConnected()) {
+        print('💓 Heartbeat do Foreground Service');
+        await ChatService.sendHeartbeat();
+      } else {
+        // WebSocket não conectado - não enviar heartbeat
+        return;
+      }
     } catch (e) {
       print('❌ Erro no heartbeat: $e');
     }

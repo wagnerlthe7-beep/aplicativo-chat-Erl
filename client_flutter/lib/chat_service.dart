@@ -116,8 +116,16 @@ class ChatService {
           print('❌ WebSocket stream error: $error');
           _handleDisconnect();
         },
-        onDone: () {
-          print('🔌 WebSocket disconnected (Done)');
+        onDone: () async {
+          // ✅ Verificar motivo da desconexão
+          final status = await checkConnectionStatus();
+          if (status == 'no_internet') {
+            print('🔌 WebSocket desconectado - No Internet Connection');
+          } else if (status == 'server_unavailable') {
+            print('🔌 WebSocket desconectado - Server Unavailable');
+          } else {
+            print('🔌 WebSocket desconectado');
+          }
           _handleDisconnect();
         },
       );
@@ -147,18 +155,34 @@ class ChatService {
 
       return true;
     } on SocketException catch (_) {
-      // ✅ Captura erro de servidor indisponível
-      isServerDown = true;
+      // ✅ Verificar se é falta de internet ou servidor offline
       _isConnecting = false; // ✅ UNLOCK em caso de erro
-      print(
-        '⚠️ Servidor indisponível (SocketException) - Modo Offline Ativado',
-      );
+      final status = await checkConnectionStatus();
+      isServerDown = true;
+
+      if (status == 'no_internet') {
+        print('⚠️ No Internet Connection - Modo Offline Ativado');
+      } else if (status == 'server_unavailable') {
+        print('⚠️ Server Unavailable - Modo Offline Ativado');
+      } else {
+        print(
+          '⚠️ Sem conexão com internet (SocketException) - Modo Offline Ativado',
+        );
+      }
       return false;
     } on TimeoutException catch (_) {
-      // ✅ Captura timeout
-      isServerDown = true;
+      // ✅ Verificar se é falta de internet ou servidor offline
       _isConnecting = false; // ✅ UNLOCK em caso de erro
-      print('⚠️ Timeout na conexão WebSocket - Modo Offline Ativado');
+      final status = await checkConnectionStatus();
+      isServerDown = true;
+
+      if (status == 'no_internet') {
+        print('⚠️ No Internet Connection (Timeout) - Modo Offline Ativado');
+      } else if (status == 'server_unavailable') {
+        print('⚠️ Server Unavailable (Timeout) - Modo Offline Ativado');
+      } else {
+        print('⚠️ Sem conexão com internet (Timeout) - Modo Offline Ativado');
+      }
       return false;
     } catch (e) {
       _isConnecting = false; // ✅ UNLOCK em caso de erro
@@ -167,7 +191,7 @@ class ChatService {
     }
   }
 
-  static void _handleDisconnect() {
+  static void _handleDisconnect() async {
     _channel = null;
 
     // ✅ Notificar OFFLINE
@@ -176,6 +200,17 @@ class ChatService {
     if (_isManualDisconnect) {
       print('🔌 Desconexão manual - não reconectando automaticamente');
       return;
+    }
+
+    // ✅ Verificar motivo da desconexão
+    final status = await checkConnectionStatus();
+    String disconnectReason;
+    if (status == 'no_internet') {
+      disconnectReason = 'No Internet Connection';
+    } else if (status == 'server_unavailable') {
+      disconnectReason = 'Server Unavailable';
+    } else {
+      disconnectReason = 'Connection lost';
     }
 
     // ✅ Quando desconectar (perda de internet / WS fechado),
@@ -197,7 +232,9 @@ class ChatService {
     if (!_isReconnecting && _reconnectAttempts < _maxReconnectAttempts) {
       _isReconnecting = true;
       final delay = Duration(seconds: _reconnectAttempts * 2);
-      print('🔄 Tentando reconectar em ${delay.inSeconds} segundos...');
+      print(
+        '🔄 Tentando reconectar ($disconnectReason) em ${delay.inSeconds} segundos...',
+      );
 
       Future.delayed(delay, () {
         if (_isReconnecting) {
@@ -265,7 +302,6 @@ class ChatService {
           final shouldIncreaseUnread =
               message['should_increase_unread'] ?? true;
           _updateChatOnMessageReceived(message, shouldIncreaseUnread);
-
           // ✅ CRÍTICO: Salvar mensagem recebida no histórico local para persistência offline
           // Isso garante que mensagens recebidas quando o chat não está aberto ainda sejam visíveis offline
           final fromUserId = message['from']?.toString();
@@ -389,14 +425,25 @@ class ChatService {
           }
 
           final lastTs = userId != null ? _presenceTimestamps[userId] : null;
+          final lastStatus = userId != null
+              ? _userPresenceStatus[userId]
+              : null;
 
+          // ✅ Permitir atualização se:
+          // 1. Timestamp é mais recente (incomingTs > lastTs)
+          // 2. Timestamp é igual MAS o status mudou (reconexão/atualização)
+          // 3. Não há timestamp anterior (primeira vez)
           final isStale =
-              (incomingTs != null && lastTs != null && incomingTs <= lastTs);
+              (incomingTs != null && lastTs != null && incomingTs < lastTs) ||
+              (incomingTs != null &&
+                  lastTs != null &&
+                  incomingTs == lastTs &&
+                  status == lastStatus);
 
           if (userId != null && status != null) {
             if (isStale) {
               print(
-                '⏳ Ignorando presença desatualizada: $userId ts=$incomingTs (last=$lastTs)',
+                '⏳ Ignorando presença desatualizada: $userId ts=$incomingTs (last=$lastTs) status=$status (last=$lastStatus)',
               );
               break;
             }
@@ -407,7 +454,7 @@ class ChatService {
 
             _userPresenceStatus[userId] = status;
             print(
-              '🔍 [PRESENCE SERVICE] Adicionando ao stream: userId=$userId, status=$status',
+              '🔍 [PRESENCE SERVICE] Adicionando ao stream: userId=$userId, status=$status, ts=$incomingTs',
             );
             _presenceController.add({
               'user_id': userId,
@@ -830,6 +877,49 @@ class ChatService {
     }
   }
 
+  // ✅ Verificar status de conexão: diferencia entre falta de internet e servidor offline
+  // Retorna: 'no_internet', 'server_unavailable', ou 'server_online'
+  static Future<String> checkConnectionStatus() async {
+    // 1. Primeiro verificar se tem internet (conectividade geral)
+    try {
+      final result = await InternetAddress.lookup(
+        'google.com',
+      ).timeout(const Duration(seconds: 3));
+      final hasInternet = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      if (!hasInternet) {
+        return 'no_internet';
+      }
+    } on SocketException catch (_) {
+      return 'no_internet';
+    } on TimeoutException catch (_) {
+      return 'no_internet';
+    } catch (e) {
+      // Se falhar ao verificar internet, assumir que não tem
+      return 'no_internet';
+    }
+
+    // 2. Se tem internet, verificar se servidor está acessível (tentar conexão TCP na porta)
+    try {
+      // Tentar conectar via socket TCP na porta do servidor
+      final socket = await Socket.connect(
+        '192.168.100.35',
+        4000,
+        timeout: const Duration(seconds: 3),
+      );
+      await socket.close();
+      return 'server_online';
+    } on SocketException catch (_) {
+      // SocketException ao conectar ao servidor = servidor offline
+      return 'server_unavailable';
+    } on TimeoutException catch (_) {
+      // Timeout ao conectar ao servidor = servidor offline ou não acessível
+      return 'server_unavailable';
+    } catch (e) {
+      // Qualquer outro erro = assumir servidor offline
+      return 'server_unavailable';
+    }
+  }
+
   // ✅ Verificar se é possível enviar mensagem (conexão + internet)
   static Future<bool> canSendMessage() async {
     if (_channel == null) {
@@ -914,7 +1004,14 @@ class ChatService {
       }
     } else {
       // ✅ SEM INTERNET OU SERVIDOR OFFLINE -> MENSAGEM FICA PENDING
-      print('⚠️ Sem conexão ou servidor offline -> Mensagem ficará pendente');
+      final status = await checkConnectionStatus();
+      if (status == 'no_internet') {
+        print('⚠️ No Internet Connection -> Mensagem ficará pendente');
+      } else if (status == 'server_unavailable') {
+        print('⚠️ Server Unavailable -> Mensagem ficará pendente');
+      } else {
+        print('⚠️ Sem conexão -> Mensagem ficará pendente');
+      }
       print(
         '   Status: pending_local (será enviada automaticamente quando conexão voltar)',
       );
@@ -1134,7 +1231,7 @@ class ChatService {
         }
       } on TimeoutException catch (_) {
         print(
-          '⚠️ Servidor indisponível (timeout) - carregando histórico local',
+          '⚠️ No Internet Connection ou Server Unavailable (timeout) - carregando histórico local',
         );
         return await loadLocalChatHistory(currentUserId, contactUserId);
       }
@@ -1310,7 +1407,7 @@ class ChatService {
     } on TimeoutException catch (_) {
       // ✅ Timeout esperado em modo offline - silenciar
       print(
-        '⚠️ Servidor offline - mensagens não marcadas como lidas no servidor',
+        '⚠️ No Internet Connection ou Server Unavailable - mensagens não marcadas como lidas no servidor',
       );
     } catch (e) {
       print('❌ markMessagesRead error: $e');
@@ -1409,24 +1506,35 @@ class ChatService {
   static void _startHeartbeat() {
     _stopHeartbeat(); // Garantir que não há múltiplos timers
 
-    // Enviar heartbeat a cada 20 segundos (mais frequente para garantir em background)
-    _heartbeatTimer = Timer.periodic(Duration(seconds: 20), (timer) {
-      if (_channel != null) {
-        try {
-          final heartbeatMsg = json.encode({'type': 'heartbeat'});
-          _channel!.sink.add(heartbeatMsg);
-          print('💓 Heartbeat enviado (background/foreground)');
-        } catch (e) {
-          print('❌ Erro ao enviar heartbeat: $e');
-          // Se falhar, tentar reconectar
-          if (!_isManualDisconnect) {
-            print('🔄 Tentando reconectar após falha de heartbeat...');
-            connect();
-          }
-        }
-      } else {
+    // Enviar heartbeat a cada 3 segundos (otimizado para detecção rápida de offline em 6s)
+    _heartbeatTimer = Timer.periodic(Duration(seconds: 3), (timer) async {
+      // ✅ Verificar se há conexão antes de enviar heartbeat
+      if (_channel == null) {
         print('💓 WebSocket null, parando heartbeat');
         _stopHeartbeat();
+        return;
+      }
+
+      // ✅ Verificar se há internet real antes de enviar
+      if (isServerDown) {
+        final status = await checkConnectionStatus();
+        if (status == 'no_internet' || status == 'server_unavailable') {
+          // Sem internet ou servidor offline - não enviar heartbeat
+          return;
+        }
+      }
+
+      try {
+        final heartbeatMsg = json.encode({'type': 'heartbeat'});
+        _channel!.sink.add(heartbeatMsg);
+        print('💓 Heartbeat enviado (background/foreground)');
+      } catch (e) {
+        print('❌ Erro ao enviar heartbeat: $e');
+        // Se falhar, tentar reconectar
+        if (!_isManualDisconnect) {
+          print('🔄 Tentando reconectar após falha de heartbeat...');
+          connect();
+        }
       }
     });
   }
@@ -1434,6 +1542,15 @@ class ChatService {
   // ✅ ENVIAR HEARTBEAT MANUALMENTE (para background manager)
   static Future<bool> sendHeartbeat() async {
     if (_channel == null) return false;
+
+    // ✅ Verificar se há internet real antes de enviar
+    if (isServerDown) {
+      final status = await checkConnectionStatus();
+      if (status == 'no_internet' || status == 'server_unavailable') {
+        // Sem internet ou servidor offline - não enviar heartbeat
+        return false;
+      }
+    }
 
     try {
       final heartbeatMsg = json.encode({'type': 'heartbeat'});
@@ -1474,17 +1591,25 @@ class ChatService {
   }
 
   // ✅ Obter status de presença de um usuário
-  static Future<Map<String, dynamic>?> getUserPresence(String userId) async {
+  static Future<Map<String, dynamic>?> getUserPresence(
+    String userId, {
+    bool forceRefresh = false,
+  }) async {
     try {
-      print('🔍 getUserPresence chamado para: $userId');
+      print(
+        '🔍 getUserPresence chamado para: $userId (forceRefresh: $forceRefresh)',
+      );
 
-      // Primeiro verificar cache local
-      if (_userPresenceStatus.containsKey(userId)) {
+      // ✅ SEMPRE consultar servidor quando forceRefresh=true (ao entrar no chat)
+      // ✅ Se não for forceRefresh, usar cache apenas para offline (evitar consultas desnecessárias)
+      if (!forceRefresh && _userPresenceStatus.containsKey(userId)) {
         final status = _userPresenceStatus[userId];
         print('📦 Status em cache: $status');
-        if (status == 'online') {
-          return {'status': 'online', 'last_seen': null};
+        // ✅ Só usar cache se for 'offline' - se for 'online', sempre verificar servidor
+        if (status == 'offline') {
+          return {'status': 'offline', 'last_seen': null};
         }
+        // Se cache diz 'online', sempre consultar servidor para garantir
       }
 
       // Buscar do servidor

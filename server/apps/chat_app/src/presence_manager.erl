@@ -122,15 +122,19 @@ init([]) ->
     
     io:format("✅ Presence Manager inicializado com sucesso~n"),
     
-    %% ✅ INICIAR CLEANUP AUTOMÁTICO (a cada 30 segundos)
-    erlang:send_after(30000, self(), cleanup),
+    %% ✅ INICIAR CLEANUP AUTOMÁTICO (a cada 3 segundos para detecção rápida de 6s)
+    erlang:send_after(3000, self(), cleanup),
     
     {ok, #state{}}.
 
 handle_call({get_user_status, UserId}, _From, State) ->
     case ets:lookup(user_presence, UserId) of
-        [#user_presence{is_connected = true, ws_pid = WsPid}] ->
-            %% ✅ VERIFICAÇÃO MELHORADA: Priorizar WebSocket vivo sobre heartbeat
+        [#user_presence{is_connected = true, ws_pid = WsPid, last_heartbeat = LastHeartbeat}] ->
+            Now = erlang:system_time(second),
+            HeartbeatAge = Now - LastHeartbeat,
+            
+            %% ✅ VERIFICAÇÃO CRÍTICA: WebSocket deve estar vivo E heartbeat recente (< 6 segundos)
+            %% Se heartbeat está muito antigo (> 6s), usuário está offline mesmo que processo exista
             case WsPid of
                 undefined ->
                     %% Sem WebSocket - offline
@@ -142,13 +146,31 @@ handle_call({get_user_status, UserId}, _From, State) ->
                     end;
                 Pid when is_pid(Pid) ->
                     case is_process_alive(Pid) of
-                        true ->
-                            %% ✅ WebSocket está vivo - considerar ONLINE mesmo com heartbeat antigo
-                            %% (app pode estar em background/minimizada)
-                            io:format("   📱 WebSocket vivo para ~p - considerando ONLINE (app可能在background)~n", [UserId]),
+                        true when HeartbeatAge =< 6 ->
+                            %% ✅ WebSocket está vivo E heartbeat recente - REALMENTE online
+                            io:format("   📱 Usuário ~p REALMENTE online (WS vivo, heartbeat há ~p segundos)~n", [UserId, HeartbeatAge]),
                             {reply, {ok, online, null}, State};
+                        true when HeartbeatAge > 6 ->
+                            %% ⚠️ WebSocket vivo mas heartbeat muito antigo - provavelmente offline (sem internet)
+                            io:format("   ⚠️ Usuário ~p com WS vivo mas heartbeat antigo (~p segundos) - marcando OFFLINE~n", [UserId, HeartbeatAge]),
+                            %% Marcar como offline imediatamente
+                            ets:insert(user_presence, #user_presence{
+                                user_id = UserId,
+                                ws_pid = undefined,
+                                last_heartbeat = Now,
+                                is_connected = false
+                            }),
+                            save_last_seen(UserId, Now),
+                            broadcast_presence_change(UserId, offline, Now),
+                            case get_last_seen_internal(UserId) of
+                                {ok, LastSeen} ->
+                                    {reply, {ok, offline, LastSeen}, State};
+                                _ ->
+                                    {reply, {ok, offline, null}, State}
+                            end;
                         false ->
                             %% WebSocket morto - offline com last_seen
+                            io:format("   🔌 WebSocket morto para ~p - marcando OFFLINE~n", [UserId]),
                             case get_last_seen_internal(UserId) of
                                 {ok, LastSeen} ->
                                     {reply, {ok, offline, LastSeen}, State};
@@ -169,8 +191,23 @@ handle_call({get_user_status, UserId}, _From, State) ->
 
 handle_call({is_user_online, UserId}, _From, State) ->
     case ets:lookup(user_presence, UserId) of
-        [#user_presence{is_connected = true}] ->
-            {reply, {ok, true}, State};
+        [#user_presence{is_connected = true, ws_pid = WsPid, last_heartbeat = LastHeartbeat}] ->
+            Now = erlang:system_time(second),
+            HeartbeatAge = Now - LastHeartbeat,
+            
+            %% ✅ VERIFICAÇÃO CRÍTICA: WebSocket deve estar vivo E heartbeat recente
+            case WsPid of
+                undefined ->
+                    {reply, {ok, false}, State};
+                Pid when is_pid(Pid) ->
+                    case is_process_alive(Pid) andalso HeartbeatAge =< 6 of
+                        true ->
+                            {reply, {ok, true}, State};
+                        false ->
+                            %% WebSocket morto ou heartbeat muito antigo - offline
+                            {reply, {ok, false}, State}
+                    end
+            end;
         _ ->
             {reply, {ok, false}, State}
     end;
@@ -178,16 +215,23 @@ handle_call({is_user_online, UserId}, _From, State) ->
 handle_call(get_all_online_users, _From, State) ->
     Now = erlang:system_time(second),
     
-    %% ✅ APENAS usuários com conexão ATIVA nos últimos 30 segundos
+    %% ✅ APENAS usuários com conexão ATIVA nos últimos 60 segundos E WebSocket vivo
     OnlineUsers = ets:match_object(
         user_presence, 
         #user_presence{is_connected = true, _ = '_'}
     ),
     
-    %% Filtrar por heartbeat recente (max 30 segundos)
+    %% Filtrar por heartbeat recente (max 6 segundos) E WebSocket vivo
     ActiveUsers = lists:filter(
-        fun(#user_presence{last_heartbeat = Heartbeat}) ->
-            (Now - Heartbeat) =< 30
+        fun(#user_presence{last_heartbeat = Heartbeat, ws_pid = WsPid}) ->
+            HeartbeatAge = Now - Heartbeat,
+            IsRecent = HeartbeatAge =< 6,
+            IsWsAlive = case WsPid of
+                undefined -> false;
+                Pid when is_pid(Pid) -> is_process_alive(Pid);
+                _ -> false
+            end,
+            IsRecent andalso IsWsAlive
         end,
         OnlineUsers
     ),
@@ -201,10 +245,16 @@ handle_call(_Request, _From, State) ->
 handle_cast({user_online, UserId, WsPid}, State) ->
     Now = erlang:system_time(second),
     
-    %% Verificar se é uma NOVA conexão (mudança de offline para online)
-    WasOnline = case ets:lookup(user_presence, UserId) of
-        [#user_presence{is_connected = true}] -> true;
-        _ -> false
+    %% ✅ Verificar estado anterior ANTES de atualizar
+    PreviousState = ets:lookup(user_presence, UserId),
+    ShouldBroadcast = case PreviousState of
+        [#user_presence{is_connected = true, last_heartbeat = LastHeartbeat}] ->
+            %% ✅ Verificar se heartbeat está muito antigo (> 3s) - fazer broadcast para sincronizar
+            HeartbeatAge = Now - LastHeartbeat,
+            if HeartbeatAge > 3 -> true;  % Heartbeat antigo, fazer broadcast para sincronizar
+            true -> false  % Heartbeat recente, não precisa broadcast
+            end;
+        _ -> true  % Não estava online, fazer broadcast
     end,
     
     %% ✅ ATUALIZAR como CONECTADO com timestamp de "visto recentemente"
@@ -217,15 +267,15 @@ handle_cast({user_online, UserId, WsPid}, State) ->
     
     io:format("✅✅✅ Usuário ~p ficou ONLINE (app aberto + internet)~n", [UserId]),
     
-    %% ✅ BROADCAST APENAS se mudou de status
-    case not WasOnline of
-        true ->
-            broadcast_presence_change(UserId, online, Now),
-            
-            %% ✅ NOVO: Enviar presença dos usuários já online para o novo usuário
-            send_existing_presence_to_new_user(UserId, Now);
-        false ->
-            ok
+    %% ✅ BROADCAST se mudou de status OU se heartbeat estava antigo (reconexão)
+    if ShouldBroadcast ->
+        io:format("📡 Fazendo broadcast de presença ONLINE para contatos de ~p~n", [UserId]),
+        broadcast_presence_change(UserId, online, Now),
+        
+        %% ✅ NOVO: Enviar presença dos usuários já online para o novo usuário
+        send_existing_presence_to_new_user(UserId, Now);
+    true ->
+        ok
     end,
     
     {noreply, State};
@@ -270,31 +320,41 @@ handle_cast({user_offline_due_to_internet, UserId, _Ts}, State) ->
 handle_cast(cleanup_disconnected_users, State) ->
     Now = erlang:system_time(second),
     
-    %% ✅ LIMPAR usuários com heartbeat muito antigo (> 90 segundos) E WebSocket desconectado
+    %% ✅ LIMPAR usuários com heartbeat muito antigo (> 6 segundos) - marcar como offline IMEDIATAMENTE
     AllUsers = ets:match_object(user_presence, #user_presence{_ = '_'}),
     
     lists:foreach(
         fun(#user_presence{user_id = UserId, last_heartbeat = Heartbeat, is_connected = Connected, ws_pid = WsPid}) ->
-            case (Now - Heartbeat) > 90 of
+            HeartbeatAge = Now - Heartbeat,
+            case HeartbeatAge > 6 of
                 true when Connected ->
-                    %% Verificar se o WebSocket ainda está vivo
-                    case WsPid of
-                        undefined ->
-                            %% Não tem WebSocket - marcar como offline
-                            io:format("🧹 Cleanup: Usuário ~p sem WebSocket - marcando offline~n", [UserId]),
-                            ets:insert(user_presence, #user_presence{
-                                user_id = UserId,
-                                ws_pid = undefined,
-                                last_heartbeat = Now,
-                                is_connected = false
-                            }),
-                            save_last_seen(UserId, Now),
-                            broadcast_presence_change(UserId, offline, Now);
-                        Pid when is_pid(Pid) ->
-                            case is_process_alive(Pid) of
-                                false ->
-                                    %% WebSocket morreu - marcar como offline
-                                    io:format("🧹 Cleanup: Usuário ~p - WebSocket morto, marcando offline~n", [UserId]),
+                    %% ✅ Heartbeat muito antigo (> 6s) - usuário está offline (sem internet)
+                    %% Marcar como offline IMEDIATAMENTE, independente de WebSocket
+                    io:format("🧹 Cleanup: Usuário ~p com heartbeat antigo (~p segundos) - marcando OFFLINE~n", [UserId, HeartbeatAge]),
+                    ets:insert(user_presence, #user_presence{
+                        user_id = UserId,
+                        ws_pid = undefined,
+                        last_heartbeat = Now,
+                        is_connected = false
+                    }),
+                    save_last_seen(UserId, Now),
+                    broadcast_presence_change(UserId, offline, Now);
+                true when not Connected ->
+                    %% Já está offline - verificar se deve remover da tabela
+                    case HeartbeatAge > 3600 of
+                        true ->
+                            ets:delete(user_presence, UserId);
+                        false ->
+                            ok
+                    end;
+                false ->
+                    %% Heartbeat recente - verificar se WebSocket ainda está vivo
+                    case Connected of
+                        true ->
+                            case WsPid of
+                                undefined ->
+                                    %% Sem WebSocket - marcar como offline
+                                    io:format("🧹 Cleanup: Usuário ~p sem WebSocket - marcando offline~n", [UserId]),
                                     ets:insert(user_presence, #user_presence{
                                         user_id = UserId,
                                         ws_pid = undefined,
@@ -303,22 +363,27 @@ handle_cast(cleanup_disconnected_users, State) ->
                                     }),
                                     save_last_seen(UserId, Now),
                                     broadcast_presence_change(UserId, offline, Now);
-                                true ->
-                                    %% WebSocket ainda vivo mas sem heartbeat - pode estar em background
-                                    %% NÃO marcar como offline, apenas log
-                                    io:format("ℹ️  Usuário ~p: WebSocket ativo mas sem heartbeat (background?)~n", [UserId])
-                            end
-                    end;
-                true when not Connected ->
-                    %% Remover usuários offline antigos da tabela (> 1 hora)
-                    case (Now - Heartbeat) > 3600 of
-                        true ->
-                            ets:delete(user_presence, UserId);
+                                Pid when is_pid(Pid) ->
+                                    case is_process_alive(Pid) of
+                                        false ->
+                                            %% WebSocket morreu - marcar como offline
+                                            io:format("🧹 Cleanup: Usuário ~p - WebSocket morto, marcando offline~n", [UserId]),
+                                            ets:insert(user_presence, #user_presence{
+                                                user_id = UserId,
+                                                ws_pid = undefined,
+                                                last_heartbeat = Now,
+                                                is_connected = false
+                                            }),
+                                            save_last_seen(UserId, Now),
+                                            broadcast_presence_change(UserId, offline, Now);
+                                        true ->
+                                            %% WebSocket vivo e heartbeat recente - OK
+                                            ok
+                                    end
+                            end;
                         false ->
                             ok
-                    end;
-                false ->
-                    ok
+                    end
             end
         end,
         AllUsers
@@ -330,9 +395,9 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(cleanup, State) ->
-    %% ✅ EXECUTAR CLEANUP e reprogramar
+    %% ✅ EXECUTAR CLEANUP e reprogramar (a cada 3 segundos para detecção rápida de 6s)
     gen_server:cast(?MODULE, cleanup_disconnected_users),
-    erlang:send_after(30000, self(), cleanup),
+    erlang:send_after(3000, self(), cleanup),
     {noreply, State};
 
 handle_info(_Info, State) ->
@@ -378,13 +443,12 @@ broadcast_presence_change(UserId, Status, Timestamp) ->
             lists:foreach(
                 fun(ContactId) ->
                     io:format("   📤 Processando envio para ~p...~n", [ContactId]),
-                    case ets:lookup(user_presence, ContactId) of
-                        [#user_presence{ws_pid = WsPid}] when is_pid(WsPid) ->
-                            io:format("   📤 Enviando mensagem para cliente: ~p~n", [PresenceMsg]),
-                            WsPid ! {send_message, PresenceMsg},
-                            io:format("   📤 Enviado presença para ~p~n", [ContactId]);
-                        _ ->
-                            io:format("   ❌ WebSocket não encontrado para ~p~n", [ContactId])
+                    %% ✅ USAR user_session:send_message para garantir entrega correta
+                    case user_session:send_message(UserId, ContactId, PresenceMsg) of
+                        ok ->
+                            io:format("   ✅ Presença enviada para ~p via user_session~n", [ContactId]);
+                        {error, Reason} ->
+                            io:format("   ❌ Erro ao enviar presença para ~p: ~p~n", [ContactId, Reason])
                     end
                 end,
                 RelevantContacts
@@ -429,12 +493,12 @@ send_existing_presence_to_new_user(NewUserId, Now) ->
                         <<"timestamp">> => Now
                     },
                     
-                    case ets:lookup(user_presence, NewUserId) of
-                        [#user_presence{ws_pid = WsPid}] when is_pid(WsPid) ->
-                            io:format("   📤 Enviando presença de ~p para novo usuário ~p~n", [OnlineUserId, NewUserId]),
-                            WsPid ! {send_message, PresenceMsg};
-                        _ ->
-                            io:format("   ❌ WebSocket não encontrado para novo usuário ~p~n", [NewUserId])
+                    %% ✅ USAR user_session:send_message para garantir entrega correta
+                    case user_session:send_message(OnlineUserId, NewUserId, PresenceMsg) of
+                        ok ->
+                            io:format("   ✅ Presença de ~p enviada para novo usuário ~p via user_session~n", [OnlineUserId, NewUserId]);
+                        {error, Reason} ->
+                            io:format("   ❌ Erro ao enviar presença de ~p para ~p: ~p~n", [OnlineUserId, NewUserId, Reason])
                     end
                 end,
                 RelevantOnlineUsers
