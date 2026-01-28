@@ -957,19 +957,27 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       final dbMessageId = message['db_message_id']?.toString();
       final isEditedFromBackend = message['is_edited'] ?? false;
 
-      if (messageId != null) {
+      print(
+        '🔔 Evento de status recebido: type=$type, messageId=$messageId, dbMessageId=$dbMessageId',
+      );
+
+      if (messageId != null || dbMessageId != null) {
         final newStatus = type == 'message_delivered' ? 'delivered' : 'read';
 
-        // Tenta encontrar por UUID (messageId) OU pelo ID de banco (dbMessageId)
-        // Isso resolve o problema de incompatibilidade entre UUID local e ID do banco
+        // ✅ Tenta encontrar por UUID (messageId) OU pelo ID de banco (dbMessageId)
+        // ✅ IMPORTANTE: Para replies sincronizadas, pode ter apenas dbMessageId
         final idx = _messages.indexWhere((m) {
-          final matchesUuid = m.id == messageId;
+          final matchesUuid = messageId != null && m.id == messageId;
           final matchesDbId = dbMessageId != null && m.id == dbMessageId;
           // Também verificar se o messageId do evento já é o ID numérico (caso do read)
-          final matchesIdDirectly = m.id == messageId;
+          final matchesIdDirectly = messageId != null && m.id == messageId;
 
           return (matchesUuid || matchesDbId || matchesIdDirectly) && m.isMe;
         });
+
+        print(
+          '🔍 Busca por ID: idx=$idx (messageId=$messageId, dbMessageId=$dbMessageId)',
+        );
 
         if (idx >= 0 && mounted) {
           final oldMsg = _messages[idx];
@@ -1007,71 +1015,115 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               replyToSenderId: oldMsg.replyToSenderId,
             );
           });
-        } else if (idx == -1 && dbMessageId != null && mounted) {
+        } else if (idx == -1 && mounted) {
           // ✅ FALLBACK HEURÍSTICO: Se não encontrou pelo ID (Ack perdido ou race condition),
-          // tenta encontrar uma mensagem "órfã" (minha, enviada, com UUID) para associar.
+          // tenta encontrar uma mensagem "órfã" (minha, enviada) para associar.
           print(
             '⚠️ Mensagem não encontrada por ID direto. Tentando pareamento heurístico...',
           );
 
-          // Busca a primeira mensagem minha, com status 'sent' e ID não numérico (UUID)
-          final candidateIdx = _messages.indexWhere(
-            (m) =>
-                m.isMe &&
-                m.status == 'sent' &&
-                int.tryParse(m.id) == null, // Assume que UUID não é numérico
-          );
-
-          if (candidateIdx >= 0) {
-            final oldMsg = _messages[candidateIdx];
-            print(
-              '✅ Pareamento heurístico SUCESSO! Associando entrega $dbMessageId à mensagem local ${oldMsg.id}',
+          // ✅ Para replies, tentar encontrar por conteúdo + reply_to_id também
+          final replyToId = message['reply_to_id']?.toString();
+          if (replyToId != null && (messageId != null || dbMessageId != null)) {
+            final heuristicIdx = _messages.indexWhere(
+              (m) =>
+                  m.isMe &&
+                  (m.status == 'sent' ||
+                      m.status == 'pending_local' ||
+                      m.status == 'delivered') &&
+                  m.replyToId == replyToId,
             );
 
-            setState(() {
-              _messages[candidateIdx] = ChatMessage(
-                id: dbMessageId, // SWAP FORÇADO AGORA
-                text: oldMsg.text,
-                isMe: oldMsg.isMe,
-                timestamp: oldMsg.timestamp,
-                status: newStatus,
-                isEdited:
-                    oldMsg.isEdited ||
-                    isEditedFromBackend, // ✅ COMBINAR STATUS DE EDIÇÃO!
-                isDeleted: oldMsg.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
-                // ✅ preservar dados de reply
-                replyToId: oldMsg.replyToId,
-                replyToText: oldMsg.replyToText,
-                replyToSenderName: oldMsg.replyToSenderName,
-                replyToSenderId: oldMsg.replyToSenderId,
+            if (heuristicIdx >= 0) {
+              final oldMsg = _messages[heuristicIdx];
+              print(
+                '✅ Mensagem encontrada heuristicamente (reply): ${oldMsg.id} -> atualizando para $newStatus',
               );
-            });
 
-            // Limpa pendências se houver
-            _pendingMessageIds.remove(oldMsg.id);
+              setState(() {
+                final finalId = dbMessageId ?? messageId ?? oldMsg.id;
+                _messages[heuristicIdx] = ChatMessage(
+                  id: finalId,
+                  text: oldMsg.text,
+                  isMe: oldMsg.isMe,
+                  timestamp: oldMsg.timestamp,
+                  status: newStatus,
+                  isEdited: oldMsg.isEdited,
+                  isDeleted: oldMsg.isDeleted,
+                  replyToId: oldMsg.replyToId,
+                  replyToText: oldMsg.replyToText,
+                  replyToSenderName: oldMsg.replyToSenderName,
+                  replyToSenderId: oldMsg.replyToSenderId,
+                );
+              });
+              return;
+            }
+          }
+
+          // ✅ Fallback original para mensagens normais
+          if (dbMessageId != null) {
+            // Busca a primeira mensagem minha, com status 'sent' e ID não numérico (UUID)
+            final candidateIdx = _messages.indexWhere(
+              (m) =>
+                  m.isMe &&
+                  m.status == 'sent' &&
+                  int.tryParse(m.id) == null, // Assume que UUID não é numérico
+            );
+
+            if (candidateIdx >= 0) {
+              final oldMsg = _messages[candidateIdx];
+              print(
+                '✅ Pareamento heurístico SUCESSO! Associando entrega $dbMessageId à mensagem local ${oldMsg.id}',
+              );
+
+              setState(() {
+                _messages[candidateIdx] = ChatMessage(
+                  id: dbMessageId, // SWAP FORÇADO AGORA
+                  text: oldMsg.text,
+                  isMe: oldMsg.isMe,
+                  timestamp: oldMsg.timestamp,
+                  status: newStatus,
+                  isEdited:
+                      oldMsg.isEdited ||
+                      isEditedFromBackend, // ✅ COMBINAR STATUS DE EDIÇÃO!
+                  isDeleted: oldMsg.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
+                  // ✅ preservar dados de reply
+                  replyToId: oldMsg.replyToId,
+                  replyToText: oldMsg.replyToText,
+                  replyToSenderName: oldMsg.replyToSenderName,
+                  replyToSenderId: oldMsg.replyToSenderId,
+                );
+              });
+
+              // Limpa pendências se houver
+              _pendingMessageIds.remove(oldMsg.id);
+            } else {
+              print(
+                '⚠️ Mensagem não encontrada para atualização de status (nem heurística). Armazenando pendência.',
+              );
+              print(
+                '   IDs buscados: messageId=$messageId, dbMessageId=$dbMessageId',
+              );
+              _pendingStatusUpdates[dbMessageId] = newStatus;
+              print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+            }
           } else {
             print(
-              '⚠️ Mensagem não encontrada para atualização de status (nem heurística). Armazenando pendência.',
+              '⚠️ Mensagem não encontrada para atualização de status. Armazenando pendência.',
             );
             print(
               '   IDs buscados: messageId=$messageId, dbMessageId=$dbMessageId',
             );
-            _pendingStatusUpdates[dbMessageId] = newStatus;
-            print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+            if (dbMessageId != null) {
+              _pendingStatusUpdates[dbMessageId] = newStatus;
+              print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+            }
           }
-        } else {
-          print(
-            '⚠️ Mensagem não encontrada para atualização de status. Armazenando pendência.',
-          );
-          print(
-            '   IDs buscados: messageId=$messageId, dbMessageId=$dbMessageId',
-          );
-          if (dbMessageId != null) {
-            _pendingStatusUpdates[dbMessageId] = newStatus;
-            print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+          // ✅ Limpar pendências se houver
+          if (messageId != null) {
+            _pendingMessageIds.remove(messageId);
           }
         }
-        _pendingMessageIds.remove(messageId);
       }
       return;
     }
@@ -1107,10 +1159,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       }
 
       // ✅ CORREÇÃO: VERIFICAR SE É UM SWAP DE REPLY
-      if (isFromMe && messageId != null && dbMessageId != null) {
-        final idx = _messages.indexWhere((m) => m.id == messageId);
+      // ✅ Procurar por messageId (temporário) OU dbMessageId (quando sincronizado)
+      if (isFromMe && dbMessageId != null) {
+        // ✅ Primeiro tentar por messageId (ID temporário)
+        int idx = -1;
+        if (messageId != null) {
+          idx = _messages.indexWhere((m) => m.id == messageId);
+        }
+
+        // ✅ Se não encontrou por messageId, tentar por dbMessageId (pode já estar atualizado)
+        if (idx < 0) {
+          idx = _messages.indexWhere((m) => m.id == dbMessageId);
+        }
+
         if (idx >= 0) {
-          print('🔄 SWAP DETECTADO PARA REPLY: $messageId -> $dbMessageId');
+          print(
+            '🔄 SWAP DETECTADO PARA REPLY: ${_messages[idx].id} -> $dbMessageId',
+          );
 
           setState(() {
             final old = _messages[idx];
@@ -1146,16 +1211,65 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
             // ✅ NOVO: Atualizar status no histórico local para consistência offline
             if (_currentUserId != null) {
+              final oldId = _messages[idx].id; // ✅ Usar ID antigo da mensagem
               ChatService.updateMessageStatusInHistory(
                 _currentUserId!,
                 widget.remoteUserId,
-                messageId,
+                oldId,
                 finalStatus,
                 dbMessageId: dbMessageId,
               );
             }
           });
-          _pendingMessageIds.remove(messageId);
+
+          // ✅ CRÍTICO: Verificar se há status pendente para este dbMessageId
+          if (dbMessageId != null &&
+              _pendingStatusUpdates.containsKey(dbMessageId)) {
+            final pendingStatus = _pendingStatusUpdates[dbMessageId];
+            if (pendingStatus != null) {
+              print(
+                '✅ Aplicando status pendente após swap: $dbMessageId -> $pendingStatus',
+              );
+              setState(() {
+                final msg = _messages[idx];
+                // ✅ Aplicar status pendente se for melhor que o atual
+                final shouldApplyPending =
+                    (pendingStatus == 'delivered' &&
+                        (msg.status == 'sent' ||
+                            msg.status == 'pending_local')) ||
+                    (pendingStatus == 'read' &&
+                        (msg.status == 'sent' ||
+                            msg.status == 'pending_local' ||
+                            msg.status == 'delivered'));
+
+                if (shouldApplyPending) {
+                  _messages[idx] = ChatMessage(
+                    id: msg.id,
+                    text: msg.text,
+                    isMe: msg.isMe,
+                    timestamp: msg.timestamp,
+                    status: pendingStatus,
+                    isEdited: msg.isEdited,
+                    isDeleted: msg.isDeleted,
+                    replyToId: msg.replyToId,
+                    replyToText: msg.replyToText,
+                    replyToSenderName: msg.replyToSenderName,
+                    replyToSenderId: msg.replyToSenderId,
+                  );
+                  print('✅ Status pendente aplicado: $pendingStatus');
+                }
+              });
+              _pendingStatusUpdates.remove(dbMessageId);
+            }
+          }
+
+          // ✅ Remover da lista de pendentes se for ID temporário
+          if (messageId != null) {
+            _pendingMessageIds.remove(messageId);
+          }
+          // ✅ Também remover se o ID antigo estava na lista
+          final oldId = _messages[idx].id;
+          _pendingMessageIds.remove(oldId);
           return;
         }
       }
@@ -1166,6 +1280,44 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           dbMessageId != null &&
           (message['reply_to_id'] != null ||
               message['reply_to_text'] != null)) {
+        // ✅ Verificar se já existe mensagem com dbMessageId (evitar duplicação e atualizar status)
+        final existingById = _messages.indexWhere((m) => m.id == dbMessageId);
+        if (existingById >= 0) {
+          print(
+            '⚠️ Mensagem com dbMessageId $dbMessageId já existe, atualizando status se necessário',
+          );
+          // ✅ Se já existe, apenas atualizar status se necessário
+          final existingMsg = _messages[existingById];
+          final incomingStatus = message['status']?.toString() ?? 'sent';
+          // ✅ Atualizar se o status novo é melhor (delivered > sent, read > delivered)
+          final shouldUpdate =
+              (incomingStatus == 'delivered' && existingMsg.status == 'sent') ||
+              (incomingStatus == 'read' &&
+                  (existingMsg.status == 'sent' ||
+                      existingMsg.status == 'delivered'));
+
+          if (shouldUpdate) {
+            setState(() {
+              _messages[existingById] = ChatMessage(
+                id: existingMsg.id,
+                text: existingMsg.text,
+                isMe: existingMsg.isMe,
+                timestamp: existingMsg.timestamp,
+                status: incomingStatus, // ✅ Atualizar status
+                isEdited: existingMsg.isEdited,
+                isDeleted: existingMsg.isDeleted,
+                replyToId: existingMsg.replyToId,
+                replyToText: existingMsg.replyToText,
+                replyToSenderName: existingMsg.replyToSenderName,
+                replyToSenderId: existingMsg.replyToSenderId,
+              );
+            });
+            print('✅ Status atualizado para $incomingStatus');
+          }
+          return;
+        }
+
+        // ✅ Procurar mensagem pendente por conteúdo + reply_to_id
         final pendingIdx = _messages.indexWhere(
           (m) =>
               m.isMe &&
@@ -1224,6 +1376,46 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               );
             }
           });
+
+          // ✅ CRÍTICO: Verificar se há status pendente para este dbMessageId
+          if (dbMessageId != null &&
+              _pendingStatusUpdates.containsKey(dbMessageId)) {
+            final pendingStatus = _pendingStatusUpdates[dbMessageId];
+            print(
+              '✅ Aplicando status pendente após swap heurístico: $dbMessageId -> $pendingStatus',
+            );
+            setState(() {
+              final msg = _messages[pendingIdx];
+              // ✅ Aplicar status pendente se for melhor que o atual
+              final shouldApplyPending =
+                  (pendingStatus == 'delivered' &&
+                      (msg.status == 'sent' ||
+                          msg.status == 'pending_local')) ||
+                  (pendingStatus == 'read' &&
+                      (msg.status == 'sent' ||
+                          msg.status == 'pending_local' ||
+                          msg.status == 'delivered'));
+
+              if (shouldApplyPending && pendingStatus != null) {
+                _messages[pendingIdx] = ChatMessage(
+                  id: msg.id,
+                  text: msg.text,
+                  isMe: msg.isMe,
+                  timestamp: msg.timestamp,
+                  status: pendingStatus,
+                  isEdited: msg.isEdited,
+                  isDeleted: msg.isDeleted,
+                  replyToId: msg.replyToId,
+                  replyToText: msg.replyToText,
+                  replyToSenderName: msg.replyToSenderName,
+                  replyToSenderId: msg.replyToSenderId,
+                );
+                print('✅ Status pendente aplicado: $pendingStatus');
+              }
+            });
+            _pendingStatusUpdates.remove(dbMessageId);
+          }
+
           _pendingMessageIds.remove(old.id);
           return;
         }
@@ -3089,31 +3281,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           // ✅ SE FALHAR, MENSAGEM JÁ ESTÁ SALVA COMO pending_local
           // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
 
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Resposta salva localmente. Será enviada quando conexão voltar.',
-                ),
-                duration: Duration(seconds: 3),
-              ),
-            );
-          }
+          // ✅ Snackbar removido conforme solicitado pelo usuário
         }
       } catch (e) {
         print('❌ Falha ao enviar reply: $e');
         // ✅ Mensagem já está salva localmente como pending_local
         // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Resposta salva localmente. Será enviada quando conexão voltar.',
-              ),
-            ),
-          );
-        }
+        // ✅ Snackbar removido conforme solicitado pelo usuário
       }
     } catch (e, stackTrace) {
       print('❌ ERRO CRÍTICO AO ENVIAR REPLY: $e');

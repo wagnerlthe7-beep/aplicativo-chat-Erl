@@ -328,17 +328,46 @@ handle_cast(cleanup_disconnected_users, State) ->
             HeartbeatAge = Now - Heartbeat,
             case HeartbeatAge > 6 of
                 true when Connected ->
-                    %% ✅ Heartbeat muito antigo (> 6s) - usuário está offline (sem internet)
-                    %% Marcar como offline IMEDIATAMENTE, independente de WebSocket
-                    io:format("🧹 Cleanup: Usuário ~p com heartbeat antigo (~p segundos) - marcando OFFLINE~n", [UserId, HeartbeatAge]),
-                    ets:insert(user_presence, #user_presence{
-                        user_id = UserId,
-                        ws_pid = undefined,
-                        last_heartbeat = Now,
-                        is_connected = false
-                    }),
-                    save_last_seen(UserId, Now),
-                    broadcast_presence_change(UserId, offline, Now);
+                    %% ✅ Heartbeat muito antigo (> 6s)
+                    %% Ajuste: só marcar OFFLINE aqui se o WebSocket também não estiver vivo,
+                    %% para evitar "pisca-pisca" de presença quando o WS ainda está ativo e
+                    %% continuando a enviar heartbeats.
+                    case WsPid of
+                        undefined ->
+                            io:format(
+                              "🧹 Cleanup: Usuário ~p com heartbeat antigo (~p s) e sem WS - marcando OFFLINE~n",
+                              [UserId, HeartbeatAge]
+                            ),
+                            ets:insert(user_presence, #user_presence{
+                                user_id = UserId,
+                                ws_pid = undefined,
+                                last_heartbeat = Now,
+                                is_connected = false
+                            }),
+                            save_last_seen(UserId, Now),
+                            broadcast_presence_change(UserId, offline, Now);
+                        Pid when is_pid(Pid) ->
+                            case is_process_alive(Pid) of
+                                false ->
+                                    io:format(
+                                      "🧹 Cleanup: Usuário ~p com heartbeat antigo (~p s) e WS morto - marcando OFFLINE~n",
+                                      [UserId, HeartbeatAge]
+                                    ),
+                                    ets:insert(user_presence, #user_presence{
+                                        user_id = UserId,
+                                        ws_pid = undefined,
+                                        last_heartbeat = Now,
+                                        is_connected = false
+                                    }),
+                                    save_last_seen(UserId, Now),
+                                    broadcast_presence_change(UserId, offline, Now);
+                                true ->
+                                    %% WS ainda vivo - deixar get_user_status/is_user_online
+                                    %% decidir com base no heartbeat atual (evita flapping)
+                                    ok
+                            end;
+                        _ -> ok
+                    end;
                 true when not Connected ->
                     %% Já está offline - verificar se deve remover da tabela
                     case HeartbeatAge > 3600 of
