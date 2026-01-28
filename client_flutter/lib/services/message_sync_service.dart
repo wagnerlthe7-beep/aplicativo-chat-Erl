@@ -11,14 +11,18 @@ class MessageSyncService {
   static Timer? _syncTimer;
   static StreamSubscription? _connectivitySubscription;
   static bool _isSyncing = false;
-  static const Duration _syncInterval = Duration(seconds: 10); // Sincronizar a cada 10s
+  static const Duration _syncInterval = Duration(
+    seconds: 10,
+  ); // Sincronizar a cada 10s
 
   // ✅ Inicializar serviço de sincronização
   static Future<void> initialize() async {
     print('🚀 Iniciando MessageSyncService...');
-    
+
     // ✅ Escutar mudanças de conectividade
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((result) {
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      result,
+    ) {
       if (result != ConnectivityResult.none) {
         print('🌐 Conectividade detectada -> Iniciando sincronização...');
         syncPendingMessages();
@@ -29,7 +33,7 @@ class MessageSyncService {
 
     // ✅ Sincronizar periodicamente
     _startPeriodicSync();
-    
+
     // ✅ Sincronizar imediatamente se houver conectividade
     final connectivityResult = await Connectivity().checkConnectivity();
     if (connectivityResult != ConnectivityResult.none) {
@@ -43,7 +47,9 @@ class MessageSyncService {
     _syncTimer = Timer.periodic(_syncInterval, (_) {
       syncPendingMessages();
     });
-    print('⏰ Sincronização periódica iniciada (intervalo: ${_syncInterval.inSeconds}s)');
+    print(
+      '⏰ Sincronização periódica iniciada (intervalo: ${_syncInterval.inSeconds}s)',
+    );
   }
 
   // ✅ Parar serviço de sincronização
@@ -95,7 +101,8 @@ class MessageSyncService {
 
     try {
       // ✅ Buscar todas as mensagens pending_local
-      final pendingMessages = await PendingMessagesStorage.getPendingLocalMessages();
+      final pendingMessages =
+          await PendingMessagesStorage.getPendingLocalMessages();
       print('📋 Encontradas ${pendingMessages.length} mensagens pendentes');
 
       if (pendingMessages.isEmpty) {
@@ -105,18 +112,23 @@ class MessageSyncService {
 
       // ✅ Tentar enviar cada mensagem
       final List<String> syncedMessageIds = [];
-      
+
       for (final message in pendingMessages) {
         // ✅ Verificar se excedeu max retries
         if (await PendingMessagesStorage.hasExceededMaxRetries(message.msgId)) {
-          print('⚠️ Mensagem ${message.msgId} excedeu max retries -> Marcando como falha');
-          await PendingMessagesStorage.updateMessageStatus(message.msgId, 'failed');
+          print(
+            '⚠️ Mensagem ${message.msgId} excedeu max retries -> Marcando como falha',
+          );
+          await PendingMessagesStorage.updateMessageStatus(
+            message.msgId,
+            'failed',
+          );
           continue;
         }
 
         try {
           print('📤 Tentando enviar mensagem pendente: ${message.msgId}');
-          
+
           // ✅ Verificar se é reply, edit ou delete
           if (message.replyToId != null) {
             // ✅ É uma reply - usar MessageOperationsService
@@ -127,7 +139,7 @@ class MessageSyncService {
                 message.content,
                 receiverId: message.to,
               );
-              
+
               if (result['success'] == true) {
                 final dbMessageId = result['reply_message']?['id']?.toString();
                 if (dbMessageId != null) {
@@ -154,7 +166,7 @@ class MessageSyncService {
                 messageIdToUse,
                 message.content,
               );
-              
+
               if (result['success'] == true) {
                 // ✅ Atualizar status no sqflite
                 await PendingMessagesStorage.updateMessageStatus(
@@ -174,8 +186,10 @@ class MessageSyncService {
             try {
               // ✅ Usar dbMessageId se disponível, senão usar msgId
               final messageIdToUse = message.dbMessageId ?? message.msgId;
-              final result = await MessageOperationsService.deleteMessage(messageIdToUse);
-              
+              final result = await MessageOperationsService.deleteMessage(
+                messageIdToUse,
+              );
+
               if (result['success'] == true) {
                 syncedMessageIds.add(message.msgId);
                 print('✅ Deleção ${message.msgId} sincronizada com sucesso');
@@ -196,10 +210,9 @@ class MessageSyncService {
             // O ChatService vai atualizar o status quando receber confirmação do servidor
             print('✅ Mensagem ${message.msgId} enviada com sucesso');
           }
-          
         } catch (e) {
           print('❌ Erro ao enviar mensagem ${message.msgId}: $e');
-          
+
           // ✅ Incrementar retry count
           await PendingMessagesStorage.incrementRetryCount(message.msgId);
         }
@@ -231,13 +244,16 @@ class MessageSyncService {
 
   // ✅ Verificar se há mensagens pendentes
   static Future<bool> hasPendingMessages() async {
-    final count = await PendingMessagesStorage.countPendingMessages(status: 'pending_local');
+    final count = await PendingMessagesStorage.countPendingMessages(
+      status: 'pending_local',
+    );
     return count > 0;
   }
 
   // ✅ Obter contagem de mensagens pendentes
   static Future<int> getPendingCount() async {
-    return await PendingMessagesStorage.countPendingMessages(status: 'pending_local');
+    return await PendingMessagesStorage.countPendingMessages(
+      status: 'pending_local',
+    );
   }
 }
-

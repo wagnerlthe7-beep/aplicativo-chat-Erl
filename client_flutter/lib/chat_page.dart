@@ -504,18 +504,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final now = DateTime.now();
     final difference = now.difference(lastSeenDate);
 
-    if (difference.inSeconds < 10) {
-      return 'última vez online: agora';
-    } else if (difference.inSeconds < 60) {
-      return 'última vez online: há ${difference.inSeconds} seg';
+    if (difference.inSeconds < 60) {
+      return 'Online há ${difference.inSeconds} seg';
     } else if (difference.inMinutes < 60) {
-      return 'última vez online: há ${difference.inMinutes} min';
+      return 'Online há ${difference.inMinutes} min';
     } else if (difference.inHours < 24) {
-      return 'última vez online: há ${difference.inHours} h';
+      return 'Online há ${difference.inHours} h';
     } else if (difference.inDays == 1) {
-      return 'última vez online: ontem às ${lastSeenDate.hour.toString().padLeft(2, '0')}:${lastSeenDate.minute.toString().padLeft(2, '0')}';
+      return 'Online ontem às ${lastSeenDate.hour.toString().padLeft(2, '0')}:${lastSeenDate.minute.toString().padLeft(2, '0')}';
     } else if (difference.inDays < 7) {
-      return 'última vez online: há ${difference.inDays} dias';
+      return 'Online há ${difference.inDays} dias';
     } else {
       // Mais de uma semana - mostrar data completa
       final day = lastSeenDate.day.toString().padLeft(2, '0');
@@ -563,6 +561,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       child: SizedBox(
         height: 16,
         child: ClipRect(
+          clipBehavior: Clip.hardEdge, // ✅ Garantir que o clip seja rígido
           child: SingleChildScrollView(
             controller: _marqueeController,
             scrollDirection: Axis.horizontal,
@@ -655,12 +654,43 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         return;
       }
 
-      // ✅ Calcular distância para rolar (da direita para esquerda)
-      // Começar em 0 (mostra início cortado) e rolar até mostrar o texto completo
+      // ✅ Detectar qual prefixo está sendo usado no texto
+      String prefix = 'Online há ';
+      if (text.startsWith('Online ontem às ')) {
+        prefix = 'Online ontem às ';
+      } else if (text.startsWith('última vez online: ')) {
+        prefix = 'última vez online: ';
+      } else if (text.startsWith('Online há ')) {
+        prefix = 'Online há ';
+      }
+
+      // ✅ Criar TextPainter para o prefixo com o mesmo estilo exato usado no widget
+      final prefixPainter = TextPainter(
+        text: TextSpan(
+          text: prefix,
+          style: TextStyle(
+            color: AppTheme.textOnGreen.withOpacity(0.6),
+            fontSize: 12,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+      );
+      prefixPainter.layout();
+      final prefixWidth = prefixPainter.size.width;
+
+      // ✅ Debug: imprimir valores para verificar
+      print(
+        '🔍 Marquee Debug: prefixWidth=$prefixWidth, textWidth=$textWidth, containerWidth=$containerWidth',
+      );
+
+      // ✅ Calcular distância para rolar até mostrar apenas a parte do tempo
+      // Usar um offset muito maior para garantir que o prefixo fique completamente fora
+      // Multiplicar por 1.2 para garantir margem extra (20% a mais)
       final scrollDistance =
-          textWidth -
-          containerWidth +
-          20; // +20 para margem final e garantir que hora completa está visível
+          (prefixWidth * 1.2) + 60; // +60 pixels de margem extra
+
+      print('🔍 Marquee Debug: scrollDistance=$scrollDistance');
 
       // ✅ Aguardar 1.5 segundos antes de começar a rolar (como WhatsApp)
       Future.delayed(const Duration(milliseconds: 1500), () {
@@ -668,8 +698,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           return;
 
         // ✅ Rolar da direita (0) para esquerda (scrollDistance)
-        // Isso faz o texto rolar da direita para esquerda mostrando o final (a hora)
-        // O texto começa mostrando "última vez online: ontem às" e rola para mostrar "ontem às 14:30"
+        // Isso faz o texto rolar até esconder "última vez online: " e mostrar apenas "há X min"
         _marqueeController
             .animateTo(
               scrollDistance,
@@ -680,11 +709,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             )
             .then((_) {
               // ✅ Quando terminar de rolar, manter na posição final (pausado)
-              // O texto completo (incluindo a hora) estará visível
+              // Apenas a parte do tempo (ex: "há 1 min") estará visível
               if (mounted && !_isMarqueePaused) {
                 setState(() {
                   _isMarqueePaused =
-                      true; // ✅ Parar quando mostrar texto completo
+                      true; // ✅ Parar quando mostrar apenas o tempo
                 });
               }
             });
@@ -1094,6 +1123,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 ? old.status
                 : incomingStatus;
 
+            // ✅ Usar nome do contato (que aparece no topo), não o nome do BD
+            final replyToSenderName =
+                old.replyToSenderName ?? widget.contact.name;
+
             _messages[idx] = ChatMessage(
               id: dbMessageId,
               text: old.text,
@@ -1104,10 +1137,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               status: finalStatus,
               isEdited: old.isEdited, // ✅ PRESERVAR STATUS DE EDIÇÃO!
               isDeleted: old.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
-              // ✅ PRESERVAR INFORMAÇÕES DE REPLY
+              // ✅ PRESERVAR INFORMAÇÕES DE REPLY (usar nome do contato)
               replyToId: old.replyToId,
               replyToText: old.replyToText,
-              replyToSenderName: old.replyToSenderName,
+              replyToSenderName: replyToSenderName, // ✅ Usar nome do contato
               replyToSenderId: old.replyToSenderId,
             );
 
@@ -1128,6 +1161,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       }
 
       // ✅ SWAP HEURÍSTICO PARA REPLIES (quando o servidor envia só o ID real)
+      // ✅ CORRIGIDO: Procurar também por pending_local e sent
       if (isFromMe &&
           dbMessageId != null &&
           (message['reply_to_id'] != null ||
@@ -1135,22 +1169,33 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         final pendingIdx = _messages.indexWhere(
           (m) =>
               m.isMe &&
-              m.status == 'sent' &&
+              (m.status == 'sent' ||
+                  m.status == 'pending_local') && // ✅ Incluir pending_local
               m.replyToId == message['reply_to_id']?.toString() &&
               m.text == content,
         );
 
         if (pendingIdx >= 0) {
           final old = _messages[pendingIdx];
-          print('🔄 SWAP HEURÍSTICO DE REPLY: ${old.id} -> $dbMessageId');
+          print(
+            '🔄 SWAP HEURÍSTICO DE REPLY: ${old.id} -> $dbMessageId (status: ${old.status} -> ${message['status']})',
+          );
           setState(() {
-            // ❗ Também não fazer downgrade de status aqui.
-            final incomingStatus = message['status']?.toString() ?? old.status;
+            // ❗ Não fazer downgrade de status: se já está delivered/read, não voltar para 'sent'
+            final incomingStatus = message['status']?.toString() ?? 'sent';
             final finalStatus =
                 (old.status == 'read' || old.status == 'delivered') &&
                     incomingStatus == 'sent'
                 ? old.status
                 : incomingStatus;
+
+            print(
+              '   Status final: $finalStatus (incoming: $incomingStatus, old: ${old.status})',
+            );
+
+            // ✅ Usar nome do contato (que aparece no topo), não o nome do BD
+            final replyToSenderName =
+                old.replyToSenderName ?? widget.contact.name;
 
             _messages[pendingIdx] = ChatMessage(
               id: dbMessageId,
@@ -1164,7 +1209,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               isDeleted: old.isDeleted, // ✅ PRESERVAR STATUS DE DELEÇÃO!
               replyToId: old.replyToId,
               replyToText: old.replyToText,
-              replyToSenderName: old.replyToSenderName,
+              replyToSenderName: replyToSenderName, // ✅ Usar nome do contato
               replyToSenderId: old.replyToSenderId,
             );
 
@@ -1184,13 +1229,36 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         }
       }
 
-      // ✅ VERIFICAÇÃO DE DUPLICAÇÃO MELHORADA
+      // ✅ VERIFICAÇÃO DE DUPLICAÇÃO MELHORADA (incluindo replies)
       final isPendingMessage = _pendingMessageIds.contains(messageId ?? '');
-      final existingMessage = _messages.any(
-        (msg) =>
-            (messageId != null && msg.id == messageId) ||
-            (dbMessageId != null && msg.id == dbMessageId),
-      );
+
+      // ✅ Verificar se mensagem já existe por ID ou por conteúdo + reply (para replies)
+      final existingMessage = _messages.any((msg) {
+        // Verificar por ID
+        if ((messageId != null && msg.id == messageId) ||
+            (dbMessageId != null && msg.id == dbMessageId)) {
+          return true;
+        }
+
+        // ✅ Para replies, verificar também por conteúdo + reply_to_id (evitar duplicação)
+        if (isFromMe && message['reply_to_id'] != null) {
+          final replyToId = message['reply_to_id']?.toString();
+          if (msg.isMe &&
+              msg.text == content &&
+              msg.replyToId == replyToId &&
+              (msg.status == 'sent' ||
+                  msg.status == 'delivered' ||
+                  msg.status == 'read')) {
+            // ✅ Se já existe uma mensagem com mesmo conteúdo e reply_to_id e status não pendente, é duplicada
+            print(
+              '⚠️ Reply duplicada detectada e ignorada: $content (já existe com status ${msg.status})',
+            );
+            return true;
+          }
+        }
+
+        return false;
+      });
 
       if (!existingMessage && !isPendingMessage) {
         print('✅ ADICIONANDO MENSAGEM NOVA');
@@ -1208,9 +1276,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               status: message['status']?.toString() ?? 'sent',
               isDeleted: false, // ✅ PADRÃO: NÃO DELETADA
               // ✅ INFORMAÇÕES DE REPLY (SE HOUVER)
+              // ✅ Usar nome do contato (que aparece no topo), não o nome do BD
               replyToId: message['reply_to_id']?.toString(),
               replyToText: message['reply_to_text']?.toString(),
-              replyToSenderName: message['reply_to_sender_name']?.toString(),
+              replyToSenderName:
+                  widget.contact.name, // ✅ Sempre usar nome do contato
               replyToSenderId: message['reply_to_sender_id']?.toString(),
             ),
           );
@@ -1238,8 +1308,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               // ✅ Campos de reply
               'reply_to_id': message['reply_to_id']?.toString(),
               'reply_to_text': message['reply_to_text']?.toString(),
-              'reply_to_sender_name': message['reply_to_sender_name']
-                  ?.toString(),
+              'reply_to_sender_name':
+                  widget.contact.name, // ✅ Usar nome do contato
               'reply_to_sender_id': message['reply_to_sender_id']?.toString(),
             },
           );
@@ -1774,7 +1844,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         isDeleted: (msg['is_deleted'] == true),
         replyToId: msg['reply_to_id']?.toString(),
         replyToText: msg['reply_to_text']?.toString(),
-        replyToSenderName: msg['reply_to_sender_name']?.toString(),
+        replyToSenderName: widget.contact.name, // ✅ Sempre usar nome do contato
         replyToSenderId: msg['reply_to_sender_id']?.toString(),
       );
     }).toList();
