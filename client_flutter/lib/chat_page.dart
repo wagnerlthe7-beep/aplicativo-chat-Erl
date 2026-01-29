@@ -1014,16 +1014,32 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             '⚠️ Mensagem não encontrada por ID direto. Tentando pareamento heurístico...',
           );
 
-          // Busca a primeira mensagem minha, com status 'sent' e ID não numérico (UUID)
-          final candidateIdx = _messages.indexWhere(
-            (m) =>
-                m.isMe &&
-                m.status == 'sent' &&
-                int.tryParse(m.id) == null, // Assume que UUID não é numérico
-          );
+          final candidates = _messages
+              .where(
+                (m) =>
+                    m.isMe &&
+                    (m.status == 'sent' || m.status == 'pending_local') &&
+                    int.tryParse(m.id) == null &&
+                    m.replyToId == null,
+              )
+              .toList();
+
+          final candidateIdx = candidates.length == 1
+              ? _messages.indexOf(candidates.first)
+              : -1;
 
           if (candidateIdx >= 0) {
             final oldMsg = _messages[candidateIdx];
+            final isRecent =
+                DateTime.now().difference(oldMsg.timestamp).inSeconds < 30;
+            if (!isRecent) {
+              print(
+                '⚠️ Heurística ignorada: mensagem candidata antiga demais (${oldMsg.id})',
+              );
+              _pendingStatusUpdates[dbMessageId] = newStatus;
+              print('   📌 Status "$newStatus" guardado para ID $dbMessageId');
+              return;
+            }
             print(
               '✅ Pareamento heurístico SUCESSO! Associando entrega $dbMessageId à mensagem local ${oldMsg.id}',
             );
@@ -1417,6 +1433,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final deletedBy = message['deleted_by']?.toString();
 
     if (messageId != null) {
+      // ✅ Ignorar deleções "fantasma" que dizem que EU deletei
+      // sem ter iniciado a deleção localmente.
+      if (deletedBy == _currentUserId?.toString() &&
+          !_localDeleteRequests.contains(messageId)) {
+        print('⚠️ Ignorando deleção não solicitada localmente: $messageId');
+        return;
+      }
       setState(() {
         final messageIndex = _messages.indexWhere((msg) => msg.id == messageId);
         if (messageIndex != -1) {
@@ -1450,6 +1473,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           );
         }
       });
+      _localDeleteRequests.remove(messageId);
     }
   }
 
@@ -1679,6 +1703,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Timer? _statusUpdateTimer;
   // ✅ Mapa para rastrear último refresh de presença por usuário
   final Map<String, DateTime> _lastPresenceRefresh = {};
+  // ✅ IDs de deleções iniciadas localmente (para evitar deletes fantasma)
+  final Set<String> _localDeleteRequests = {};
 
   void _startStatusUpdateListener() {
     _statusUpdateTimer?.cancel();
@@ -2712,6 +2738,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void _updateMessage() async {
     if (_editingMessageId != null &&
         _messageController.text.trim().isNotEmpty) {
+      final editingId = _editingMessageId!;
       try {
         print(
           '✏️ Atualizando mensagem $_editingMessageId: ${_messageController.text}',
@@ -2791,14 +2818,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
           // ✅ OFFLINE-FIRST: Atualizar no sqflite se for mensagem pending
           final pendingMsg = await PendingMessagesStorage.getMessageById(
-            _editingMessageId!,
+            editingId,
           );
           if (pendingMsg != null) {
             await PendingMessagesStorage.updateMessageContent(
-              _editingMessageId!,
+              editingId,
               result['edited_message']['content'],
             );
-            print('💾 Edição salva no sqflite: ${_editingMessageId}');
+            print('💾 Edição salva no sqflite: $editingId');
           }
 
           // ✅ Mensagem editada sem popup de sucesso
@@ -2858,6 +2885,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void _confirmDeleteMessage(ChatMessage message) async {
     try {
       print('🗑️ Apagando mensagem ${message.id}');
+      _localDeleteRequests.add(message.id);
 
       // ✅ OFFLINE-FIRST: Atualizar localmente primeiro
       setState(() {
@@ -3068,11 +3096,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               });
             }
 
-            // ✅ Atualizar status no sqflite
-            await PendingMessagesStorage.updateMessageStatus(
+            // ✅ Atualizar status no storage + histórico (e limpar pending)
+            await ChatService.updateMessageStatusFromServer(
               tempReplyId,
               replyMessage['status']?.toString() ?? 'sent',
               dbMessageId: dbMessageId,
+              sentAt: replyMessage['sent_at']?.toString(),
             );
 
             _pendingMessageIds.remove(tempReplyId);
@@ -3086,34 +3115,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           print('✅ Reply processado com sucesso!');
         } else {
           print('❌ ERRO NO BACKEND AO ENVIAR REPLY: ${result['error']}');
-          // ✅ SE FALHAR, MENSAGEM JÁ ESTÁ SALVA COMO pending_local
-          // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  'Resposta salva localmente. Será enviada quando conexão voltar.',
-                ),
-                duration: Duration(seconds: 3),
-              ),
-            );
-          }
         }
       } catch (e) {
         print('❌ Falha ao enviar reply: $e');
-        // ✅ Mensagem já está salva localmente como pending_local
-        // Não remover da UI - ela será sincronizada automaticamente quando conexão voltar
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Resposta salva localmente. Será enviada quando conexão voltar.',
-              ),
-            ),
-          );
-        }
       }
     } catch (e, stackTrace) {
       print('❌ ERRO CRÍTICO AO ENVIAR REPLY: $e');

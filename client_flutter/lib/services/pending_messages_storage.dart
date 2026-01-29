@@ -8,7 +8,8 @@ import '../models/pending_message.dart';
 class PendingMessagesStorage {
   static Database? _database;
   static const String _tableName = 'pending_messages';
-  static const int _maxRetries = 5; // Máximo de tentativas antes de marcar como falha
+  static const int _maxRetries =
+      5; // Máximo de tentativas antes de marcar como falha
 
   // ✅ Inicializar database
   static Future<Database> get database async {
@@ -45,23 +46,37 @@ class PendingMessagesStorage {
             is_deleted INTEGER DEFAULT 0
           )
         ''');
-        
+
         // ✅ Criar índices separadamente
         await db.execute('CREATE INDEX idx_status ON $_tableName (status)');
         await db.execute('CREATE INDEX idx_to_user ON $_tableName (to_user)');
-        await db.execute('CREATE INDEX idx_created_at ON $_tableName (created_at)');
-        
+        await db.execute(
+          'CREATE INDEX idx_created_at ON $_tableName (created_at)',
+        );
+
         print('✅ Tabela pending_messages criada com índices');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         // ✅ Migração: adicionar novos campos se versão antiga
         if (oldVersion < 2) {
-          await db.execute('ALTER TABLE $_tableName ADD COLUMN reply_to_id TEXT');
-          await db.execute('ALTER TABLE $_tableName ADD COLUMN reply_to_text TEXT');
-          await db.execute('ALTER TABLE $_tableName ADD COLUMN reply_to_sender_name TEXT');
-          await db.execute('ALTER TABLE $_tableName ADD COLUMN reply_to_sender_id TEXT');
-          await db.execute('ALTER TABLE $_tableName ADD COLUMN is_edited INTEGER DEFAULT 0');
-          await db.execute('ALTER TABLE $_tableName ADD COLUMN is_deleted INTEGER DEFAULT 0');
+          await db.execute(
+            'ALTER TABLE $_tableName ADD COLUMN reply_to_id TEXT',
+          );
+          await db.execute(
+            'ALTER TABLE $_tableName ADD COLUMN reply_to_text TEXT',
+          );
+          await db.execute(
+            'ALTER TABLE $_tableName ADD COLUMN reply_to_sender_name TEXT',
+          );
+          await db.execute(
+            'ALTER TABLE $_tableName ADD COLUMN reply_to_sender_id TEXT',
+          );
+          await db.execute(
+            'ALTER TABLE $_tableName ADD COLUMN is_edited INTEGER DEFAULT 0',
+          );
+          await db.execute(
+            'ALTER TABLE $_tableName ADD COLUMN is_deleted INTEGER DEFAULT 0',
+          );
           print('✅ Tabela pending_messages atualizada para versão 2');
         }
       },
@@ -76,7 +91,9 @@ class PendingMessagesStorage {
       message.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
-    print('💾 Mensagem pendente salva: ${message.msgId} (status: ${message.status})');
+    print(
+      '💾 Mensagem pendente salva: ${message.msgId} (status: ${message.status})',
+    );
   }
 
   // ✅ Buscar todas as mensagens pendentes
@@ -86,22 +103,22 @@ class PendingMessagesStorage {
     int? limit,
   }) async {
     final db = await database;
-    
+
     String where = '1=1';
     List<dynamic> whereArgs = [];
-    
+
     if (status != null) {
       where += ' AND status = ?';
       whereArgs.add(status);
     }
-    
+
     if (toUserId != null) {
       where += ' AND to_user = ?';
       whereArgs.add(toUserId);
     }
-    
+
     final orderBy = 'created_at ASC';
-    
+
     final results = await db.query(
       _tableName,
       where: where,
@@ -109,7 +126,7 @@ class PendingMessagesStorage {
       orderBy: orderBy,
       limit: limit,
     );
-    
+
     return results.map((map) => PendingMessage.fromMap(map)).toList();
   }
 
@@ -126,11 +143,11 @@ class PendingMessagesStorage {
   }) async {
     final db = await database;
     final updates = <String, dynamic>{'status': newStatus};
-    
+
     if (dbMessageId != null) {
       updates['db_message_id'] = dbMessageId;
     }
-    
+
     await db.update(
       _tableName,
       updates,
@@ -145,7 +162,7 @@ class PendingMessagesStorage {
     final db = await database;
     final message = await getMessageById(msgId);
     if (message == null) return;
-    
+
     await db.update(
       _tableName,
       {
@@ -167,7 +184,27 @@ class PendingMessagesStorage {
       whereArgs: [msgId],
       limit: 1,
     );
-    
+
+    if (results.isEmpty) return null;
+    return PendingMessage.fromMap(results.first);
+  }
+
+  // ✅ Buscar reply pendente por conteúdo + reply_to_id
+  static Future<PendingMessage?> findPendingReply({
+    required String toUserId,
+    required String content,
+    required String replyToId,
+  }) async {
+    final db = await database;
+    final results = await db.query(
+      _tableName,
+      where:
+          'to_user = ? AND reply_to_id = ? AND content = ? AND status IN (?, ?)',
+      whereArgs: [toUserId, replyToId, content, 'pending_local', 'sent'],
+      orderBy: 'created_at DESC',
+      limit: 1,
+    );
+
     if (results.isEmpty) return null;
     return PendingMessage.fromMap(results.first);
   }
@@ -175,23 +212,19 @@ class PendingMessagesStorage {
   // ✅ Deletar mensagem (quando confirmada pelo servidor)
   static Future<void> deleteMessage(String msgId) async {
     final db = await database;
-    await db.delete(
-      _tableName,
-      where: 'msg_id = ?',
-      whereArgs: [msgId],
-    );
+    await db.delete(_tableName, where: 'msg_id = ?', whereArgs: [msgId]);
     print('🗑️ Mensagem deletada do storage local: $msgId');
   }
 
   // ✅ Atualizar conteúdo da mensagem (edit)
-  static Future<void> updateMessageContent(String msgId, String newContent) async {
+  static Future<void> updateMessageContent(
+    String msgId,
+    String newContent,
+  ) async {
     final db = await database;
     await db.update(
       _tableName,
-      {
-        'content': newContent,
-        'is_edited': 1,
-      },
+      {'content': newContent, 'is_edited': 1},
       where: 'msg_id = ?',
       whereArgs: [msgId],
     );
@@ -205,7 +238,8 @@ class PendingMessagesStorage {
       _tableName,
       {
         'is_deleted': 1,
-        'content': '⊗ Eliminou esta mensagem', // ✅ Personalizar mensagem deletada
+        'content':
+            '⊗ Eliminou esta mensagem', // ✅ Personalizar mensagem deletada
       },
       where: 'msg_id = ?',
       whereArgs: [msgId],
@@ -228,7 +262,7 @@ class PendingMessagesStorage {
   static Future<void> cleanupOldMessages() async {
     final db = await database;
     final thirtyDaysAgo = DateTime.now().subtract(Duration(days: 30));
-    
+
     await db.delete(
       _tableName,
       where: 'status != ? AND created_at < ?',
@@ -240,19 +274,24 @@ class PendingMessagesStorage {
   // ✅ Contar mensagens pendentes
   static Future<int> countPendingMessages({String? status}) async {
     final db = await database;
-    
+
     if (status != null) {
       return Sqflite.firstIntValue(
-        await db.rawQuery(
-          'SELECT COUNT(*) FROM $_tableName WHERE status = ?',
-          [status],
-        ),
-      ) ?? 0;
+            await db.rawQuery(
+              'SELECT COUNT(*) FROM $_tableName WHERE status = ?',
+              [status],
+            ),
+          ) ??
+          0;
     }
-    
+
     return Sqflite.firstIntValue(
-      await db.rawQuery('SELECT COUNT(*) FROM $_tableName WHERE status = ?', ['pending_local']),
-    ) ?? 0;
+          await db.rawQuery(
+            'SELECT COUNT(*) FROM $_tableName WHERE status = ?',
+            ['pending_local'],
+          ),
+        ) ??
+        0;
   }
 
   // ✅ Verificar se mensagem excedeu max retries
@@ -262,4 +301,3 @@ class PendingMessagesStorage {
     return message.retryCount >= _maxRetries;
   }
 }
-
