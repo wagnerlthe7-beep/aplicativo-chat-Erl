@@ -311,6 +311,14 @@ class ChatService {
           final dbMessageId = message['db_message_id']?.toString();
           final timestamp = message['timestamp']?.toString();
 
+          final sentAtIso = timestamp != null
+              ? (int.tryParse(timestamp) != null
+                    ? DateTime.fromMillisecondsSinceEpoch(
+                        int.parse(timestamp) * 1000,
+                      ).toIso8601String()
+                    : DateTime.now().toIso8601String())
+              : DateTime.now().toIso8601String();
+
           if (fromUserId != null && toUserId != null && content.isNotEmpty) {
             // Determinar quem é o usuário atual (quem está rodando o app)
             final isFromCurrentUser = fromUserId == _currentUserId;
@@ -323,32 +331,103 @@ class ChatService {
               '🔍 DEBUG: Salvando mensagem - fromUserId=$fromUserId, toUserId=$toUserId, _currentUserId=$_currentUserId, isFromCurrentUser=$isFromCurrentUser, contactId=$contactId',
             );
 
-            // Salvar no histórico local do usuário atual
-            saveMessageToLocalHistory(_currentUserId!, contactId, {
-              'message_id': dbMessageId ?? messageId,
-              'content': content,
-              'sender_id': fromUserId,
-              'receiver_id': toUserId,
-              'sent_at': timestamp != null
-                  ? (int.tryParse(timestamp) != null
-                        ? DateTime.fromMillisecondsSinceEpoch(
-                            int.parse(timestamp) * 1000,
-                          ).toIso8601String()
-                        : DateTime.now().toIso8601String())
-                  : DateTime.now().toIso8601String(),
-              'status': message['status']?.toString() ?? 'delivered',
-              'is_edited': message['is_edited'] ?? false,
-              'is_deleted': false,
-              // Campos de reply
-              'reply_to_id': message['reply_to_id']?.toString(),
-              'reply_to_text': message['reply_to_text']?.toString(),
-              'reply_to_sender_name': message['reply_to_sender_name']
-                  ?.toString(),
-              'reply_to_sender_id': message['reply_to_sender_id']?.toString(),
-            });
-            print(
-              '💾 Mensagem recebida salva no histórico local (offline-first): $content',
-            );
+            // ✅ Se for reply enviada por mim, tentar casar com pendente para evitar duplicação
+            final replyToId = message['reply_to_id']?.toString();
+            if (isFromCurrentUser && replyToId != null && dbMessageId != null) {
+              PendingMessagesStorage.findPendingReply(
+                toUserId: toUserId,
+                content: content,
+                replyToId: replyToId,
+              ).then((pending) {
+                if (pending != null) {
+                  updateMessageStatusFromServer(
+                    pending.msgId,
+                    message['status']?.toString() ?? 'sent',
+                    dbMessageId: dbMessageId,
+                    sentAt: sentAtIso,
+                  ).catchError((e) => print('❌ Erro ao atualizar status: $e'));
+                } else {
+                  saveMessageToLocalHistory(_currentUserId!, contactId, {
+                    'message_id': dbMessageId,
+                    'content': content,
+                    'sender_id': fromUserId,
+                    'receiver_id': toUserId,
+                    'sent_at': sentAtIso,
+                    'status': message['status']?.toString() ?? 'delivered',
+                    'is_edited': message['is_edited'] ?? false,
+                    'is_deleted': false,
+                    // Campos de reply
+                    'reply_to_id': replyToId,
+                    'reply_to_text': message['reply_to_text']?.toString(),
+                    'reply_to_sender_name': message['reply_to_sender_name']
+                        ?.toString(),
+                    'reply_to_sender_id': message['reply_to_sender_id']
+                        ?.toString(),
+                  });
+                  print(
+                    '💾 Mensagem recebida salva no histórico local (offline-first): $content',
+                  );
+                }
+              });
+              return;
+            }
+
+            // ✅ Evitar duplicação: se for minha mensagem com ID temporário,
+            // atualizar o registro pendente em vez de salvar um novo.
+            if (isFromCurrentUser && messageId != null && dbMessageId != null) {
+              PendingMessagesStorage.getMessageById(messageId).then((pending) {
+                if (pending != null) {
+                  updateMessageStatusFromServer(
+                    messageId,
+                    'sent',
+                    dbMessageId: dbMessageId,
+                    sentAt: sentAtIso,
+                  ).catchError((e) => print('❌ Erro ao atualizar status: $e'));
+                } else {
+                  saveMessageToLocalHistory(_currentUserId!, contactId, {
+                    'message_id': dbMessageId,
+                    'content': content,
+                    'sender_id': fromUserId,
+                    'receiver_id': toUserId,
+                    'sent_at': sentAtIso,
+                    'status': message['status']?.toString() ?? 'delivered',
+                    'is_edited': message['is_edited'] ?? false,
+                    'is_deleted': false,
+                    // Campos de reply
+                    'reply_to_id': message['reply_to_id']?.toString(),
+                    'reply_to_text': message['reply_to_text']?.toString(),
+                    'reply_to_sender_name': message['reply_to_sender_name']
+                        ?.toString(),
+                    'reply_to_sender_id': message['reply_to_sender_id']
+                        ?.toString(),
+                  });
+                  print(
+                    '💾 Mensagem recebida salva no histórico local (offline-first): $content',
+                  );
+                }
+              });
+            } else {
+              // Salvar no histórico local do usuário atual
+              saveMessageToLocalHistory(_currentUserId!, contactId, {
+                'message_id': dbMessageId ?? messageId,
+                'content': content,
+                'sender_id': fromUserId,
+                'receiver_id': toUserId,
+                'sent_at': sentAtIso,
+                'status': message['status']?.toString() ?? 'delivered',
+                'is_edited': message['is_edited'] ?? false,
+                'is_deleted': false,
+                // Campos de reply
+                'reply_to_id': message['reply_to_id']?.toString(),
+                'reply_to_text': message['reply_to_text']?.toString(),
+                'reply_to_sender_name': message['reply_to_sender_name']
+                    ?.toString(),
+                'reply_to_sender_id': message['reply_to_sender_id']?.toString(),
+              });
+              print(
+                '💾 Mensagem recebida salva no histórico local (offline-first): $content',
+              );
+            }
           }
 
           // ✅ OFFLINE-FIRST: Atualizar status de mensagem pendente quando receber confirmação
@@ -360,6 +439,7 @@ class ChatService {
               tempMessageId,
               'sent',
               dbMessageId: dbMessageIdStr,
+              sentAt: sentAtIso,
             ).catchError((e) => print('❌ Erro ao atualizar status: $e'));
           }
           break;
@@ -1023,6 +1103,7 @@ class ChatService {
     String messageId,
     String newStatus, {
     String? dbMessageId,
+    String? sentAt,
   }) async {
     final pendingMsg = await PendingMessagesStorage.getMessageById(messageId);
 
@@ -1041,6 +1122,7 @@ class ChatService {
         messageId,
         newStatus,
         dbMessageId: dbMessageId,
+        sentAt: sentAt,
       );
 
       // ✅ Se status for 'sent' ou superior, remover do sqflite após sincronização
@@ -1066,6 +1148,7 @@ class ChatService {
     String messageId,
     String newStatus, {
     String? dbMessageId,
+    String? sentAt,
   }) async {
     try {
       final history = await loadLocalChatHistory(meId, contactId);
@@ -1081,7 +1164,13 @@ class ChatService {
           history[i]['status'] = newStatus;
 
           if (dbMessageId != null) {
+            // ✅ Atualizar ID no histórico para evitar duplicação ao recarregar
+            history[i]['message_id'] = dbMessageId;
+            history[i]['id'] = dbMessageId;
             history[i]['db_message_id'] = dbMessageId;
+          }
+          if (sentAt != null) {
+            history[i]['sent_at'] = sentAt;
           }
 
           // ✅ Salvar histórico atualizado
@@ -1090,6 +1179,26 @@ class ChatService {
             '💾 Status atualizado no histórico local: $messageId -> $newStatus',
           );
           return;
+        }
+      }
+
+      // ✅ Fallback: se já trocamos para o ID real, tentar atualizar por dbMessageId
+      if (dbMessageId != null) {
+        for (int i = 0; i < history.length; i++) {
+          final msg = history[i];
+          final msgId = (msg['message_id'] ?? msg['id'])?.toString();
+          if (msgId == dbMessageId) {
+            history[i] = Map<String, dynamic>.from(msg);
+            history[i]['status'] = newStatus;
+            if (sentAt != null) {
+              history[i]['sent_at'] = sentAt;
+            }
+            await _saveChatHistoryToStorage(meId, contactId, history);
+            print(
+              '💾 Status atualizado no histórico local: $dbMessageId -> $newStatus',
+            );
+            return;
+          }
         }
       }
 
@@ -1515,15 +1624,6 @@ class ChatService {
         return;
       }
 
-      // ✅ Verificar se há internet real antes de enviar
-      if (isServerDown) {
-        final status = await checkConnectionStatus();
-        if (status == 'no_internet' || status == 'server_unavailable') {
-          // Sem internet ou servidor offline - não enviar heartbeat
-          return;
-        }
-      }
-
       try {
         final heartbeatMsg = json.encode({'type': 'heartbeat'});
         _channel!.sink.add(heartbeatMsg);
@@ -1542,15 +1642,6 @@ class ChatService {
   // ✅ ENVIAR HEARTBEAT MANUALMENTE (para background manager)
   static Future<bool> sendHeartbeat() async {
     if (_channel == null) return false;
-
-    // ✅ Verificar se há internet real antes de enviar
-    if (isServerDown) {
-      final status = await checkConnectionStatus();
-      if (status == 'no_internet' || status == 'server_unavailable') {
-        // Sem internet ou servidor offline - não enviar heartbeat
-        return false;
-      }
-    }
 
     try {
       final heartbeatMsg = json.encode({'type': 'heartbeat'});

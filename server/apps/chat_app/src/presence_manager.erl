@@ -248,12 +248,20 @@ handle_cast({user_online, UserId, WsPid}, State) ->
     %% ✅ Verificar estado anterior ANTES de atualizar
     PreviousState = ets:lookup(user_presence, UserId),
     ShouldBroadcast = case PreviousState of
-        [#user_presence{is_connected = true, last_heartbeat = LastHeartbeat}] ->
+        [#user_presence{is_connected = true, last_heartbeat = LastHeartbeat, ws_pid = PrevPid}] ->
             %% ✅ Verificar se heartbeat está muito antigo (> 3s) - fazer broadcast para sincronizar
+            %% ✅ Se o WS mudou, forçar broadcast (reconexão real)
             HeartbeatAge = Now - LastHeartbeat,
-            if HeartbeatAge > 3 -> true;  % Heartbeat antigo, fazer broadcast para sincronizar
-            true -> false  % Heartbeat recente, não precisa broadcast
+            case PrevPid =:= WsPid of
+                true ->
+                    if HeartbeatAge > 3 -> true;  % Heartbeat antigo, fazer broadcast para sincronizar
+                    true -> false  % Heartbeat recente, não precisa broadcast
+                    end;
+                false ->
+                    true
             end;
+        [#user_presence{is_connected = false}] ->
+            true;
         _ -> true  % Não estava online, fazer broadcast
     end,
     

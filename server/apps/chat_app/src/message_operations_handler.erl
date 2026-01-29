@@ -178,9 +178,19 @@ handle_reply_message(MessageId, Req0, State) ->
                                         },
                                         
                                         ?LOG_INFO("   Enviando para receiver ~p", [FinalReceiverId]),
-                                        
-                                        case user_session:send_message(SenderId, FinalReceiverId, MessageToReceiver) of
-                                            ok ->
+
+                                        %% ✅ Mesma verificação de presença usada no fluxo normal
+                                        IsUserReallyOnline = case presence_manager:is_user_online(FinalReceiverId) of
+                                            {ok, true} -> true;
+                                            _ -> false
+                                        end,
+                                        IsWsAlive = user_session:is_websocket_alive(FinalReceiverId),
+                                        ?LOG_INFO("   🔍 WebSocket alive: ~p, Usuário realmente online: ~p", [IsWsAlive, IsUserReallyOnline]),
+
+                                        case IsWsAlive andalso IsUserReallyOnline of
+                                            true ->
+                                                case user_session:send_message(SenderId, FinalReceiverId, MessageToReceiver) of
+                                                    ok ->
                                                 %% ✅ Atualizar status no banco
                                                 message_repo:mark_message_delivered(DbMessageId),
                                                 
@@ -196,7 +206,7 @@ handle_reply_message(MessageId, Req0, State) ->
                                                 %% from = destinatário, to = remetente (mesma convenção de message_router)
                                                 user_session:send_message(FinalReceiverId, SenderId, DeliveryMsg),
                                                 
-                                                %% 8. ENVIAR CONFIRMAÇÃO PARA O REMETENTE (STATUS = sent)
+                                                %% 8. ENVIAR CONFIRMAÇÃO PARA O REMETENTE (STATUS = delivered)
                                                 MessageToSender = #{
                                                     <<"type">> => <<"message">>,
                                                     <<"from">> => SenderId,
@@ -205,7 +215,7 @@ handle_reply_message(MessageId, Req0, State) ->
                                                     <<"timestamp">> => erlang:system_time(second),
                                                     <<"message_id">> => integer_to_binary(DbMessageId),
                                                     <<"db_message_id">> => integer_to_binary(DbMessageId),
-                                                    <<"status">> => <<"sent">>,
+                                                    <<"status">> => <<"delivered">>,
                                                     %% MESMAS INFORMAÇÕES DE REPLY
                                                     <<"reply_to_id">> => MessageId,
                                                     <<"reply_to_text">> => OriginalText,
@@ -222,15 +232,53 @@ handle_reply_message(MessageId, Req0, State) ->
                                                 
                                                 ?LOG_INFO("✅ Reply processado com sucesso"),
                                                 
-                                                %% 10. RETORNAR RESPOSTA
+                                                %% 10. RETORNAR RESPOSTA (STATUS = delivered)
+                                                ReplyDataDelivered = ReplyData#{
+                                                    <<"status">> => <<"delivered">>
+                                                },
                                                 send_json(Req1, 201, #{
                                                     success => true,
                                                     message => <<"Reply sent successfully">>,
-                                                    reply_message => ReplyData
+                                                    reply_message => ReplyDataDelivered
                                                 }, State);
-                                            {error, user_offline} ->
-                                                %% Destinatário offline: não falhar. Guardar offline com metadados de reply.
-                                                ?LOG_WARNING("ℹ️ Receiver ~p offline ao enviar reply. Guardando como 'sent' e respondendo sucesso.", [FinalReceiverId]),
+                                                    {error, user_offline} ->
+                                                        %% Destinatário offline: não falhar. Guardar offline com metadados de reply.
+                                                        ?LOG_WARNING("ℹ️ Receiver ~p offline ao enviar reply. Guardando como 'sent' e respondendo sucesso.", [FinalReceiverId]),
+                                                        MessageOffline = MessageToReceiver#{
+                                                            <<"status">> => <<"sent">>,
+                                                            <<"should_increase_unread">> => true
+                                                        },
+                                                        message_router:store_offline_message(FinalReceiverId, MessageOffline),
+
+                                                        MessageToSender2 = #{
+                                                            <<"type">> => <<"message">>,
+                                                            <<"from">> => SenderId,
+                                                            <<"to">> => FinalReceiverId,
+                                                            <<"content">> => Content,
+                                                            <<"timestamp">> => erlang:system_time(second),
+                                                            <<"message_id">> => integer_to_binary(DbMessageId),
+                                                            <<"db_message_id">> => integer_to_binary(DbMessageId),
+                                                            <<"status">> => <<"sent">>,
+                                                            <<"reply_to_id">> => MessageId,
+                                                            <<"reply_to_text">> => OriginalText,
+                                                            <<"reply_to_sender_name">> => ReplyToSenderName,
+                                                            <<"reply_to_sender_id">> => OriginalSenderIdBin,
+                                                            <<"should_increase_unread">> => false
+                                                        },
+                                                        user_session:send_message(SenderId, SenderId, MessageToSender2),
+                                                        send_chat_list_edit_update(SenderId, FinalReceiverId, Content, integer_to_binary(DbMessageId)),
+                                                        send_json(Req1, 201, #{
+                                                            success => true,
+                                                            message => <<"Reply queued (receiver offline)">>,
+                                                            reply_message => ReplyData
+                                                        }, State);
+                                                    {error, Error} ->
+                                                        ?LOG_ERROR("❌ Failed to send reply: ~p", [Error]),
+                                                        send_json(Req1, 500, #{error => <<"failed_to_send_reply">>}, State)
+                                                end;
+                                            false ->
+                                                %% ✅ Offline real (mesmo que o WS responda): guardar como sent
+                                                ?LOG_WARNING("ℹ️ Receiver ~p offline (presence/heartbeat). Guardando reply como 'sent'.", [FinalReceiverId]),
                                                 MessageOffline = MessageToReceiver#{
                                                     <<"status">> => <<"sent">>,
                                                     <<"should_increase_unread">> => true
@@ -258,10 +306,7 @@ handle_reply_message(MessageId, Req0, State) ->
                                                     success => true,
                                                     message => <<"Reply queued (receiver offline)">>,
                                                     reply_message => ReplyData
-                                                }, State);
-                                            {error, Error} ->
-                                                ?LOG_ERROR("❌ Failed to send reply: ~p", [Error]),
-                                                send_json(Req1, 500, #{error => <<"failed_to_send_reply">>}, State)
+                                                }, State)
                                         end;
                                     {error, _} ->
                                         send_json(Req1, 500, #{error => <<"failed_to_get_reply">>}, State)
