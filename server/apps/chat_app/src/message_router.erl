@@ -91,15 +91,18 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                         ok ->
                             io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p (WS vivo E online)~n", [ToId]),
                             
-                            %% ✅ ATUALIZAR BD: status = 'delivered' (SÓ quando REALMENTE entregue)
-                            message_repo:mark_message_delivered(DbMessageId),
+                            %% ✅ NOTA: NÃO marcamos como delivered aqui!
+                            %% O status só muda para 'delivered' quando recebermos o ACK do cliente
+                            %% Isso é o comportamento correto estilo WhatsApp
                             
                             %% ✅ ENVIAR ATUALIZAÇÃO PARA CHAT LIST PAGE
                             send_chat_list_update(FromId, ToId, Content, DbMessageId),
                             
-                            io:format("   ✅ Mensagem entregue para ~p. Retornando status 'delivered' para remetente.~n", [ToId]),
+                            io:format("   ✅ Mensagem enviada para ~p. Aguardando ACK para marcar como delivered.~n", [ToId]),
                             
-                            {ok, MessageToReceiver, delivered};
+                            %% Retornamos 'sent' porque ainda não temos o ACK
+                            %% O cliente vai enviar o ACK e aí sim marcamos como delivered
+                            {ok, MessageToReceiver, sent};
                             
                         {error, Reason} ->
                             io:format("   ❌ Erro ao enviar para WS ativo: ~p - marcando como sent~n", [Reason]),
@@ -107,6 +110,13 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                             store_offline_message(ToId, MessageToReceiver#{
                               <<"status">> => <<"sent">>
                             }),
+                            
+                            %% ✅ ENVIAR PUSH NOTIFICATION VIA FCM
+                            %% Isso permite que a app acorde e envie o ACK
+                            spawn(fun() -> 
+                                send_fcm_notification(ToId, FromId, DbMessageId, Content)
+                            end),
+                            
                             {ok, MessageToReceiver, sent}
                     end;
                 false ->
@@ -115,6 +125,15 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                     store_offline_message(ToId, MessageToReceiver#{
                       <<"status">> => <<"sent">>
                     }),
+                    
+                    %% ✅ ENVIAR PUSH NOTIFICATION VIA FCM
+                    %% Esta é a parte CRÍTICA para o sistema estilo WhatsApp
+                    %% A push notification vai acordar a app do usuário mesmo fechada
+                    %% A app então envia o ACK e a mensagem é marcada como delivered
+                    spawn(fun() -> 
+                        send_fcm_notification(ToId, FromId, DbMessageId, Content)
+                    end),
+                    
                     {ok, MessageToReceiver, sent}
             end;
             
@@ -650,4 +669,37 @@ send_chat_list_update(FromId, ToId, Content, MessageId) ->
     catch
         Error:Reason ->
             io:format("   ❌ Error sending chat list update: ~p:~p~n", [Error, Reason])
+    end.
+
+%% @doc Enviar notificação push via FCM
+%% Esta função é CRÍTICA para o sistema de entrega estilo WhatsApp
+%% Envia push notification para acordar a app e permitir que envie ACK
+send_fcm_notification(ToUserId, FromUserId, MessageId, Content) ->
+    try
+        io:format("📱 [FCM] Enviando push notification para ~p~n", [ToUserId]),
+        
+        %% Buscar nome do remetente para a notificação
+        SenderName = case user_info_handler:get_user_from_db(FromUserId) of
+            {ok, UserInfo} -> maps:get(<<"name">>, UserInfo, <<"Nova mensagem">>);
+            _ -> <<"Nova mensagem">>
+        end,
+        
+        %% Converter MessageId para binary se necessário
+        MessageIdBin = case is_integer(MessageId) of
+            true -> integer_to_binary(MessageId);
+            false -> MessageId
+        end,
+        
+        %% Enviar via FCM
+        case fcm_sender:send_message_notification(ToUserId, FromUserId, MessageIdBin, Content, SenderName) of
+            ok ->
+                io:format("✅ [FCM] Push notification enviada com sucesso para ~p~n", [ToUserId]);
+            {error, no_tokens} ->
+                io:format("⚠️ [FCM] User ~p não tem tokens FCM registados~n", [ToUserId]);
+            {error, FcmError} ->
+                io:format("❌ [FCM] Erro ao enviar push: ~p~n", [FcmError])
+        end
+    catch
+        ExcType:ExcReason ->
+            io:format("❌ [FCM] Exceção ao enviar push: ~p:~p~n", [ExcType, ExcReason])
     end.

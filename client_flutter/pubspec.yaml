@@ -37,6 +37,7 @@ dependencies:
   # Firebase
   firebase_core: any
   firebase_auth: any
+  firebase_messaging: any
 
   # http para falar com o teu backend
   http: any

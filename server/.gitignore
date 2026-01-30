@@ -11,6 +11,7 @@ _vendor
 .erlang.cookie
 ebin
 log
+config/
 erl_crash.dump
 .rebar
 logs
@@ -37,4 +38,7 @@ build/
 # Ficheiros
 server/apps/chat_app/src/mysql_test.erl
 passo_a_passo.txt
+PROXIMO_PASSO.txt
+Comandos_importantes.txt
+algumas explicacoes importantes.txt
 Structure

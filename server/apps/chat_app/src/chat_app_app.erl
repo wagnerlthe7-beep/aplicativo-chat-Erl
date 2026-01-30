@@ -55,7 +55,11 @@ start(_StartType, _StartArgs) ->
             {"/api/admin/messages/:messageId/recover", message_operations_handler, recover},
             {"/api/messages/:messageId/history", message_operations_handler, history},
             {"/api/users/:user_id", user_info_handler, []},
-            {"/api/presence/:user_id", presence_handler, []},  % ✅ NOVO: Status de presença
+            {"/api/presence/:user_id", presence_handler, []},  % ✅ Status de presença
+            %% ✅ NOVO: FCM Push Notifications (Sistema de entrega estilo WhatsApp)
+            {"/api/fcm/register", fcm_token_handler, []},     % Registar token FCM
+            {"/api/fcm/unregister", fcm_token_handler, []},   % Remover token FCM
+            {"/api/messages/ack", message_ack_handler, []},   % Receber ACK de mensagem
             {"/ws", ws_handler, []}  % Permite qualquer path após /ws   %% WebSocket handler
         ]}
     ]),

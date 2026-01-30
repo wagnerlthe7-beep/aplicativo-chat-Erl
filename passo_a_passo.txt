@@ -958,6 +958,7 @@ $env:SESSION_SECRET = [Convert]::ToBase64String($bytes)                 <- ISSO 
 para CONFERIR o SESSION_SECRET, DIGITA: $env:SESSION_SECRET
 depois defina o resto..
 $env:FIREBASE_API_KEY="AIzaSyBGPDe4Rg_d0C5Kd7woiuF8cqyXBpQh9_w"
+$env:GOOGLE_APPLICATION_CREDENTIALS = "E:\aplicativo-chat\server\config\firebase-service-account.json"
 $env:DB_HOST="localhost"
 $env:DB_PORT="5432"
 $env:DB_NAME="chat_app_db"
