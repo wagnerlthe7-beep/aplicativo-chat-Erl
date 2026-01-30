@@ -13,6 +13,7 @@ import 'chat_model.dart';
 import 'contacts_helper.dart';
 import 'models/pending_message.dart';
 import 'services/pending_messages_storage.dart';
+import 'fcm_service.dart'; // ✅ Para enviar ACK de delivered
 
 class ChatService {
   static WebSocketChannel? _channel;
@@ -441,6 +442,16 @@ class ChatService {
               dbMessageId: dbMessageIdStr,
               sentAt: sentAtIso,
             ).catchError((e) => print('❌ Erro ao atualizar status: $e'));
+          }
+
+          // ✅ ENVIAR ACK DE DELIVERED (se não for mensagem minha)
+          // Isso é CRÍTICO para o sistema de entrega estilo WhatsApp
+          // O ACK confirma ao servidor que a mensagem foi recebida
+          if (fromUserId != null && fromUserId != _currentUserId) {
+            final ackMessageId = dbMessageIdStr ?? tempMessageId;
+            if (ackMessageId != null) {
+              _sendDeliveredAck(ackMessageId);
+            }
           }
           break;
         case 'message_delivered':
@@ -1025,6 +1036,35 @@ class ChatService {
     } catch (e) {
       print('❌ Erro ao verificar conexão com internet: $e');
       return false;
+    }
+  }
+
+  // ✅ ENVIAR ACK DE DELIVERED PARA O SERVIDOR
+  // Esta função é CRÍTICA para o sistema de entrega estilo WhatsApp
+  // O ACK confirma ao servidor que a mensagem foi recebida pelo cliente
+  // O servidor só marca como "delivered" APÓS receber este ACK
+  static Future<void> _sendDeliveredAck(String messageId) async {
+    try {
+      // Usar o FCMService para enviar o ACK via HTTP
+      // Isso garante que funcione mesmo se o WebSocket estiver temporariamente offline
+      await FCMService().sendDeliveredAck(messageId);
+    } catch (e) {
+      print('❌ [ACK] Erro ao enviar ACK via HTTP: $e');
+      // Em caso de falha, tentar enviar via WebSocket como fallback
+      if (_channel != null && isWebSocketConnected()) {
+        try {
+          final ackMessage = {
+            'type': 'message_ack',
+            'message_id': messageId,
+            'status': 'delivered',
+            'timestamp': DateTime.now().millisecondsSinceEpoch ~/ 1000,
+          };
+          _channel!.sink.add(json.encode(ackMessage));
+          print('📤 [ACK] ACK enviado via WebSocket como fallback');
+        } catch (e) {
+          print('❌ [ACK] Falha também no fallback WebSocket: $e');
+        }
+      }
     }
   }
 

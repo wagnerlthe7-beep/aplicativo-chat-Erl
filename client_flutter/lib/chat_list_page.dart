@@ -1085,7 +1085,7 @@ class _ChatListPageState extends State<ChatListPage>
               else ...[
                 if (chat.lastMessageEdited)
                   Icon(Icons.edit, size: 12, color: AppTheme.actionEdit),
-                SizedBox(width: 4),
+                if (chat.lastMessageEdited) SizedBox(width: 4),
                 Expanded(
                   child: Text(
                     chat.lastMessage,

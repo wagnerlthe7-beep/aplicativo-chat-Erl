@@ -20,8 +20,8 @@ Aqui está a tabela completa com as funcionalidades que faltam desenvolver:
 | **Chamadas de vídeo**                           | ❌ Por Desenvolver |
 | **Criação e gestão de grupos**                  | ❌ Por Desenvolver |
 | **Status online/offline dos contactos**         | ✅ Funcional |
-| **Notificações push**                           | ❌ Por Desenvolver |
-| **Confirmações de entrega e leitura**           | ❌ Por Desenvolver |
+| **Notificações push**                           | ✅ Funcional |
+| **Confirmações de entrega e leitura**           | ✅ Funcional |
 | **Backup de conversas**                         | ❌ Por Desenvolver |
 | **Pesquisa dentro das conversas**               | ❌ Por Desenvolver |
 | **Partilha de localização**                     | ❌ Por Desenvolver |
@@ -30,8 +30,9 @@ Aqui está a tabela completa com as funcionalidades que faltam desenvolver:
 | **Modo escuro**                                 | ❌ Por Desenvolver |
 | **Bloqueio de contactos**                       | ❌ Por Desenvolver |
 | **Chats secretos/criptografia**                 | ❌ Por Desenvolver |
-| **Stories/Status (como WhatsApp)**              | ❌ Por Desenvolver |
-| **um dispositivo perde conexao (do nada)**      | ❌ Por Acertar     |
+| **Stories/Status **                             | ❌ Por Desenvolver |
+| **um dispositivo perde conexao (do nada)**      | ✅ Funcional     |
+| **ACK implementacao para wake up device**       | ❌ Por Desenvolver |
 
 ---- FIM 14/10/2025
     ✅ FUNCIONALIDADES IMPLEMENTADAS no dia 20.11.2025:

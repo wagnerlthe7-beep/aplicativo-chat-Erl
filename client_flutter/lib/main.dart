@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'startup_page.dart';
 import 'welcome_page.dart';
 import 'phone_input_page.dart';
@@ -11,20 +12,40 @@ import 'chat_list_page.dart';
 import 'chat_service.dart'; // Import necessário
 import 'websocket_foreground_service.dart'; // Foreground service
 import 'notification_service.dart'; // Serviço de notificações
+import 'fcm_service.dart'; // ✅ Firebase Cloud Messaging para push notifications
 import 'services/message_sync_service.dart'; // ✅ Serviço de sincronização offline
 import 'app_theme.dart';
-import 'startup_page.dart'; // Ainda necessário para Fallback
+
+/// Handler de background para FCM - DEVE ser top-level function
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  // Certificar que Firebase está inicializado
+  await Firebase.initializeApp();
+
+  print(
+    '🔔 [FCM Background Handler] Mensagem recebida em background/terminated!',
+  );
+  print('   Data: ${message.data}');
+
+  // Delegar para o FCMService
+  await firebaseMessagingBackgroundHandler(message);
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  print('🚀 Iniciando aplicação WhaClone...');
+  print('🚀 Iniciando aplicação SpeekJoy...');
 
   String initialRoute = '/';
 
   try {
     await Firebase.initializeApp();
     print('✅ Firebase inicializado');
+
+    // ✅ REGISTRAR HANDLER DE BACKGROUND FCM (ANTES de qualquer outra coisa)
+    // Isso permite que a app acorde e processe mensagens mesmo fechada
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+    print('✅ FCM Background Handler registrado');
 
     // ✅ VERIFICAÇÃO DE SESSÃO RÁPIDA (Antes de renderizar)
     final storage = FlutterSecureStorage();
@@ -45,9 +66,14 @@ void main() async {
     // ✅ INICIALIZAR FOREGROUND SERVICE
     await WebSocketForegroundService.initialize();
 
-    // ✅ INICIALIZAR SERVIÇO DE NOTIFICAÇÕES
+    // ✅ INICIALIZAR SERVIÇO DE NOTIFICAÇÕES LOCAIS
     await NotificationService().initialize();
     await NotificationService().requestPermission();
+
+    // ✅ INICIALIZAR FCM SERVICE (Push Notifications)
+    // Isso registra o token FCM no servidor para receber push quando offline
+    await FCMService().initialize();
+    print('✅ FCMService inicializado');
 
     // ✅ INICIALIZAR SERVIÇO DE SINCRONIZAÇÃO OFFLINE-FIRST
     if (token != null) {
