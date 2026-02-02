@@ -73,25 +73,31 @@ handle_ack(Req0, State) ->
 
 %% Processar o ACK
 process_ack(UserId, MessageId, <<"delivered">>) ->
+    io:format("🔄 [ACK] Processando ACK de delivered: UserId=~p, MessageId=~p~n", [UserId, MessageId]),
+    
     %% Converter MessageId para integer (vem como binary do JSON)
     MessageIdInt = binary_to_integer_safe(MessageId),
+    io:format("   MessageId convertido para integer: ~p~n", [MessageIdInt]),
     
-    %% 1. Marcar mensagem como delivered no banco
-    case message_repo:mark_message_delivered(MessageIdInt) of
-        Result when Result =:= ok; element(1, Result) =:= ok ->
-            %% 2. Obter informações da mensagem para notificar o remetente
+    %% ✅ Verificar se mensagem já está marcada como delivered (evitar processamento duplicado)
+    case message_repo:get_message_status(MessageIdInt) of
+        {ok, <<"delivered">>} ->
+            io:format("ℹ️ [ACK] Mensagem ~p já está marcada como delivered (ACK duplicado ignorado)~n", [MessageIdInt]),
+            %% Mensagem já está delivered - pode ser ACK duplicado do cliente
+            %% Ainda assim, tentar notificar o remetente (pode não ter recebido a primeira vez)
             case message_repo:get_message_sender(MessageIdInt) of
                 {ok, SenderId} ->
-                    %% 3. Notificar o remetente via WebSocket (se online)
-                    notify_sender_delivered(SenderId, MessageId, UserId),
-                    ok;
-                {error, _} ->
-                    %% Mensagem marcada como delivered, mas não conseguiu notificar
-                    %% Isso não é um erro crítico
+                    notify_sender_delivered(SenderId, MessageId, UserId);
+                _ ->
                     ok
-            end;
-        {error, Reason} ->
-            {error, Reason}
+            end,
+            ok;
+        {ok, _OtherStatus} ->
+            %% Mensagem ainda não está delivered - processar normalmente
+            process_delivered_ack(UserId, MessageId, MessageIdInt);
+        {error, _Reason} ->
+            %% Erro ao verificar status - tentar processar mesmo assim
+            process_delivered_ack(UserId, MessageId, MessageIdInt)
     end;
 
 process_ack(UserId, MessageId, <<"read">>) ->
@@ -117,9 +123,37 @@ process_ack(UserId, MessageId, <<"read">>) ->
 process_ack(_, _, _) ->
     {error, invalid_status}.
 
+%% Processar ACK de delivered (função auxiliar)
+process_delivered_ack(UserId, MessageId, MessageIdInt) ->
+    %% 1. Marcar mensagem como delivered no banco
+    case message_repo:mark_message_delivered(MessageIdInt) of
+        Result when Result =:= ok; element(1, Result) =:= ok ->
+            io:format("✅ [ACK] Mensagem ~p marcada como delivered no banco~n", [MessageIdInt]),
+            
+            %% 2. Obter informações da mensagem para notificar o remetente
+            case message_repo:get_message_sender(MessageIdInt) of
+                {ok, SenderId} ->
+                    io:format("✅ [ACK] Remetente encontrado: ~p~n", [SenderId]),
+                    %% 3. Notificar o remetente via WebSocket (se online)
+                    notify_sender_delivered(SenderId, MessageId, UserId),
+                    ok;
+                {error, Reason} ->
+                    io:format("⚠️ [ACK] Erro ao obter remetente: ~p - mensagem marcada como delivered mas não notificada~n", [Reason]),
+                    %% Mensagem marcada como delivered, mas não conseguiu notificar
+                    %% Isso não é um erro crítico
+                    ok
+            end;
+        {error, Reason} ->
+            io:format("❌ [ACK] Erro ao marcar mensagem como delivered: ~p~n", [Reason]),
+            {error, Reason}
+    end.
+
 %% Notificar remetente que mensagem foi entregue
 notify_sender_delivered(SenderId, MessageId, ReceiverUserId) ->
     SenderIdBin = integer_to_binary_safe(SenderId),
+    
+    io:format("📡 [ACK] Notificando sender ~p que mensagem ~p foi entregue para ~p~n", 
+              [SenderIdBin, MessageId, ReceiverUserId]),
     
     DeliveryMsg = #{
         <<"type">> => <<"message_delivered">>,
@@ -133,10 +167,15 @@ notify_sender_delivered(SenderId, MessageId, ReceiverUserId) ->
     %% Tentar enviar via WebSocket
     case user_session:is_websocket_alive(SenderIdBin) of
         true ->
-            user_session:send_message(ReceiverUserId, SenderIdBin, DeliveryMsg),
-            io:format("📡 [ACK] Notificação de delivered enviada para sender ~p~n", [SenderIdBin]);
+            io:format("✅ [ACK] WebSocket do sender ~p está vivo - enviando notificação~n", [SenderIdBin]),
+            case user_session:send_message(ReceiverUserId, SenderIdBin, DeliveryMsg) of
+                ok ->
+                    io:format("✅✅✅ [ACK] Notificação de delivered enviada com sucesso para sender ~p~n", [SenderIdBin]);
+                {error, Reason} ->
+                    io:format("❌ [ACK] Erro ao enviar notificação para sender ~p: ~p~n", [SenderIdBin, Reason])
+            end;
         false ->
-            io:format("⚠️ [ACK] Sender ~p não está online, notificação não enviada~n", [SenderIdBin])
+            io:format("⚠️ [ACK] Sender ~p não está online (WebSocket morto), notificação não enviada~n", [SenderIdBin])
     end.
 
 %% Notificar remetente que mensagem foi lida

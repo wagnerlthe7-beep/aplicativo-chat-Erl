@@ -45,9 +45,13 @@ class ChatService {
 
   static final Map<String, int> _presenceTimestamps = {};
   static final Set<String> _sentMessageIds = {};
+  // ✅ Rastrear mensagens que já receberam ACK (evitar duplicação)
+  static final Set<String> _ackedMessageIds = {};
 
   // ✅ Controle de presença
   static Timer? _heartbeatTimer;
+  static bool _isInBackgroundMode = false; // App em background?
+  static bool _isScreenLocked = false; // ✅ Tela bloqueada?
   static final Map<String, String> _userPresenceStatus =
       {}; // user_id -> status
 
@@ -450,21 +454,48 @@ class ChatService {
           if (fromUserId != null && fromUserId != _currentUserId) {
             final ackMessageId = dbMessageIdStr ?? tempMessageId;
             if (ackMessageId != null) {
-              _sendDeliveredAck(ackMessageId);
+              // ✅ Verificar se já enviamos ACK para esta mensagem (evitar duplicação)
+              // Isso pode acontecer se a mensagem chegou via FCM e depois via WebSocket
+              if (!_ackedMessageIds.contains(ackMessageId)) {
+                _ackedMessageIds.add(ackMessageId);
+                _sendDeliveredAck(ackMessageId);
+                print('📤 [ACK] ACK enviado para mensagem: $ackMessageId');
+              } else {
+                print(
+                  '⚠️ [ACK] ACK já enviado para mensagem: $ackMessageId (ignorando duplicado)',
+                );
+              }
             }
           }
           break;
         case 'message_delivered':
           _messageController.add(message);
 
+          print(
+            '✅✅✅ [ACK] Mensagem delivered recebida: message_id=${message['message_id']}, db_message_id=${message['db_message_id']}',
+          );
+
           // ✅ OFFLINE-FIRST: Atualizar status para 'delivered'
           final tempMessageId = message['message_id']?.toString();
-          if (tempMessageId != null) {
+          final dbMessageId = message['db_message_id']?.toString();
+
+          // ✅ Tentar ambos: message_id (UUID temporário) e db_message_id (ID do banco)
+          final messageIdToUpdate = tempMessageId ?? dbMessageId;
+
+          if (messageIdToUpdate != null) {
+            print(
+              '🔄 [ACK] Atualizando status para delivered: $messageIdToUpdate',
+            );
             // ✅ Executar de forma assíncrona sem bloquear
             updateMessageStatusFromServer(
-              tempMessageId,
+              messageIdToUpdate,
               'delivered',
+              dbMessageId: dbMessageId,
             ).catchError((e) => print('❌ Erro ao atualizar status: $e'));
+          } else {
+            print(
+              '⚠️ [ACK] Nenhum message_id encontrado na notificação de delivered',
+            );
           }
           break;
         case 'message_read':
@@ -1651,12 +1682,32 @@ class ChatService {
     print('🔌 WebSocket disconnected manually');
   }
 
-  // ✅ SISTEMA DE HEARTBEAT - OTIMIZADO PARA BACKGROUND
+  // ✅ SISTEMA DE HEARTBEAT - BASEADO EM EVENTOS, NÃO POLLING CONSTANTE
+  // Quando tela está bloqueada, PARA heartbeats e confia no FCM para acordar a app
   static void _startHeartbeat() {
     _stopHeartbeat(); // Garantir que não há múltiplos timers
 
-    // Enviar heartbeat a cada 3 segundos (otimizado para detecção rápida de offline em 6s)
-    _heartbeatTimer = Timer.periodic(Duration(seconds: 3), (timer) async {
+    // ✅ FREQUÊNCIA ADAPTATIVA:
+    // - Foreground: 5 segundos (detecção rápida)
+    // - Background (tela acesa): 30 segundos (economizar bateria)
+    // - Tela bloqueada: PARAR completamente (FCM acorda quando necessário)
+    final heartbeatInterval = _isScreenLocked
+        ? null // ✅ Não iniciar timer se tela bloqueada
+        : (_isInBackgroundMode ? Duration(seconds: 30) : Duration(seconds: 5));
+
+    if (heartbeatInterval == null) {
+      print('💤 Heartbeat desativado - tela bloqueada, confiando no FCM');
+      return;
+    }
+
+    _heartbeatTimer = Timer.periodic(heartbeatInterval, (timer) async {
+      // ✅ Verificar se tela foi bloqueada durante execução
+      if (_isScreenLocked) {
+        print('💤 Tela bloqueada detectada - parando heartbeat');
+        _stopHeartbeat();
+        return;
+      }
+
       // ✅ Verificar se há conexão antes de enviar heartbeat
       if (_channel == null) {
         print('💓 WebSocket null, parando heartbeat');
@@ -1665,9 +1716,16 @@ class ChatService {
       }
 
       try {
-        final heartbeatMsg = json.encode({'type': 'heartbeat'});
+        // ✅ Enviar tipo diferente quando em background
+        // heartbeat_background: mantém conexão mas não mostra "Online" na UI
+        final heartbeatType = _isInBackgroundMode
+            ? 'heartbeat_background'
+            : 'heartbeat';
+        final heartbeatMsg = json.encode({'type': heartbeatType});
         _channel!.sink.add(heartbeatMsg);
-        print('💓 Heartbeat enviado (background/foreground)');
+        print(
+          '💓 Heartbeat enviado (${_isInBackgroundMode ? "background" : "foreground"}, intervalo: ${heartbeatInterval.inSeconds}s)',
+        );
       } catch (e) {
         print('❌ Erro ao enviar heartbeat: $e');
         // Se falhar, tentar reconectar
@@ -1719,6 +1777,36 @@ class ChatService {
   static void _stopHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+  }
+
+  // ✅ DEFINIR MODO BACKGROUND
+  // Em background: heartbeat continua mas envia 'heartbeat_background'
+  // Servidor mantém conexão mas não mostra "Online" na UI
+  static void setBackgroundMode(bool isBackground) {
+    _isInBackgroundMode = isBackground;
+    print('📱 Modo ${isBackground ? "BACKGROUND" : "FOREGROUND"} activado');
+    // ✅ Reiniciar heartbeat com nova frequência
+    if (_channel != null) {
+      _startHeartbeat();
+    }
+  }
+
+  // ✅ DEFINIR SE TELA ESTÁ BLOQUEADA
+  // Quando tela bloqueada: PARA heartbeats completamente
+  // FCM acorda a app quando mensagem chega
+  static void setScreenLocked(bool isLocked) {
+    _isScreenLocked = isLocked;
+    print('🔒 Tela ${isLocked ? "BLOQUEADA" : "DESBLOQUEADA"}');
+    if (isLocked) {
+      // ✅ Parar heartbeats quando tela bloqueada
+      _stopHeartbeat();
+      print('💤 Heartbeats parados - confiando no FCM para acordar app');
+    } else {
+      // ✅ Reiniciar heartbeats quando tela desbloqueada
+      if (_channel != null) {
+        _startHeartbeat();
+      }
+    }
   }
 
   // ✅ Obter status de presença de um usuário

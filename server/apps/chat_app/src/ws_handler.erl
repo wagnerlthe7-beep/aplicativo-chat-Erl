@@ -130,12 +130,32 @@ websocket_info(_Info, State) ->
 %%%===================================================================
 
 terminate(_Reason, _Req, #state{user_id = UserId}) ->
-    %% ✅ REGISTAR USUÁRIO COMO OFFLINE (user_session + presence_manager)
+    %% ✅ REGISTAR USUÁRIO COMO OFFLINE NO USER_SESSION (para indicar que não tem WS ativo)
     %% ⚠️ Importante: ao reconectar, pode existir um WS novo vivo.
     %% Só devemos marcar offline se este PID ainda for o WS atual.
     user_session:user_offline(UserId, self()),
-    presence_manager:user_offline(UserId, self()),
-    io:format("🔌 Usuário ~p desconectado e registado como offline~n", [UserId]),
+    
+    %% ✅ VERIFICAR SE ESTAVA EM BACKGROUND ANTES DE MARCAR OFFLINE NO PRESENCE
+    %% Se estava em background, NÃO marcar como offline - manter sessão ativa para FCM
+    %% Online/Offline é apenas informativo (UI) - não afeta entrega de mensagens
+    WasInBackground = case presence_manager:is_user_in_background(UserId) of
+        {ok, true} -> true;
+        _ -> false
+    end,
+    
+    case WasInBackground of
+        true ->
+            %% ✅ Estava em background - NÃO marcar como offline no presence
+            %% MAS: atualizar last_seen para o momento atual (sem broadcast)
+            %% Isso mantém o last_seen atualizado sem mudar status visual
+            Now = erlang:system_time(second),
+            presence_manager:update_last_seen_only(UserId, Now),
+            io:format("🌑 Usuário ~p estava em BACKGROUND - mantendo sessão ativa para FCM (last_seen atualizado)~n", [UserId]);
+        false ->
+            %% Estava em foreground - marcar como offline normalmente
+            presence_manager:user_offline(UserId, self()),
+            io:format("🔌 Usuário ~p desconectado (foreground) - registado como offline~n", [UserId])
+    end,
     ok.
 
 %%%===================================================================
@@ -244,10 +264,17 @@ handle_websocket_message(#{<<"type">> := <<"get_offline_messages">>}, #state{use
             io:format("❌ Erro ao obter mensagens offline: ~p~n", [Reason])
     end;
 
-%% ✅ HEARTBEAT
+%% ✅ HEARTBEAT (Foreground - mostra "Online" na UI)
 handle_websocket_message(#{<<"type">> := <<"heartbeat">>}, #state{user_id = UserId}) ->
-    %% ✅ Atualizar heartbeat - usuário está ativo
+    %% ✅ Atualizar heartbeat - usuário está ativo e visível
     presence_manager:user_online(UserId, self()),
+    ok;
+
+%% ✅ HEARTBEAT BACKGROUND (Background - mantém conexão mas esconde "Online")
+handle_websocket_message(#{<<"type">> := <<"heartbeat_background">>}, #state{user_id = UserId}) ->
+    %% ✅ Atualizar heartbeat MAS não fazer broadcast como "online"
+    %% Mantém conexão viva para receber mensagens em tempo real
+    presence_manager:user_heartbeat_only(UserId, self()),
     ok;
 
 %% ✅ PRESENCE UPDATE (Manual)
@@ -258,7 +285,13 @@ handle_websocket_message(#{<<"type">> := <<"presence_update">>} = Data, #state{u
     case Status of
         <<"online">> ->
             %% Marca como online no presence_manager (broadcast)
+            %% Mostra "Online" na UI dos outros users
             presence_manager:user_online(UserId, self());
+        <<"background">> ->
+            %% App em background - user pode receber FCM mas não está activo
+            %% NÃO mostra "Online" na UI, mas mantém sessão para mensagens
+            %% Broadcast como "offline" para UI, mas mantém sessão activa
+            presence_manager:user_background(UserId, self());
         <<"offline">> ->
             %% Marca como offline no presence_manager (broadcast),
             %% MAS MANTÉM a sessão ativa em user_session para receber mensagens!

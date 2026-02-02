@@ -433,16 +433,22 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       print('📊 Presença recebida: $presence');
 
       if (presence != null && mounted) {
+        final status = presence['status'] ?? 'offline';
         setState(() {
-          _contactPresenceStatus = presence['status'] ?? 'offline';
-          // ✅ Armazenar last_seen (pode ser int ou null)
-          final lastSeen = presence['last_seen'];
-          if (lastSeen != null) {
-            _contactLastSeen = lastSeen is int
-                ? lastSeen
-                : int.tryParse(lastSeen.toString());
+          _contactPresenceStatus = status;
+          // ✅ Armazenar last_seen APENAS se não estiver em background
+          // Se estiver em background, não mostrar "Online há..." - UI deve ficar vazia
+          if (status == 'background') {
+            _contactLastSeen = null; // ✅ Limpar last_seen quando em background
           } else {
-            _contactLastSeen = null;
+            final lastSeen = presence['last_seen'];
+            if (lastSeen != null) {
+              _contactLastSeen = lastSeen is int
+                  ? lastSeen
+                  : int.tryParse(lastSeen.toString());
+            } else {
+              _contactLastSeen = null;
+            }
           }
           // ✅ Resetar marquee quando status mudar
           _isMarqueePaused = false;
@@ -487,6 +493,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (_isRemoteTyping) return 'a escrever...'; // ✅ Prioridade máxima
     if (_contactPresenceStatus == 'online') {
       return 'online';
+    }
+
+    // ✅ Background: app minimizada - não mostrar nada
+    if (_contactPresenceStatus == 'background') {
+      return '';
     }
 
     // ✅ Quando offline, mostrar "última vez online: [tempo]"
@@ -797,24 +808,37 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           _presenceOfflineTimer?.cancel();
 
           if (status == 'online') {
-            // ATUALIZAR IMEDIATAMENTE (sem delay para testar)
+            // ATUALIZAR IMEDIATAMENTE
             print('⚡ Atualizando IMEDIATAMENTE para ONLINE: $userId');
             if (mounted) {
               setState(() {
                 _contactPresenceStatus = 'online';
-                // ✅ Resetar marquee quando ficar online
                 _isMarqueePaused = false;
                 _resetMarquee();
               });
               print('✅ Presença aplicada (ONLINE) imediatamente');
             }
+          } else if (status == 'background') {
+            // App em background - não mostrar nada
+            print('🌑 Atualizando para BACKGROUND: $userId');
+            if (mounted) {
+              setState(() {
+                _contactPresenceStatus = 'background';
+                _contactLastSeen =
+                    null; // ✅ Limpar last_seen quando em background (não mostrar "Online há...")
+                _isMarqueePaused = false;
+                _resetMarquee();
+              });
+              print(
+                '✅ Presença aplicada (BACKGROUND) - UI vazia, last_seen limpo',
+              );
+            }
           } else if (status == 'offline') {
-            // ATUALIZAR IMEDIATAMENTE (sem delay para testar)
+            // ATUALIZAR IMEDIATAMENTE
             print('⚡ Atualizando IMEDIATAMENTE para OFFLINE: $userId');
             if (mounted) {
               setState(() {
                 _contactPresenceStatus = 'offline';
-                // ✅ Resetar marquee quando ficar offline
                 _isMarqueePaused = false;
                 _resetMarquee();
               });
@@ -887,22 +911,28 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               _presenceOfflineTimer?.cancel();
 
               if (status == 'online') {
-                // ATUALIZAR IMEDIATAMENTE (sem delay para testar)
-                print('⚡ Atualizando IMEDIATAMENTE para ONLINE: $userId');
+                print('⚡ Atualizando para ONLINE: $userId');
                 if (mounted) {
                   setState(() {
                     _contactPresenceStatus = 'online';
                   });
-                  print('✅ Presença aplicada (ONLINE) imediatamente');
+                }
+              } else if (status == 'background') {
+                print('🌑 Atualizando para BACKGROUND: $userId');
+                if (mounted) {
+                  setState(() {
+                    _contactPresenceStatus = 'background';
+                    _contactLastSeen =
+                        null; // ✅ Limpar last_seen quando em background
+                  });
                 }
               } else if (status == 'offline') {
-                // ATUALIZAR IMEDIATAMENTE (sem delay para testar)
-                print('⚡ Atualizando IMEDIATAMENTE para OFFLINE: $userId');
+                print('⚡ Atualizando para OFFLINE: $userId');
                 if (mounted) {
                   setState(() {
                     _contactPresenceStatus = 'offline';
                   });
-                  print('✅ Presença aplicada (OFFLINE) imediatamente');
+                  print('✅ Presença aplicada (OFFLINE)');
                 }
               }
             }
@@ -1701,14 +1731,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   // ✅ NOVO: Listener para atualizar status em tempo real
   Timer? _statusUpdateTimer;
-  // ✅ Mapa para rastrear último refresh de presença por usuário
-  final Map<String, DateTime> _lastPresenceRefresh = {};
   // ✅ IDs de deleções iniciadas localmente (para evitar deletes fantasma)
   final Set<String> _localDeleteRequests = {};
 
   void _startStatusUpdateListener() {
     _statusUpdateTimer?.cancel();
     // ✅ Verificar mudanças de status a cada 2 segundos
+    // ✅ REMOVIDO: Polling periódico de presença - agora usamos apenas eventos via WebSocket
+    // A presença é atualizada em tempo real através de eventos do servidor
     _statusUpdateTimer = Timer.periodic(const Duration(seconds: 2), (
       timer,
     ) async {
@@ -1719,18 +1749,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
       await _updatePendingMessagesStatus();
 
-      // ✅ REFRESH PERIÓDICO DE PRESENÇA (a cada 10 segundos) para garantir UI sincronizada
-      // Isso garante que mesmo se eventos de presença forem perdidos, a UI será atualizada
-      final now = DateTime.now();
-      if (!_lastPresenceRefresh.containsKey(widget.remoteUserId) ||
-          now.difference(_lastPresenceRefresh[widget.remoteUserId]!) >
-              const Duration(seconds: 10)) {
-        _lastPresenceRefresh[widget.remoteUserId] = now;
-        if (_isConnected) {
-          print('🔄 Refresh periódico de presença para ${widget.remoteUserId}');
-          await _loadContactPresence();
-        }
-      }
+      // ✅ REMOVIDO: Polling periódico de presença
+      // Presença é atualizada via eventos WebSocket em tempo real
+      // Consulta HTTP apenas ao abrir o chat (em _loadContactPresence com forceRefresh: true)
     });
   }
 

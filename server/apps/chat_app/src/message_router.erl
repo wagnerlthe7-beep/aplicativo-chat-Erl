@@ -72,24 +72,23 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                                 <<"status">> => <<"delivered">>,  %% para o destinatário, já entregue
                                 <<"should_increase_unread">> => true},
             
-            %% ✅ CORREÇÃO CRÍTICA: Verificar presença REAL antes de tentar enviar
-            %% Não confiar apenas em is_websocket_alive - verificar também se usuário está realmente online
-            IsUserReallyOnline = case presence_manager:is_user_online(ToId) of
-                {ok, true} -> true;
-                _ -> false
-            end,
-            
+            %% ✅ ESTRATÉGIA ESTILO WHATSAPP: 
+            %% 1. Sempre tentar WebSocket primeiro (se estiver conectado)
+            %% 2. Se WebSocket não estiver disponível, usar FCM
+            %% 3. Online/Offline é apenas informativo (UI) - não afeta entrega de mensagens
+            %% 4. ACK é o que importa para marcar como delivered
             IsWsAlive = user_session:is_websocket_alive(ToId),
-            io:format("   🔍 WebSocket alive para ~p: ~p, Usuário realmente online: ~p~n", [ToId, IsWsAlive, IsUserReallyOnline]),
+            io:format("   🔍 WebSocket alive para ~p: ~p~n", [ToId, IsWsAlive]),
             
-            %% ✅ ESTRATÉGIA CORRIGIDA: Só tentar entregar se usuário está REALMENTE online
-            %% Se não estiver online, mensagem fica como 'sent' (não 'delivered')
-            case IsWsAlive andalso IsUserReallyOnline of
+            %% ✅ TENTAR ENTREGAR VIA WEBSOCKET SE ESTIVER DISPONÍVEL
+            %% Não importa se está "online" ou "offline" no presence - isso é só UI
+            %% O que importa é se o WebSocket está vivo para entregar em tempo real
+            case IsWsAlive of
                 true ->
-                    %% WebSocket ativo E usuário realmente online - tentar enviar mensagem
+                    %% ✅ WebSocket está vivo - tentar entregar via WebSocket (tempo real)
                     case user_session:send_message(FromId, ToId, MessageToReceiver) of
                         ok ->
-                            io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p (WS vivo E online)~n", [ToId]),
+                            io:format("   ✅✅✅ Enviada para DESTINATÁRIO ~p via WebSocket~n", [ToId]),
                             
                             %% ✅ NOTA: NÃO marcamos como delivered aqui!
                             %% O status só muda para 'delivered' quando recebermos o ACK do cliente
@@ -98,21 +97,20 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                             %% ✅ ENVIAR ATUALIZAÇÃO PARA CHAT LIST PAGE
                             send_chat_list_update(FromId, ToId, Content, DbMessageId),
                             
-                            io:format("   ✅ Mensagem enviada para ~p. Aguardando ACK para marcar como delivered.~n", [ToId]),
+                            io:format("   ✅ Mensagem enviada via WS para ~p. Aguardando ACK para marcar como delivered.~n", [ToId]),
                             
                             %% Retornamos 'sent' porque ainda não temos o ACK
                             %% O cliente vai enviar o ACK e aí sim marcamos como delivered
                             {ok, MessageToReceiver, sent};
                             
                         {error, Reason} ->
-                            io:format("   ❌ Erro ao enviar para WS ativo: ~p - marcando como sent~n", [Reason]),
-                            %% ✅ Se falhar ao enviar, mensagem fica como 'sent' (não delivered)
+                            io:format("   ❌ Erro ao enviar via WS: ~p - usando FCM como fallback~n", [Reason]),
+                            %% ✅ Se falhar ao enviar via WebSocket, usar FCM
                             store_offline_message(ToId, MessageToReceiver#{
                               <<"status">> => <<"sent">>
                             }),
                             
-                            %% ✅ ENVIAR PUSH NOTIFICATION VIA FCM
-                            %% Isso permite que a app acorde e envie o ACK
+                            %% ✅ ENVIAR PUSH NOTIFICATION VIA FCM (fallback)
                             spawn(fun() -> 
                                 send_fcm_notification(ToId, FromId, DbMessageId, Content)
                             end),
@@ -120,8 +118,9 @@ send_message(FromId, ToId, Content, ClientMsgId) ->
                             {ok, MessageToReceiver, sent}
                     end;
                 false ->
-                    %% ✅ Usuário NÃO está realmente online - mensagem fica como 'sent' (não delivered)
-                    io:format("   💾 Usuário ~p NÃO está realmente online - armazenando mensagem (status=sent)~n", [ToId]),
+                    %% ✅ WebSocket não está disponível - usar FCM (estilo WhatsApp)
+                    %% Isso acontece quando app está fechada ou em background
+                    io:format("   📱 WebSocket não disponível para ~p - usando FCM~n", [ToId]),
                     store_offline_message(ToId, MessageToReceiver#{
                       <<"status">> => <<"sent">>
                     }),
@@ -192,7 +191,19 @@ send_typing_indicator(FromId, ToId, IsTyping) ->
                  <<"to">> => ToId,
                  <<"is_typing">> => IsTyping,
                  <<"timestamp">> => erlang:system_time(second)},
-    user_session:send_message(FromId, ToId, TypingMsg).
+    %% ✅ Typing não é crítico - se usuário estiver offline, apenas ignorar silenciosamente
+    %% Não retornar erro porque typing é apenas informativo (estilo WhatsApp)
+    case user_session:send_message(FromId, ToId, TypingMsg) of
+        ok -> ok;
+        {error, user_offline} -> 
+            %% Usuário offline (app fechada/background) - typing não é crítico, apenas ignorar
+            io:format("⌨️  Typing ignorado para ~p (offline/background)~n", [ToId]),
+            ok;
+        {error, _Reason} -> 
+            %% Outro erro - também ignorar (typing não é crítico)
+            io:format("⌨️  Typing ignorado para ~p (erro: ~p)~n", [ToId, _Reason]),
+            ok
+    end.
 
 %%%-------------------------------------------------------------------
 %%% @doc Transmite status de presença
@@ -677,6 +688,7 @@ send_chat_list_update(FromId, ToId, Content, MessageId) ->
 send_fcm_notification(ToUserId, FromUserId, MessageId, Content) ->
     try
         io:format("📱 [FCM] Enviando push notification para ~p~n", [ToUserId]),
+        io:format("   MessageId original: ~p (tipo: ~p)~n", [MessageId, erlang:is_integer(MessageId)]),
         
         %% Buscar nome do remetente para a notificação
         SenderName = case user_info_handler:get_user_from_db(FromUserId) of
@@ -689,6 +701,8 @@ send_fcm_notification(ToUserId, FromUserId, MessageId, Content) ->
             true -> integer_to_binary(MessageId);
             false -> MessageId
         end,
+        
+        io:format("   MessageIdBin convertido: ~p~n", [MessageIdBin]),
         
         %% Enviar via FCM
         case fcm_sender:send_message_notification(ToUserId, FromUserId, MessageIdBin, Content, SenderName) of

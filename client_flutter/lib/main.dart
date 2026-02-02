@@ -7,28 +7,49 @@ import 'phone_input_page.dart';
 import 'otp_page.dart';
 import 'name_input_page.dart';
 import 'permissions_page.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart'; // ✅ Storage
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'chat_list_page.dart';
-import 'chat_service.dart'; // Import necessário
-import 'websocket_foreground_service.dart'; // Foreground service
-import 'notification_service.dart'; // Serviço de notificações
-import 'fcm_service.dart'; // ✅ Firebase Cloud Messaging para push notifications
-import 'services/message_sync_service.dart'; // ✅ Serviço de sincronização offline
+import 'chat_service.dart';
+import 'notification_service.dart';
+import 'fcm_service.dart';
+import 'services/message_sync_service.dart';
 import 'app_theme.dart';
 
 /// Handler de background para FCM - DEVE ser top-level function
+/// Esta função é executada em um isolate separado quando a app está em background
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Certificar que Firebase está inicializado
-  await Firebase.initializeApp();
+  try {
+    // ✅ IMPORTANTE: Logs em background podem não aparecer imediatamente
+    // Usar print() que é mais confiável em background isolates
+    print('🔔🔔🔔 [FCM Background Handler] INICIANDO PROCESSAMENTO 🔔🔔🔔');
+    print(
+      '   Notification: ${message.notification?.title} - ${message.notification?.body}',
+    );
+    print('   Data: ${message.data}');
+    print('   MessageId: ${message.messageId}');
+    print('   SentTime: ${message.sentTime}');
+    print('   MessageType: ${message.messageType}');
 
-  print(
-    '🔔 [FCM Background Handler] Mensagem recebida em background/terminated!',
-  );
-  print('   Data: ${message.data}');
+    // Certificar que Firebase está inicializado
+    // Em background isolates, Firebase pode não estar inicializado
+    try {
+      await Firebase.initializeApp();
+      print('✅ Firebase inicializado no background handler');
+    } catch (e) {
+      // Firebase já pode estar inicializado
+      print('⚠️ Firebase já inicializado ou erro: $e');
+    }
 
-  // Delegar para o FCMService
-  await firebaseMessagingBackgroundHandler(message);
+    // Delegar para o FCMService
+    await firebaseMessagingBackgroundHandler(message);
+    print('✅ [FCM Background Handler] Processamento concluído');
+  } catch (e, stackTrace) {
+    print('❌❌❌ [FCM Background Handler] ERRO CRÍTICO: $e');
+    print('   Stack trace: $stackTrace');
+    // Re-throw para que o FCM saiba que houve erro
+    rethrow;
+  }
 }
 
 void main() async {
@@ -63,9 +84,6 @@ void main() async {
       initialRoute = '/welcome';
     }
 
-    // ✅ INICIALIZAR FOREGROUND SERVICE
-    await WebSocketForegroundService.initialize();
-
     // ✅ INICIALIZAR SERVIÇO DE NOTIFICAÇÕES LOCAIS
     await NotificationService().initialize();
     await NotificationService().requestPermission();
@@ -97,30 +115,77 @@ class MyApp extends StatefulWidget {
 }
 
 class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
-  final AppLifecycleManager _lifecycleManager = AppLifecycleManager();
-
   @override
   void initState() {
     super.initState();
-    // ✅ Registrar observador de ciclo de vida E gerenciador de foreground service
     WidgetsBinding.instance.addObserver(this);
-    _lifecycleManager.initialize();
   }
 
   @override
   void dispose() {
-    // ✅ Remover observador e limpar gerenciador
     WidgetsBinding.instance.removeObserver(this);
-    _lifecycleManager.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    print('🔄 App Lifecycle State changed to: $state');
+    print('🔄 App Lifecycle State: $state');
 
-    // Delegar para o AppLifecycleManager do foreground service
-    // Ele vai cuidar de iniciar/parar o serviço automaticamente
+    switch (state) {
+      case AppLifecycleState.resumed:
+        // App voltou para foreground - marcar como ONLINE
+        // ✅ Pode ter sido acordada pelo FCM (tela estava bloqueada)
+        print(
+          '☀️ App em foreground - status: online (pode ter sido acordada pelo FCM)',
+        );
+
+        // ✅ SEMPRE tentar reconectar (pode ter desconectado quando tela bloqueou)
+        if (!ChatService.isWebSocketConnected()) {
+          print('🔄 Reconectando WebSocket após app acordar...');
+          ChatService.connect();
+        }
+
+        // Mudar para modo foreground (heartbeat normal)
+        ChatService.setBackgroundMode(false);
+        ChatService.setScreenLocked(false); // ✅ Tela desbloqueada
+
+        // ✅ Aguardar um pouco para garantir que WebSocket conectou
+        Future.delayed(Duration(milliseconds: 500), () {
+          ChatService.sendPresence('online');
+        });
+        break;
+
+      case AppLifecycleState.paused:
+        // App foi para background - esconder "Online" mas manter WebSocket vivo
+        // Heartbeat continua para receber mensagens em tempo real
+        print('🌑 App em background - WebSocket vivo, UI escondida');
+        ChatService.sendPresence('background');
+        ChatService.setBackgroundMode(true);
+        // ✅ Tela pode estar bloqueada ou não - não sabemos ainda
+        break;
+
+      case AppLifecycleState.inactive:
+        // App está inativa (tela bloqueada ou notificação apareceu)
+        print(
+          '🔒 App inativa (tela bloqueada?) - parando heartbeats, confiando no FCM',
+        );
+        ChatService.setScreenLocked(
+          true,
+        ); // ✅ Tela bloqueada - parar heartbeats
+        break;
+
+      case AppLifecycleState.hidden:
+        // App está oculta (similar a inactive)
+        print('👁️ App oculta - parando heartbeats, confiando no FCM');
+        ChatService.setScreenLocked(true);
+        break;
+
+      case AppLifecycleState.detached:
+        // App está a ser fechada
+        print('💀 App fechada - desconectando');
+        ChatService.disconnect();
+        break;
+    }
   }
 
   @override
