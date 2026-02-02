@@ -45,8 +45,11 @@ dependencies {
     // ✅ Firebase BOM (gestão automática de versões)
     implementation(platform("com.google.firebase:firebase-bom:34.3.0"))
 
-    // Exemplo: (vai adicionar depois quando usar)
+    // Firebase Auth
     implementation("com.google.firebase:firebase-auth")
+    
+    // ✅ Firebase Cloud Messaging (CRÍTICO para notificações push)
+    implementation("com.google.firebase:firebase-messaging")
     
     // ✅ Core library desugaring para flutter_local_notifications (versão 2.1.4+)
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")

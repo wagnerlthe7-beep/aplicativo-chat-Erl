@@ -151,7 +151,8 @@ send_fcm_request(ProjectId, AccessToken, Token, FromUserId, MessageId, Content, 
         Name -> Name
     end,
     
-    %% Payload FCM v1
+    %% Payload FCM v1 - Optimizado para entrega imediata e background
+    %% IMPORTANTE: Para acordar app em background, precisa ter tanto 'notification' quanto 'data'
     Payload = #{
         <<"message">> => #{
             <<"token">> => Token,
@@ -163,19 +164,30 @@ send_fcm_request(ProjectId, AccessToken, Token, FromUserId, MessageId, Content, 
                 <<"type">> => <<"message">>,
                 <<"message_id">> => ensure_binary(MessageId),
                 <<"db_message_id">> => ensure_binary(MessageId),
-                <<"from">> => ensure_binary(FromUserId),
+                <<"sender_id">> => ensure_binary(FromUserId),
                 <<"content">> => Content,
-                <<"sender_name">> => Title,
+                <<"sender_name">> => ensure_binary(Title),
                 <<"click_action">> => <<"FLUTTER_NOTIFICATION_CLICK">>
             },
             <<"android">> => #{
                 <<"priority">> => <<"high">>,
+                <<"ttl">> => <<"86400s">>,  %% 24 horas (não 0s para permitir entrega atrasada)
+                <<"direct_boot_ok">> => true,  %% Permite entrega antes do unlock
                 <<"notification">> => #{
                     <<"channel_id">> => <<"message_notifications">>,
-                    <<"sound">> => <<"default">>
+                    <<"sound">> => <<"default">>,
+                    <<"default_sound">> => true,
+                    <<"default_vibrate_timings">> => true,
+                    <<"notification_priority">> => <<"PRIORITY_MAX">>,
+                    <<"visibility">> => <<"PUBLIC">>,  %% Mostrar mesmo com tela bloqueada
+                    <<"sticky">> => false
                 }
             },
             <<"apns">> => #{
+                <<"headers">> => #{
+                    <<"apns-priority">> => <<"10">>,  %% Máxima prioridade iOS
+                    <<"apns-push-type">> => <<"alert">>
+                },
                 <<"payload">> => #{
                     <<"aps">> => #{
                         <<"alert">> => #{
@@ -184,7 +196,7 @@ send_fcm_request(ProjectId, AccessToken, Token, FromUserId, MessageId, Content, 
                         },
                         <<"sound">> => <<"default">>,
                         <<"badge">> => 1,
-                        <<"content-available">> => 1
+                        <<"interruption-level">> => <<"time-sensitive">>
                     }
                 }
             }

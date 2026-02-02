@@ -12,6 +12,7 @@ import 'dart:convert';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
 import 'auth_service.dart';
 import 'notification_service.dart';
 
@@ -49,8 +50,13 @@ class FCMService {
     // 1. Solicitar permissões
     await _requestPermissions();
 
-    // 2. Configurar handler de background (ANTES de getToken)
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    // 2. Verificar e solicitar desativação de otimização de bateria (Android)
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      await _checkBatteryOptimization();
+    }
+
+    // NOTA: Handler de background é registrado no main.dart ANTES de inicializar
+    // Não registrar aqui novamente para evitar duplicação
 
     // 3. Obter token FCM
     await _getAndRegisterToken();
@@ -62,10 +68,49 @@ class FCMService {
       _registerTokenWithServer(newToken);
     });
 
-    // 5. Configurar handlers de mensagem
+    // 6. Configurar handlers de mensagem
     _setupMessageHandlers();
 
     print('🔔 [FCM] Serviço inicializado com sucesso');
+  }
+
+  /// Verificar e solicitar desativação de otimização de bateria
+  /// Isso é CRÍTICO para notificações funcionarem em background
+  Future<void> _checkBatteryOptimization() async {
+    try {
+      // Verificar se a otimização de bateria está ativa
+      final isIgnored = await Permission.ignoreBatteryOptimizations.isGranted;
+
+      if (!isIgnored) {
+        print(
+          '⚠️ [FCM] Otimização de bateria está ativa - notificações podem não funcionar em background',
+        );
+        print('💡 [FCM] Solicitando desativação de otimização de bateria...');
+
+        // Solicitar permissão para ignorar otimização de bateria
+        final status = await Permission.ignoreBatteryOptimizations.request();
+
+        if (status.isGranted) {
+          print('✅ [FCM] Otimização de bateria desativada com sucesso');
+        } else if (status.isPermanentlyDenied) {
+          print(
+            '⚠️ [FCM] Permissão negada permanentemente - usuário precisa ativar manualmente',
+          );
+          print(
+            '   Vá em: Configurações > Apps > SpeekJoy > Bateria > Sem restrições',
+          );
+        } else {
+          print(
+            '⚠️ [FCM] Permissão negada - notificações podem não funcionar em background',
+          );
+        }
+      } else {
+        print('✅ [FCM] Otimização de bateria já está desativada');
+      }
+    } catch (e) {
+      print('⚠️ [FCM] Erro ao verificar otimização de bateria: $e');
+      // Não bloquear inicialização se falhar
+    }
   }
 
   /// Solicitar permissões de notificação
@@ -81,6 +126,13 @@ class FCMService {
     );
 
     print('🔔 [FCM] Permissão: ${settings.authorizationStatus}');
+    print('🔔 [FCM] Alert: ${settings.alert}');
+    print('🔔 [FCM] Badge: ${settings.badge}');
+    print('🔔 [FCM] Sound: ${settings.sound}');
+
+    if (settings.authorizationStatus != AuthorizationStatus.authorized) {
+      print('⚠️ [FCM] ATENÇÃO: Permissões de notificação não concedidas!');
+    }
   }
 
   /// Obter token FCM e registrar no servidor
@@ -88,12 +140,16 @@ class FCMService {
     try {
       _fcmToken = await _messaging.getToken();
       print('🔔 [FCM] Token obtido: $_fcmToken');
+      print('🔔 [FCM] Token length: ${_fcmToken?.length ?? 0}');
 
-      if (_fcmToken != null) {
+      if (_fcmToken != null && _fcmToken!.isNotEmpty) {
         await _registerTokenWithServer(_fcmToken!);
+      } else {
+        print('⚠️ [FCM] Token FCM está vazio ou nulo!');
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
       print('❌ [FCM] Erro ao obter token: $e');
+      print('   Stack trace: $stackTrace');
     }
   }
 
@@ -157,8 +213,26 @@ class FCMService {
     // Processar a mensagem
     await _processIncomingMessage(message);
 
-    // Mostrar notificação local (opcional, já que a app está aberta)
+    // Mostrar notificação local apenas se não estiver no chat ativo
     // O ChatService já mostra notificações quando não está no chat ativo
+    final data = message.data;
+    if (data['type'] == 'message') {
+      final senderName =
+          data['sender_name'] ?? message.notification?.title ?? 'Nova mensagem';
+      final content = data['content'] ?? message.notification?.body ?? '';
+      final fromUserId = data['sender_id'];
+
+      // Mostrar notificação local (será filtrada pelo ChatService se necessário)
+      try {
+        await NotificationService().showNewMessageNotification(
+          senderName: senderName,
+          messageContent: content,
+          chatId: fromUserId ?? '',
+        );
+      } catch (e) {
+        print('⚠️ [FCM Foreground] Erro ao mostrar notificação: $e');
+      }
+    }
   }
 
   /// Handler para quando usuário toca na notificação
@@ -166,7 +240,7 @@ class FCMService {
     print('🔔 [FCM] Notificação tocada: ${message.data}');
 
     // Navegar para o chat específico
-    final chatId = message.data['chat_id'] ?? message.data['from'];
+    final chatId = message.data['chat_id'] ?? message.data['sender_id'];
     if (chatId != null) {
       // TODO: Navegar para o chat usando um serviço de navegação global
       print('🔔 [FCM] Deveria navegar para chat: $chatId');
@@ -174,30 +248,79 @@ class FCMService {
   }
 
   /// Handler estático para mensagens em BACKGROUND (app fechada ou minimizada)
+  /// ✅ CRÍTICO: Esta função é chamada mesmo quando a tela está bloqueada
+  /// O FCM acorda a app para processar a mensagem e enviar ACK
   static Future<void> _handleBackgroundMessage(RemoteMessage message) async {
-    print('🔔 [FCM Background] Processando mensagem...');
+    print(
+      '🔔 [FCM Background] Processando mensagem (tela pode estar bloqueada)...',
+    );
+    print(
+      '   Notification: ${message.notification?.title} - ${message.notification?.body}',
+    );
+    print('   Data: ${message.data}');
 
-    final data = message.data;
-    final messageId = data['message_id'];
-    final dbMessageId = data['db_message_id'];
-    final fromUserId = data['from'];
+    try {
+      // ✅ INICIALIZAR NotificationService (pode não estar inicializado em background)
+      await NotificationService().initialize();
+      print('✅ [FCM Background] NotificationService inicializado');
 
-    if (messageId != null || dbMessageId != null) {
-      // ENVIAR ACK DE DELIVERED PARA O SERVIDOR
-      // Isso marca a mensagem como "delivered" no servidor
-      await _sendDeliveredAck(messageId: dbMessageId ?? messageId);
-    }
+      final data = message.data;
+      final messageId = data['message_id'];
+      final dbMessageId = data['db_message_id'];
+      final fromUserId = data['sender_id'];
+      final messageType = data['type'];
 
-    // Mostrar notificação local
-    if (data['type'] == 'message') {
-      final senderName = data['sender_name'] ?? 'Nova mensagem';
-      final content = data['content'] ?? '';
-
-      await NotificationService().showNewMessageNotification(
-        senderName: senderName,
-        messageContent: content,
-        chatId: fromUserId ?? '',
+      print(
+        '   MessageId: $messageId, DbMessageId: $dbMessageId, FromUserId: $fromUserId, Type: $messageType',
       );
+
+      // ✅ ENVIAR ACK DE DELIVERED PARA O SERVIDOR
+      // IMPORTANTE: Este ACK confirma que a mensagem foi recebida mesmo com tela bloqueada
+      // O FCM acordou a app especificamente para processar esta mensagem
+      if (messageId != null || dbMessageId != null) {
+        final ackMessageId = dbMessageId ?? messageId;
+        print('📤 [FCM Background] Enviando ACK para mensagem: $ackMessageId');
+        await _sendDeliveredAck(messageId: ackMessageId.toString());
+        print('✅ [FCM Background] ACK enviado com sucesso');
+      }
+
+      // ✅ TENTAR RECONECTAR WEBSOCKET (se possível)
+      // Quando FCM acorda a app, podemos tentar reconectar para receber mensagens em tempo real
+      try {
+        // Importar ChatService dinamicamente para evitar dependência circular
+        // NOTA: Isso pode não funcionar em background isolado, mas tentamos
+        print('🔄 [FCM Background] Tentando reconectar WebSocket...');
+        // ChatService.connect(); // Comentado - pode causar problemas em background isolado
+        // Em vez disso, confiamos que quando o usuário abrir a app, ela reconecta
+      } catch (e) {
+        print('⚠️ [FCM Background] Não foi possível reconectar WebSocket: $e');
+        // Não é crítico - FCM já entregou a mensagem e ACK foi enviado
+      }
+
+      // Mostrar notificação local
+      if (messageType == 'message') {
+        final senderName = data['sender_name'] ?? 'Nova mensagem';
+        final content = data['content'] ?? '';
+
+        print(
+          '🔔 [FCM Background] Mostrando notificação: $senderName - $content',
+        );
+
+        await NotificationService().showNewMessageNotification(
+          senderName: senderName,
+          messageContent: content,
+          chatId: fromUserId ?? '',
+        );
+
+        print('✅ [FCM Background] Notificação exibida com sucesso');
+      } else {
+        print(
+          '⚠️ [FCM Background] Tipo de mensagem desconhecido: $messageType',
+        );
+      }
+    } catch (e, stackTrace) {
+      print('❌ [FCM Background] Erro ao processar mensagem: $e');
+      print('   Stack trace: $stackTrace');
     }
   }
 

@@ -13,6 +13,7 @@
     get_chat_history/2, 
     get_chat_history/4, 
     get_message_sender/1,
+    get_message_status/1,
     
     %% Novas funções para operações avançadas
     get_message_details/1,
@@ -117,6 +118,16 @@ get_message_sender(MessageId) ->
         Sql = "SELECT sender_id FROM messages WHERE id = $1",
         case epgsql:equery(Conn, Sql, [MessageId]) of
             {ok, _, [{SenderId}]} -> {ok, integer_to_binary(SenderId)};
+            {ok, _, []} -> {error, not_found};
+            {error, Error} -> {error, Error}
+        end
+    end).
+
+get_message_status(MessageId) ->
+    db_pool:with_connection(fun(Conn) ->
+        Sql = "SELECT status FROM messages WHERE id = $1",
+        case epgsql:equery(Conn, Sql, [MessageId]) of
+            {ok, _, [{Status}]} -> {ok, Status};
             {ok, _, []} -> {error, not_found};
             {error, Error} -> {error, Error}
         end
