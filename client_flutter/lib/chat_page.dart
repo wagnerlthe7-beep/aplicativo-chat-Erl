@@ -1593,7 +1593,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<void> _loadChatHistory() async {
     if (_isLoadingHistory || _currentUserId == null) return;
 
-    setState(() => _isLoadingHistory = true);
+    // ✅ MELHORIA: Só mostrar loading se chat estiver vazio
+    final shouldShowLoading = _messages.isEmpty;
+    if (shouldShowLoading) {
+      setState(() => _isLoadingHistory = true);
+    }
 
     try {
       print(' Carregando histórico (Estratégia Offline-First)...');
@@ -1638,18 +1642,43 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
       if (mounted && localHistory.isNotEmpty) {
         _processAndAddMessages(localHistory, isLocal: true);
+        // ✅ Se já tem mensagens locais, parar loading imediatamente
+        if (shouldShowLoading) {
+          setState(() => _isLoadingHistory = false);
+        }
       }
 
-      // 2. CARREGAMENTO LENTO: Rede (Background)
-      // O ChatService.loadChatHistory já tem timeout de 5s e fallback para local
-      // Mas como já carregamos o local, se der timeout/erro, ele vai retornar o local de novo.
-      // Isso garante que se houver msgs novas, elas apareçam.
-      final freshHistory = await ChatService.loadChatHistory(
-        widget.remoteUserId,
-      );
+      // ✅ 2. VERIFICAR CONEXÃO ANTES DE TENTAR SYNC
+      final connectionStatus = await ChatService.checkConnectionStatus();
+      final isOnline = connectionStatus == 'server_online';
 
-      if (mounted) {
-        _processAndAddMessages(freshHistory, isLocal: false);
+      if (!isOnline) {
+        print(
+          '📴 Sem conexão ($connectionStatus) - mantendo mensagens locais, sem tentar sync',
+        );
+        // ✅ Carregar mensagens pending mesmo offline
+        await _loadPendingMessagesFromStorage();
+        if (shouldShowLoading) {
+          setState(() => _isLoadingHistory = false);
+        }
+        return; // ✅ PARAR AQUI - não tentar sync se offline
+      }
+
+      // ✅ 3. CARREGAMENTO LENTO: Rede (Só se estiver online)
+      print('🌐 Online - tentando sincronizar com servidor...');
+      try {
+        final freshHistory = await ChatService.loadChatHistory(
+          widget.remoteUserId,
+        );
+
+        if (mounted) {
+          _processAndAddMessages(freshHistory, isLocal: false);
+        }
+      } catch (e) {
+        print(
+          '⚠️ Erro ao sincronizar com servidor: $e - mantendo mensagens locais',
+        );
+        // Não é crítico - já temos mensagens locais
       }
 
       // ✅ NOVO: Carregar mensagens pending do sqflite DEPOIS de todos os carregamentos
@@ -1658,7 +1687,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     } catch (e) {
       print('❌ Erro ao carregar histórico: $e');
     } finally {
-      if (mounted) {
+      if (mounted && shouldShowLoading) {
         setState(() => _isLoadingHistory = false);
       }
     }
