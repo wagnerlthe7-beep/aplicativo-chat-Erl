@@ -253,10 +253,152 @@ Se quiseres avançar com o plano que propus (migrar para biblioteca segura), pos
 É só dizer: **queres que eu converta já o token para usar `jose`?**
 
 
-olha, eu fiz esse pequeno debuga aqui: case epgsql:connect(Host, DbUser, DbPass, [{database, DbName}, {port, Port}]) of
-            {ok, Conn} ->
-                io:format("🔹 Conectou: ~p ~p~n", [Phone, FirebaseUid]),
-                select_or_insert_user(Conn, Phone, FirebaseUid);
-            {error, Err} ->
-                {error, {db_connect_error, Err}}
-        end                 no log, a mensagem conectou apareceu. o que isso signifca????
+
+===========IMPORTANTE=============
+DEPOIS DE EXECUTAR ALGUNS COMMITS E MUDAR DE BRANCH, TIVE ERRO DE DEPENDCIAS.
+SOLUCAO: NO POWERSHELL:
+EXECUTAR O COMANDO: cd E:\aplicativo-chat-WhaClone\server
+EXECUTAR O COMANDO: rebar3 clean --all
+EXECUTAR O COMANDO: Remove-Item -Recurse -Force _build
+EXECUTAR O COMANDO: Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\rebar3"
+EXECUTAR O COMANDO: rebar3 get-deps
+
+
+
+
+
+
+🔍 PROBLEMA ATUAL:
+
+    ✅ Desenvolvimento: Só funciona com números pré-cadastrados no Firebase
+
+    ❌ Produção: Não é prático cadastrar manualmente cada usuário
+
+🛠️ SOLUÇÕES PARA PRODUÇÃO:
+OPÇÃO 1: Firebase Phone Auth SEM números de teste (RECOMENDADO)
+
+O Firebase Phone Auth funciona EM PRODUÇÃO assim:
+
+    Remove os números de teste do Firebase Console
+
+    Qualquer número pode se cadastrar
+
+    Firebase envia SMS REAL com código de verificação
+
+    Usuário digita o código recebido via SMS
+
+    Sistema cria usuário automaticamente no seu backend
+
+
+Olha, esta tudo funcional ate agora.    agora, quero que o sistema depois de cadastrar o utilizador, quando chega na tela de chat_list_page, 
+ele abra uma tela ou varios se possivel para pedido de permissoes. como o que acontece na realidade, ele tem que aceder a camera do user, galeria, 
+ficheiros e ate os contactos.  entao, o que achas? podemos desenvolver?? e ate fazer funcionar isso.    isso vai ajudar o sistema
+
+    esta tudo bem?? se sim, o botao que esta em baixo que deve iniciar nova conversa no chat_list_page deve: ao clicar abrir uma lista de contactos do dispositivo que tem whatsap. 
+
+
+PARA INSTALAR UMA DEPENDENCIA NO PROJECTO
+EX: POOLBOY
+A instalação do `poolboy` é muito simples! Aqui está o passo a passo:
+
+## 📦 **INSTALAÇÃO DO POOLBOY**
+
+### **1. Adicionar ao `rebar.config`:**
+
+No teu ficheiro `rebar.config`, adiciona `poolboy` às dependências:
+
+```erlang
+{deps, [
+    {cowboy, "2.9.0"},
+    {jsx, "3.1.0"}, 
+    {epgsql, "4.6.0"},
+    {gproc, "1.0.0"},
+    {poolboy, "1.5.2"}  % ✅ ADICIONAR ESTA LINHA
+]}.
+```
+
+### **2. Atualizar Dependências:**
+
+```bash
+cd /caminho/para/teu/projeto/onde/esta/o/ficheiro/rebar.config
+rebar3 deps
+rebar3 compile
+```
+
+### **3. Verificar se Instalou Corretamente:**
+
+```bash
+rebar3 tree
+```
+
+Deves ver algo como:
+```
+chat_app
+├─ cowboy-2.9.0
+├─ jsx-3.1.0
+├─ epgsql-4.6.0
+├─ gproc-1.0.0
+└─ poolboy-1.5.2  # ✅ Deve aparecer aqui
+```
+
+### **4. Testar no Shell do Erlang:**
+
+```bash
+rebar3 shell
+```
+
+No shell, testar:
+```erlang
+%% Verificar se poolboy está disponível
+application:which_applications().  %% Deve listar poolboy
+
+%% Testar funções básicas
+poolboy:module_info(exports).
+```
+
+## 🔧 **SE HOUVER PROBLEMAS:**
+
+### **Problema: Versão não encontrada**
+```erlang
+%% Tentar versão mais recente no rebar.config
+{poolboy, "1.6.0"}  % ou
+{poolboy, "1.7.0"}
+```
+
+### **Problema: Conflito de dependências**
+```bash
+# Limpar e recomeçar
+rebar3 clean
+rebar3 deps
+rebar3 compile
+```
+
+### **Problema: Erro de compilação**
+```bash
+# Forçar atualização
+rebar3 update
+rebar3 upgrade
+```
+
+## 🚀 **DEPOIS DA INSTALAÇÃO:**
+
+Assim que o `poolboy` estiver instalado, podes criar os ficheiros:
+
+1. **`db_pool.erl`** - Gestão do pool
+2. **`db_worker.erl`** - Worker das conexões
+3. **Atualizar `chat_app_app.erl`** - Inicializar o pool
+
+## 🎯 **COMANDOS RÁPIDOS PARA TESTAR:**
+
+```bash
+# No teu diretório do projeto
+rebar3 deps
+rebar3 compile
+
+# Verificar se poolboy está na lista
+rebar3 tree | grep poolboy
+```
+
+**Executa estes comandos e diz-me se o poolboy instalou corretamente!**
+
+Se funcionar, criamos logo os ficheiros do pool. Se houver problemas, resolvemos primeiro! 🚀

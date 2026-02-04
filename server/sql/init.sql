@@ -1,86 +1,79 @@
 -- init.sql
 -- Schema inicial para chat_app_db (PostgreSQL)
--- Inclui: users, roles, permissions, chat_groups, messages, attachments,
--- sms_verifications, user_devices, user_keys, session_keys, admin_keys,
--- admin_session_keys, key_audit_log, chats (normalize), plus inserts iniciais.
-
--- NOTE: Execute este script em um database já criado (ex: chat_app_db).
---       Se preferires, cria o DB previamente:
---       CREATE DATABASE chat_app_db WITH ENCODING='UTF8' LC_COLLATE='en_US.utf8' LC_CTYPE='en_US.utf8' TEMPLATE=template0;
-
--- ============================
--- Drop existing (safe re-run)
--- ============================
-DROP TABLE IF EXISTS key_audit_log CASCADE;
-DROP TABLE IF EXISTS admin_session_keys CASCADE;
-DROP TABLE IF EXISTS admin_keys CASCADE;
-DROP TABLE IF EXISTS session_keys CASCADE;
-DROP TABLE IF EXISTS user_keys CASCADE;
-DROP TABLE IF EXISTS user_devices CASCADE;
-DROP TABLE IF EXISTS sms_verifications CASCADE;
-DROP TABLE IF EXISTS attachments CASCADE;
-DROP TABLE IF EXISTS messages CASCADE;
-DROP TABLE IF EXISTS group_members CASCADE;
-DROP TABLE IF EXISTS chat_groups CASCADE;
-DROP TABLE IF EXISTS user_roles CASCADE;
-DROP TABLE IF EXISTS role_permissions CASCADE;
-DROP TABLE IF EXISTS permissions CASCADE;
-DROP TABLE IF EXISTS roles CASCADE;
-DROP TABLE IF EXISTS chats CASCADE;
-
-DROP TABLE IF EXISTS users CASCADE;
-
--- ======================
--- 0. Optional: chats table (abstract conversation entity)
--- ======================
-CREATE TABLE chats (
-    id SERIAL PRIMARY KEY,
-    kind VARCHAR(20) NOT NULL CHECK (kind IN ('direct','group')) ,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    -- if kind = 'group', link to chat_groups; if 'direct' could store meta
-    UNIQUE (id)
-);
-
+--
 -- ======================
 -- 1. Users
 -- ======================
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
-    first_name VARCHAR(100) NOT NULL,
-    last_name VARCHAR(50),
-    username VARCHAR(50) UNIQUE,
-    email VARCHAR(100) UNIQUE,
+    name VARCHAR(100),
     phone VARCHAR(20) UNIQUE NOT NULL,
-    is_verified BOOLEAN DEFAULT false,
     is_active BOOLEAN DEFAULT true,
-    profile_picture VARCHAR(255),
     created_at TIMESTAMPTZ DEFAULT now(),
     last_login TIMESTAMPTZ
 );
 
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS firebase_uid TEXT UNIQUE;
+  
+ALTER TABLE users
+  ADD COLUMN is_verified BOOLEAN DEFAULT false,
+  ADD COLUMN profile_picture VARCHAR(255),
+  ADD COLUMN last_seen TIMESTAMPTZ;
+
+
 -- ======================
--- 2. Roles
+-- INICIO SECURE SESSION
+-- capacidade de revogar sessões antigas (ex.: quando o telefone é roubado ou o usuário ativa nova sessão). 
+-- É exatamente como o WhatsApp faz — session tokens persistentes até que o servidor (ou o usuário) os revogue. 
+-- Assim, ele deve matar a sessao que esta no device antigo, para evitar acesso indevido. 
+-- Isso eh feito principalmente nos campos refresh_token_has, device_info, created_at. e indicamos o campo revoked, para deixar de estar ativo
+-- ======================
+CREATE TABLE IF NOT EXISTS sessions (
+  id BIGSERIAL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_uuid VARCHAR(200) NOT NULL,
+  device_info TEXT,
+  refresh_token_hash BYTEA NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NULL,   -- NULL = sem expiração automática
+  revoked BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_device_uuid ON sessions(device_uuid);
+CREATE INDEX IF NOT EXISTS idx_sessions_hash ON sessions USING btree (refresh_token_hash);
+--Observações:
+--Guardamos apenas o hash do refresh_token (coluna refresh_token_hash tipo BYTEA).
+--expires_at fica NULL (sessão indefinida). A sessão é inválida só se revoked = true (ou se tu implementares expiracão manual depois).
+-- FIM SECURE SESSION
+
+
+
+-- ======================
+-- 2. Roles (ex.: Admin, Manager, User, Auditor)
 -- ======================
 CREATE TABLE roles (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(50) NOT NULL UNIQUE,
+    name VARCHAR(50) NOT NULL,
     description VARCHAR(150)
 );
 
 -- ======================
--- 3. Permissions
+-- 3. Permissions (actions allowed)
 -- ======================
 CREATE TABLE permissions (
     id SERIAL PRIMARY KEY,
-    description VARCHAR(100) NOT NULL UNIQUE
+    description VARCHAR(100) NOT NULL
 );
 
 -- ======================
 -- 4. Role ↔ Permissions (N:N)
 -- ======================
 CREATE TABLE role_permissions (
-    role_id INT NOT NULL,
-    permission_id INT NOT NULL,
+    role_id INT,
+    permission_id INT,
     PRIMARY KEY (role_id, permission_id),
     FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
     FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
@@ -90,35 +83,33 @@ CREATE TABLE role_permissions (
 -- 5. User ↔ Roles (N:N)
 -- ======================
 CREATE TABLE user_roles (
-    user_id INT NOT NULL,
-    role_id INT NOT NULL,
+    user_id INT,
+    role_id INT,
     PRIMARY KEY (user_id, role_id),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE
 );
 
 -- ======================
--- 6. Chat Groups (group metadata)
+-- 6. Chat Groups
 -- ======================
 CREATE TABLE chat_groups (
     id SERIAL PRIMARY KEY,
-    chat_id INT UNIQUE, -- optional link to chats.id
     name VARCHAR(100) NOT NULL,
     description TEXT,
     created_by INT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now(),
     is_private BOOLEAN DEFAULT false,
     group_type VARCHAR(20) DEFAULT 'private' CHECK (group_type IN ('private','public','broadcast')),
-    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE SET NULL
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
 );
 
 -- ======================
 -- 7. Group Members
 -- ======================
 CREATE TABLE group_members (
-    group_id INT NOT NULL,
-    user_id INT NOT NULL,
+    group_id INT,
+    user_id INT,
     role VARCHAR(20) DEFAULT 'member' CHECK (role IN ('admin','member')),
     joined_at TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (group_id, user_id),
@@ -131,29 +122,29 @@ CREATE TABLE group_members (
 -- ======================
 CREATE TABLE messages (
     id SERIAL PRIMARY KEY,
-    chat_id INT NOT NULL,                 -- reference to chats.id
     sender_id INT NOT NULL,
-    receiver_id INT,        -- for direct messages (nullable)
-    group_id INT,           -- group reference (nullable) - optional duplicate/meta
-    content TEXT,           -- ciphertext (base64) or plain depending on encryption
+    receiver_id INT,        -- private
+    group_id INT,           -- group
+    content TEXT,
     message_type VARCHAR(20) DEFAULT 'text' CHECK (message_type IN ('text','image','video','audio','document','system')),
-    encryption_scheme VARCHAR(100) DEFAULT 'X25519+HKDF+ChaCha20-Poly1305',
     sent_at TIMESTAMPTZ DEFAULT now(),
     status VARCHAR(20) DEFAULT 'sent' CHECK (status IN ('sent','delivered','read')),
     is_deleted BOOLEAN DEFAULT false,
     edited_at TIMESTAMPTZ,
+    client_message_id VARCHAR(50) UNIQUE, -- ID gerado pelo cliente para deduplicação
+    reply_to_id INT REFERENCES messages(id), -- ID da mensagem original (se for resposta)
     FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
-    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE,
     CONSTRAINT chk_target CHECK (
         (receiver_id IS NOT NULL AND group_id IS NULL) OR
         (receiver_id IS NULL AND group_id IS NOT NULL)
     )
 );
 
-CREATE INDEX idx_messages_chat_sent_at ON messages(chat_id, sent_at);
-CREATE INDEX idx_messages_sender_sent_at ON messages(sender_id, sent_at);
+-- Indexes
+CREATE INDEX idx_messages_group ON messages(group_id, sent_at);
+CREATE INDEX idx_messages_user ON messages(sender_id, sent_at);
 
 -- ======================
 -- 9. Attachments
@@ -163,119 +154,65 @@ CREATE TABLE attachments (
     message_id INT NOT NULL,
     file_type VARCHAR(20) NOT NULL,           -- image, video, audio, document
     mime_type VARCHAR(50),
-    file_path VARCHAR(255) NOT NULL,          -- path to encrypted blob
+    file_path VARCHAR(255) NOT NULL,          -- ex: /uploads/2025/09/file.png
     thumbnail_path VARCHAR(255),
     size INT,
-    encryption_scheme VARCHAR(50) DEFAULT 'AES256-GCM',
-    is_encrypted BOOLEAN DEFAULT TRUE,
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_attachments_message ON attachments(message_id);
+CREATE INDEX idx_attachments_msg ON attachments(message_id);
 
--- ======================
--- 10. SMS verifications (one-time codes)
--- ======================
+
+
 CREATE TABLE sms_verifications (
     id SERIAL PRIMARY KEY,
     phone VARCHAR(20) NOT NULL,
     code VARCHAR(6) NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL,
-    is_used BOOLEAN DEFAULT FALSE
+    is_used BOOLEAN DEFAULT false
 );
 
 CREATE INDEX idx_sms_phone ON sms_verifications(phone);
 
--- ======================
--- 11. User devices (push tokens etc)
--- ======================
+
 CREATE TABLE user_devices (
     id SERIAL PRIMARY KEY,
     user_id INT NOT NULL,
     device_uuid VARCHAR(100) NOT NULL,
-    device_type VARCHAR(20) CHECK (device_type IN ('android','ios','web')) DEFAULT 'android',
+    device_type VARCHAR(20) CHECK (device_type IN ('android','ios','web')),
     push_token VARCHAR(255),
     last_active TIMESTAMPTZ DEFAULT now(),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_user_devices_user ON user_devices(user_id);
 
--- ======================
--- 12. User public keys (E2EE)
--- ======================
 CREATE TABLE user_keys (
     id SERIAL PRIMARY KEY,
     user_id INT NOT NULL UNIQUE,
-    public_key TEXT NOT NULL,         -- base64 / PEM
-    key_type VARCHAR(50) DEFAULT 'x25519',
-    created_at TIMESTAMPTZ DEFAULT now(),
+    public_key TEXT NOT NULL,        -- chave pública do utilizador
     last_updated TIMESTAMPTZ DEFAULT now(),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
--- ======================
--- 13. Session keys: encrypted session key per chat per recipient
--- ======================
+
+ALTER TABLE messages
+  ALTER COLUMN content TYPE TEXT, -- ciphertext base64
+  ADD COLUMN encryption_scheme VARCHAR(50) DEFAULT 'AES256-GCM';
+
+
 CREATE TABLE session_keys (
     id SERIAL PRIMARY KEY,
-    chat_id INT NOT NULL,
-    recipient_user_id INT NOT NULL,            -- user who can decrypt this
-    encrypted_session_key TEXT NOT NULL,       -- base64 ciphertext of session key
-    encryption_scheme VARCHAR(100) DEFAULT 'X25519+HKDF+ChaCha20-Poly1305',
+    chat_id INT NOT NULL, -- pode ser user_id (1:1) ou group_id
+    user_id INT NOT NULL,
+    encrypted_key TEXT NOT NULL,  -- chave de sessão cifrada com a public_key do user
     created_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (chat_id, recipient_user_id),
-    FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
-CREATE INDEX idx_session_keys_chat ON session_keys(chat_id);
 
--- ======================
--- 14. Admin keys (public keys for admin accounts)
--- ======================
-CREATE TABLE admin_keys (
-    id SERIAL PRIMARY KEY,
-    admin_user_id INT NOT NULL,    -- user record that represents the admin operator
-    public_key TEXT NOT NULL,
-    description VARCHAR(200),
-    created_at TIMESTAMPTZ DEFAULT now(),
-    FOREIGN KEY (admin_user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-
--- ======================
--- 15. Admin session keys (session key encrypted for admin)
--- ======================
-CREATE TABLE admin_session_keys (
-    id SERIAL PRIMARY KEY,
-    chat_id INT NOT NULL,
-    admin_key_id INT NOT NULL,         -- which admin public key was used
-    encrypted_session_key TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    FOREIGN KEY (admin_key_id) REFERENCES admin_keys(id) ON DELETE CASCADE,
-    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_admin_session_keys_chat ON admin_session_keys(chat_id);
-
--- ======================
--- 16. Key audit log (who accessed/decrypted admin key)
--- ======================
-CREATE TABLE key_audit_log (
-    id SERIAL PRIMARY KEY,
-    actor_user_id INT NOT NULL,   -- who requested/used (admin operator)
-    admin_key_id INT NOT NULL,
-    chat_id INT NOT NULL,
-    action VARCHAR(50) NOT NULL,  -- 'REQUEST_KEY','DECRYPT_MESSAGES','ROTATE_KEY', etc
-    reason TEXT,
-    details JSONB,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (admin_key_id) REFERENCES admin_keys(id) ON DELETE CASCADE
-);
-
-CREATE INDEX idx_key_audit_chat ON key_audit_log(chat_id);
+ALTER TABLE attachments
+  ADD COLUMN encryption_scheme VARCHAR(50) DEFAULT 'AES256-GCM';
 
 -- ======================
 -- 17. Example roles, permissions, admin user + admin key (initial data)

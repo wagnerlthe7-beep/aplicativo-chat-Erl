@@ -11,11 +11,14 @@ _vendor
 .erlang.cookie
 ebin
 log
+config/
 erl_crash.dump
 .rebar
 logs
 .idea
 *.iml
+client_flutter/android/google-services.json
+client_flutter/android/*.kts
 rebar3.crashdump
 *~
 
@@ -37,4 +40,9 @@ build/
 # Ficheiros
 server/apps/chat_app/src/mysql_test.erl
 passo_a_passo.txt
+PROXIMO_PASSO.txt
+Comandos_importantes.txt
+algumas explicacoes importantes.txt
 Structure
+FIREBASE_SETUP.md
+MESSAGES_OPERATIONS_README.md

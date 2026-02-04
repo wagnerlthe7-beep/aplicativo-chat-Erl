@@ -1,28 +1,31 @@
 {"1.2.0",
-[{<<"cowboy">>,
-  {git,"https://github.com/ninenines/cowboy.git",
-       {ref,"c7b2b5e89c4ae93e79f3c5b1b879d989dea5b986"}},
-  0},
- {<<"cowlib">>,
-  {git,"https://github.com/ninenines/cowlib",
-       {ref,"cc04201c1d0e1d5603cd1cde037ab729b192634c"}},
-  1},
+[{<<"cowboy">>,{pkg,<<"cowboy">>,<<"2.10.0">>},0},
+ {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.12.1">>},1},
  {<<"epgsql">>,
   {git,"https://github.com/epgsql/epgsql.git",
        {ref,"28e9f84c95065a51e92baeb37d2cf1687fc4b9ce"}},
   0},
+ {<<"gproc">>,{pkg,<<"gproc">>,<<"0.8.0">>},0},
  {<<"jsx">>,{pkg,<<"jsx">>,<<"2.11.0">>},0},
  {<<"mysql">>,
   {git,"https://github.com/mysql-otp/mysql-otp.git",
        {ref,"1afd59677b3e2daf795f5fd77268e1dbc20f4c51"}},
   0},
- {<<"ranch">>,
-  {git,"https://github.com/ninenines/ranch",
-       {ref,"a692f44567034dacf5efcaa24a24183788594eb7"}},
-  1}]}.
+ {<<"poolboy">>,{pkg,<<"poolboy">>,<<"1.5.2">>},0},
+ {<<"ranch">>,{pkg,<<"ranch">>,<<"1.8.0">>},1}]}.
 [
 {pkg_hash,[
- {<<"jsx">>, <<"08154624050333919B4AC1B789667D5F4DB166DC50E190C4D778D1587F102EE0">>}]},
+ {<<"cowboy">>, <<"FF9FFEFF91DAE4AE270DD975642997AFE2A1179D94B1887863E43F681A203E26">>},
+ {<<"cowlib">>, <<"A9FA9A625F1D2025FE6B462CB865881329B5CAFF8F1854D1CBC9F9533F00E1E1">>},
+ {<<"gproc">>, <<"CEA02C578589C61E5341FCE149EA36CCEF236CC2ECAC8691FBA408E7EA77EC2F">>},
+ {<<"jsx">>, <<"08154624050333919B4AC1B789667D5F4DB166DC50E190C4D778D1587F102EE0">>},
+ {<<"poolboy">>, <<"392B007A1693A64540CEAD79830443ABF5762F5D30CF50BC95CB2C1AAAFA006B">>},
+ {<<"ranch">>, <<"8C7A100A139FD57F17327B6413E4167AC559FBC04CA7448E9BE9057311597A1D">>}]},
 {pkg_hash_ext,[
- {<<"jsx">>, <<"EED26A0D04D217F9EECEFFFB89714452556CF90EB38F290A27A4D45B9988F8C0">>}]}
+ {<<"cowboy">>, <<"3AFDCCB7183CC6F143CB14D3CF51FA00E53DB9EC80CDCD525482F5E99BC41D6B">>},
+ {<<"cowlib">>, <<"163B73F6367A7341B33C794C4E88E7DBFE6498AC42DCD69EF44C5BC5507C8DB0">>},
+ {<<"gproc">>, <<"580ADAFA56463B75263EF5A5DF4C86AF321F68694E7786CB057FD805D1E2A7DE">>},
+ {<<"jsx">>, <<"EED26A0D04D217F9EECEFFFB89714452556CF90EB38F290A27A4D45B9988F8C0">>},
+ {<<"poolboy">>, <<"DAD79704CE5440F3D5A3681C8590B9DC25D1A561E8F5A9C995281012860901E3">>},
+ {<<"ranch">>, <<"49FBCFD3682FAB1F5D109351B61257676DA1A2FDBE295904176D5E521A2DDFE5">>}]}
 ].
