@@ -18,8 +18,9 @@ class ChatListPage extends StatefulWidget {
 
 class _ChatListPageState extends State<ChatListPage>
     with TickerProviderStateMixin {
-  Timer? _sessionTimer;
-  Timer? _chatRefreshTimer;
+  // ✅ REMOVIDO: Timers de polling (modelo antigo)
+  // Chats são atualizados por: WebSocket, FCM, eventos de reconexão
+  // Sessão é validada: quando app abre, quando socket conecta, quando token expira
   late TabController _tabController;
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -57,15 +58,14 @@ class _ChatListPageState extends State<ChatListPage>
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
-    _startSessionValidationTimer();
+    // ✅ REMOVIDO: _startSessionValidationTimer() - validação é event-driven
     _initializeRealChats();
     _setupTypingListener();
   }
 
   @override
   void dispose() {
-    _sessionTimer?.cancel();
-    _chatRefreshTimer?.cancel();
+    // ✅ REMOVIDO: cancelamento de timers de polling
     _chatSubscription?.cancel();
     _messageSubscription?.cancel();
     _typingSubscription?.cancel();
@@ -369,8 +369,7 @@ class _ChatListPageState extends State<ChatListPage>
         await ChatService.rebuildChatsFromHistory();
       }
 
-      // INICIAR TIMER DE VERIFICAÇÃO
-      _startChatRefreshTimer();
+      // ✅ REMOVIDO: _startChatRefreshTimer() - chats são atualizados por eventos (WebSocket, FCM)
     });
 
     // OUVIR ATUALIZAÇÕES EM TEMPO REAL
@@ -388,65 +387,26 @@ class _ChatListPageState extends State<ChatListPage>
     });
   }
 
-  // VERIFICAR E RECARREGAR CHATS PERIODICAMENTE
-  void _startChatRefreshTimer() {
-    _chatRefreshTimer = Timer.periodic(Duration(seconds: 3), (timer) {
-      if (_chats.isEmpty && mounted) {
-        print('🔄 Verificando chats vazios...');
-        // Não força reconstrução automática - deixa o usuário recarregar manualmente
-      }
-    });
-  }
-
-  void _startSessionValidationTimer() {
-    _sessionTimer = Timer.periodic(Duration(seconds: 10), (timer) async {
-      final isValid = await AuthService.validateCurrentSession();
-
-      // ✅ INTELIGÊNCIA DE RECONEXÃO:
-      // Apenas se isValid == true (Server Online e 200 OK) E não estiver conectado
-      if (isValid == true &&
-          ChatService.isServerDown &&
-          !ChatService.isConnected) {
-        print(
-          '🌍 Servidor detectado ONLINE (HTTP OK). Tentando reconectar WebSocket...',
-        );
-        ChatService.connect();
-      }
-
-      // ✅ Apenas faz logout se isValid == false (Sessão Revogada).
-      // Se for null (offline), ignora.
-      if (isValid == false && mounted) {
-        timer.cancel();
-        _showSessionExpiredDialog();
-      }
-    });
-  }
-
-  void _showSessionExpiredDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: Text('Sessão Expirada'),
-        content: Text(
-          'Sua sessão foi encerrada em outro dispositivo. Você será redirecionado para o login.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              _redirectToLogin();
-            },
-            child: Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _redirectToLogin() async {
-    await AuthService.clearLocalSession();
-    Navigator.pushNamedAndRemoveUntil(context, '/welcome', (route) => false);
-  }
+  // ✅ REMOVIDO: _startChatRefreshTimer() e _startSessionValidationTimer()
+  // 
+  // 📋 ARQUITETURA EVENT-DRIVEN (modelo moderno):
+  // 
+  // ✅ Chats são atualizados por:
+  //   - WebSocket (mensagens em tempo real)
+  //   - FCM push (quando app está em background)
+  //   - Eventos de reconexão (MessageSyncService)
+  //
+  // ✅ Sessão é validada por:
+  //   - Quando app abre (main.dart)
+  //   - Quando socket conecta (ChatService.connect())
+  //   - Quando token expira (JWT exp - verificado no servidor)
+  //
+  // ❌ NÃO fazer polling periódico (modelo antigo)
+  
+  // ✅ NOTA: Se precisar validar sessão expirada no futuro, fazer de forma event-driven:
+  // - Quando servidor retornar erro 401 via WebSocket
+  // - Quando servidor retornar erro 401 via HTTP (em operações específicas)
+  // - NÃO fazer polling periódico
 
   // BOTÃO PARA RECARREGAR CONVERSAS
   Future<void> _reloadChats() async {

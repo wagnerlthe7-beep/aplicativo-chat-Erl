@@ -15,6 +15,7 @@ import 'notification_service.dart';
 import 'fcm_service.dart';
 import 'services/message_sync_service.dart';
 import 'app_theme.dart';
+import 'splash_screen_wrapper.dart';
 
 /// Handler de background para FCM - DEVE ser top-level function
 /// Esta função é executada em um isolate separado quando a app está em background
@@ -53,10 +54,14 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   }
 }
 
+/// ✅ Flag para indicar que app está iniciando (cold start)
+bool _isColdStart = true;
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   print('🚀 Iniciando aplicação SpeekJoy...');
+  _isColdStart = true; // ✅ Marcar como cold start
 
   String initialRoute = '/';
 
@@ -122,9 +127,17 @@ void main() async {
   // ✅ Determinar qual widget mostrar diretamente (evitar StartupPage quando há token)
   Widget? homeWidget;
   if (initialRoute == '/chatList') {
-    homeWidget = ChatListPage(); // ✅ Mostrar direto, sem passar por StartupPage
+    // ✅ Mostrar SplashScreen primeiro, depois navegar para ChatListPage
+    // ✅ Passar flag de cold start (sempre true quando main() é executado)
+    homeWidget = SplashScreenWrapper(
+      targetRoute: '/chatList',
+      isColdStart: _isColdStart,
+    );
+    _isColdStart = false; // ✅ Marcar como não é mais cold start
   } else if (initialRoute == '/welcome') {
-    homeWidget = WelcomePage(); // ✅ Mostrar direto, sem passar por StartupPage
+    // ✅ Mostrar direto WelcomePage (não precisa splash)
+    homeWidget = WelcomePage();
+    _isColdStart = false;
   }
 
   runApp(MyApp(initialRoute: initialRoute, home: homeWidget));
@@ -225,8 +238,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       home: widget.home,
       initialRoute: widget.home == null ? widget.initialRoute : null,
       routes: {
-        '/': (context) =>
-            StartupPage(), // ✅ Só usada se initialRoute = '/' e home = null
+        if (widget.home == null) '/': (context) => StartupPage(),
         '/welcome': (context) => WelcomePage(),
         '/phone': (context) => PhoneInputPage(),
         '/otp': (context) => OtpPage(),
