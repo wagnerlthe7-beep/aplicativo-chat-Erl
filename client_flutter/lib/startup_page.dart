@@ -39,11 +39,13 @@ class _StartupPageState extends State<StartupPage> {
     try {
       // Usar a URL centralizada do app
       final url = Uri.parse('${AuthService.backendUrl}/auth/validate-session');
-      final response = await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'access_token': accessToken}),
-      ).timeout(const Duration(seconds: 8));
+      final response = await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'access_token': accessToken}),
+          )
+          .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 401) {
         final body = jsonDecode(response.body);

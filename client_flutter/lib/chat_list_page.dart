@@ -930,9 +930,26 @@ class _ChatListPageState extends State<ChatListPage>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppTheme.surfaceColor,
-      appBar: _isSelectionMode ? _buildSelectionAppBar() : _buildNormalAppBar(),
+    return PopScope(
+      // ✅ Tratar botão de voltar: permitir minimizar app quando não há mais telas
+      canPop: true, // ✅ Permitir pop normalmente
+      onPopInvoked: (didPop) {
+        if (didPop) {
+          // ✅ Verificar DEPOIS do pop se voltou para StartupPage (tela branca)
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              final route = ModalRoute.of(context);
+              if (route?.settings.name == '/') {
+                // ✅ Voltou para StartupPage (tela branca) - redirecionar para welcome
+                Navigator.pushReplacementNamed(context, '/welcome');
+              }
+            }
+          });
+        }
+      },
+      child: Scaffold(
+        backgroundColor: AppTheme.surfaceColor,
+        appBar: _isSelectionMode ? _buildSelectionAppBar() : _buildNormalAppBar(),
       body: Column(
         children: [
           Container(
@@ -985,6 +1002,7 @@ class _ChatListPageState extends State<ChatListPage>
                     )
                   : Icon(Icons.chat, color: AppTheme.textOnGreen),
             ),
+      ),
     );
   }
 

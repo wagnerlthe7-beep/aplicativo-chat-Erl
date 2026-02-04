@@ -76,9 +76,11 @@ void main() async {
     // ✅ VERIFICAR SE HÁ USUÁRIO LOGADO NO FIREBASE
     // Se mudou de projeto Firebase, o token antigo não funciona
     final firebaseUser = FirebaseAuth.instance.currentUser;
-    
+
     if (token != null && firebaseUser != null) {
-      print('🚀 Token encontrado e usuário Firebase logado! Pré-carregando chats...');
+      print(
+        '🚀 Token encontrado e usuário Firebase logado! Pré-carregando chats...',
+      );
       initialRoute = '/chatList';
 
       // ✅ PRÉ-AQUECIMENTO: Carregar chats locais na memória AGORA
@@ -87,7 +89,9 @@ void main() async {
     } else {
       // ✅ Limpar token antigo se não há usuário Firebase logado
       if (token != null && firebaseUser == null) {
-        print('⚠️ Token encontrado mas sem usuário Firebase - limpando sessão antiga');
+        print(
+          '⚠️ Token encontrado mas sem usuário Firebase - limpando sessão antiga',
+        );
         await storage.delete(key: 'access_token');
         await storage.delete(key: 'refresh_token');
         // Fazer logout do Firebase também (caso tenha sessão órfã)
@@ -115,13 +119,22 @@ void main() async {
     print('❌ Erro na inicialização: $e');
   }
 
-  runApp(MyApp(initialRoute: initialRoute));
+  // ✅ Determinar qual widget mostrar diretamente (evitar StartupPage quando há token)
+  Widget? homeWidget;
+  if (initialRoute == '/chatList') {
+    homeWidget = ChatListPage(); // ✅ Mostrar direto, sem passar por StartupPage
+  } else if (initialRoute == '/welcome') {
+    homeWidget = WelcomePage(); // ✅ Mostrar direto, sem passar por StartupPage
+  }
+
+  runApp(MyApp(initialRoute: initialRoute, home: homeWidget));
 }
 
 class MyApp extends StatefulWidget {
   final String initialRoute; // ✅ Rota inicial dinâmica
+  final Widget? home; // ✅ Widget inicial (evita StartupPage quando há token)
 
-  const MyApp({super.key, this.initialRoute = '/'});
+  const MyApp({super.key, this.initialRoute = '/', this.home});
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -207,9 +220,13 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       title: 'SpeekJoy',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      initialRoute: widget.initialRoute, // ✅ Usa a rota decidida no main()
+      // ✅ Se home está definido, usar home (evita StartupPage)
+      // Se não, usar initialRoute (para StartupPage quando necessário)
+      home: widget.home,
+      initialRoute: widget.home == null ? widget.initialRoute : null,
       routes: {
-        '/': (context) => StartupPage(),
+        '/': (context) =>
+            StartupPage(), // ✅ Só usada se initialRoute = '/' e home = null
         '/welcome': (context) => WelcomePage(),
         '/phone': (context) => PhoneInputPage(),
         '/otp': (context) => OtpPage(),
