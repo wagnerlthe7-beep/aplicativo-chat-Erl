@@ -16,7 +16,8 @@
     update_last_seen_only/2,  %% Atualizar last_seen sem mudar status (para background)
     get_all_online_users/0,
     cleanup_disconnected_users/0,
-    get_last_seen/1
+    get_last_seen/1,
+    get_last_heartbeat/1  %% Obter último heartbeat timestamp
 ]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
@@ -129,6 +130,10 @@ is_user_online(UserId) ->
 is_user_in_background(UserId) ->
     gen_server:call(?MODULE, {is_user_in_background, UserId}).
 
+%% ✅ Obter último heartbeat timestamp (para verificação em terminate)
+get_last_heartbeat(UserId) ->
+    gen_server:call(?MODULE, {get_last_heartbeat, UserId}).
+
 %% ✅ Atualizar apenas last_seen sem mudar status (para background)
 %% Usado quando WebSocket desconecta em background - mantém last_seen atualizado
 update_last_seen_only(UserId, Timestamp) ->
@@ -157,38 +162,47 @@ init([]) ->
     
     io:format("✅ Presence Manager inicializado com sucesso~n"),
     
-    %% ✅ INICIAR CLEANUP AUTOMÁTICO (a cada 3 segundos para detecção rápida de 6s)
-    erlang:send_after(3000, self(), cleanup),
+    %% ✅ INICIAR CLEANUP AUTOMÁTICO (a cada 30 segundos - timeout é 120s agora)
+    erlang:send_after(30000, self(), cleanup),
     
     {ok, #state{}}.
 
 handle_call({get_user_status, UserId}, _From, State) ->
     case ets:lookup(user_presence, UserId) of
-        [#user_presence{is_connected = true, ws_pid = WsPid, last_heartbeat = LastHeartbeat}] ->
+        [#user_presence{is_connected = true, ws_pid = WsPid, last_heartbeat = LastHeartbeat, is_background = IsBackground}] ->
             Now = erlang:system_time(second),
             HeartbeatAge = Now - LastHeartbeat,
             
-            %% ✅ VERIFICAÇÃO CRÍTICA: WebSocket deve estar vivo E heartbeat recente (< 6 segundos)
-            %% Se heartbeat está muito antigo (> 6s), usuário está offline mesmo que processo exista
+            %% ✅ VERIFICAÇÃO: WebSocket vivo E heartbeat recente OU em background
+            %% - Online: heartbeat < 120s E WebSocket vivo
+            %% - Background: heartbeat pode estar antigo (normal)
+            %% - Offline: só quando socket fecha ou timeout muito longo (> 120s)
             case WsPid of
                 undefined ->
-                    %% Sem WebSocket - offline
-                    case get_last_seen_internal(UserId) of
-                        {ok, LastSeen} ->
-                            {reply, {ok, offline, LastSeen}, State};
-                        _ ->
-                            {reply, {ok, offline, null}, State}
+                    %% Sem WebSocket - verificar se está em background
+                    case IsBackground of
+                        true ->
+                            %% Background sem WebSocket - retornar background (não offline)
+                            {reply, {ok, background, null}, State};
+                        false ->
+                            %% Foreground sem WebSocket - offline
+                            case get_last_seen_internal(UserId) of
+                                {ok, LastSeen} ->
+                                    {reply, {ok, offline, LastSeen}, State};
+                                _ ->
+                                    {reply, {ok, offline, null}, State}
+                            end
                     end;
                 Pid when is_pid(Pid) ->
                     case is_process_alive(Pid) of
-                        true when HeartbeatAge =< 6 ->
-                            %% ✅ WebSocket está vivo E heartbeat recente - REALMENTE online
+                        true when HeartbeatAge =< 120 ->
+                            %% ✅ WebSocket está vivo E heartbeat recente (< 120s) - REALMENTE online
                             io:format("   📱 Usuário ~p REALMENTE online (WS vivo, heartbeat há ~p segundos)~n", [UserId, HeartbeatAge]),
                             {reply, {ok, online, null}, State};
-                        true when HeartbeatAge > 6 ->
-                            %% ⚠️ WebSocket vivo mas heartbeat muito antigo - provavelmente offline (sem internet)
-                            io:format("   ⚠️ Usuário ~p com WS vivo mas heartbeat antigo (~p segundos) - marcando OFFLINE~n", [UserId, HeartbeatAge]),
-                            %% Marcar como offline imediatamente
+                        true when HeartbeatAge > 120 ->
+                            %% ⚠️ WebSocket vivo mas heartbeat muito antigo (> 120s) - provavelmente offline real
+                            io:format("   ⚠️ Usuário ~p com WS vivo mas heartbeat muito antigo (~p segundos) - marcando OFFLINE~n", [UserId, HeartbeatAge]),
+                            %% Marcar como offline apenas se timeout muito longo
                             ets:insert(user_presence, #user_presence{
                                 user_id = UserId,
                                 ws_pid = undefined,
@@ -205,13 +219,20 @@ handle_call({get_user_status, UserId}, _From, State) ->
                                     {reply, {ok, offline, null}, State}
                             end;
                         false ->
-                            %% WebSocket morto - offline com last_seen
-                            io:format("   🔌 WebSocket morto para ~p - marcando OFFLINE~n", [UserId]),
-                            case get_last_seen_internal(UserId) of
-                                {ok, LastSeen} ->
-                                    {reply, {ok, offline, LastSeen}, State};
-                                _ ->
-                                    {reply, {ok, offline, null}, State}
+                            %% WebSocket morto - verificar se está em background
+                            case IsBackground of
+                                true ->
+                                    %% Background com WebSocket morto - retornar background (não offline)
+                                    {reply, {ok, background, null}, State};
+                                false ->
+                                    %% Foreground com WebSocket morto - offline
+                                    io:format("   🔌 WebSocket morto para ~p - marcando OFFLINE~n", [UserId]),
+                                    case get_last_seen_internal(UserId) of
+                                        {ok, LastSeen} ->
+                                            {reply, {ok, offline, LastSeen}, State};
+                                        _ ->
+                                            {reply, {ok, offline, null}, State}
+                                    end
                             end
                     end
             end;
@@ -257,13 +278,18 @@ handle_call(get_all_online_users, _From, State) ->
         #user_presence{is_connected = true, _ = '_'}
     ),
     
-    %% Filtrar por heartbeat recente (max 6 segundos) E WebSocket vivo
+    %% Filtrar por heartbeat recente (max 120 segundos) E WebSocket vivo OU em background
     ActiveUsers = lists:filter(
-        fun(#user_presence{last_heartbeat = Heartbeat, ws_pid = WsPid}) ->
+        fun(#user_presence{last_heartbeat = Heartbeat, ws_pid = WsPid, is_background = IsBackground}) ->
             HeartbeatAge = Now - Heartbeat,
-            IsRecent = HeartbeatAge =< 6,
+            %% ✅ Background: heartbeat pode estar antigo (normal)
+            %% ✅ Foreground: heartbeat < 120s
+            IsRecent = case IsBackground of
+                true -> true;  %% Background: não verificar heartbeat (pode estar antigo)
+                false -> HeartbeatAge =< 120  %% Foreground: 120s timeout
+            end,
             IsWsAlive = case WsPid of
-                undefined -> false;
+                undefined -> IsBackground;  %% Background pode não ter WebSocket
                 Pid when is_pid(Pid) -> is_process_alive(Pid);
                 _ -> false
             end,
@@ -281,6 +307,14 @@ handle_call({is_user_in_background, UserId}, _From, State) ->
             {reply, {ok, IsBackground}, State};
         _ ->
             {reply, {ok, false}, State}
+    end;
+
+handle_call({get_last_heartbeat, UserId}, _From, State) ->
+    case ets:lookup(user_presence, UserId) of
+        [#user_presence{last_heartbeat = LastHeartbeat, is_background = IsBackground}] ->
+            {reply, {ok, LastHeartbeat, IsBackground}, State};
+        _ ->
+            {reply, {ok, undefined, false}, State}
     end;
 
 handle_call(_Request, _From, State) ->
@@ -323,16 +357,18 @@ handle_cast({user_online, UserId, WsPid}, State) ->
         is_background = false  %% App em foreground
     }),
     
-    io:format("✅✅✅ Usuário ~p ficou ONLINE (app aberto + internet)~n", [UserId]),
-    
     %% ✅ BROADCAST se mudou de status OU se heartbeat estava antigo (reconexão)
     if ShouldBroadcast ->
+        %% ✅ Só imprimir log quando realmente há mudança de estado
+        io:format("✅✅✅ Usuário ~p ficou ONLINE (app aberto + internet)~n", [UserId]),
         io:format("📡 Fazendo broadcast de presença ONLINE para contatos de ~p~n", [UserId]),
         broadcast_presence_change(UserId, online, Now),
         
         %% ✅ NOVO: Enviar presença dos usuários já online para o novo usuário
         send_existing_presence_to_new_user(UserId, Now);
     true ->
+        %% ✅ Heartbeat normal - apenas atualizar last_seen, sem broadcast
+        %% Não imprimir log de "ficou ONLINE" porque não houve mudança de estado
         ok
     end,
     
@@ -451,24 +487,26 @@ handle_cast({update_last_seen_only, UserId, Timestamp}, State) ->
 handle_cast(cleanup_disconnected_users, State) ->
     Now = erlang:system_time(second),
     
-    %% ✅ LIMPAR usuários com heartbeat muito antigo (> 6 segundos) - marcar como offline IMEDIATAMENTE
+    %% ✅ LIMPAR usuários com heartbeat muito antigo
+    %% - Background: NUNCA marca offline (heartbeat para é normal)
+    %% - Foreground: Timeout longo (120s) para offline real
+    %% - Só marca offline quando socket fecha ou timeout muito longo
     AllUsers = ets:match_object(user_presence, #user_presence{_ = '_'}),
     
     lists:foreach(
         fun(#user_presence{user_id = UserId, last_heartbeat = Heartbeat, is_connected = Connected, ws_pid = WsPid, is_background = IsBackground}) ->
             HeartbeatAge = Now - Heartbeat,
-            %% ✅ TIMEOUT ADAPTATIVO:
-            %% - Foreground: 6 segundos (detecção rápida de offline)
-            %% - Background: 60 segundos (tela pode estar bloqueada, FCM acorda quando necessário)
+            %% - Background: NUNCA marca offline por timeout (heartbeat para é normal)
+            %% - Foreground: 120 segundos para offline real (socket pode estar vivo mas sem internet)
+            %% - Só marca offline quando socket fecha ou timeout muito longo
             Timeout = case IsBackground of
-                true -> 60;  %% ✅ 60 segundos para background (tela bloqueada para heartbeats)
-                false -> 6   %% 6 segundos para foreground
+                true -> infinity;  %% ✅ Background: NUNCA marca offline por timeout
+                false -> 120       %% ✅ Foreground: 120s para offline real
             end,
-            case HeartbeatAge > Timeout of
+            case (Timeout =/= infinity andalso HeartbeatAge > Timeout) of
                 true when Connected ->
-                    %% ✅ Heartbeat muito antigo - usuário está offline (sem internet) ou tela bloqueada
-                    %% MAS: se estava em background, dar mais tempo (FCM pode acordar a app)
-                    WasBackground = IsBackground =:= true,
+                    %% ✅ Heartbeat muito antigo E está em foreground - usuário está offline real
+                    %% Background nunca chega aqui (timeout = infinity)
                     io:format("🧹 Cleanup: Usuário ~p com heartbeat antigo (~p segundos, timeout=~p) - marcando OFFLINE~n", [UserId, HeartbeatAge, Timeout]),
                     ets:insert(user_presence, #user_presence{
                         user_id = UserId,
@@ -478,10 +516,7 @@ handle_cast(cleanup_disconnected_users, State) ->
                         is_background = false
                     }),
                     save_last_seen(UserId, Now),
-                    case WasBackground of
-                        true -> ok;  %% Estava em background - sem broadcast (FCM ainda funciona)
-                        false -> broadcast_presence_change(UserId, offline, Now)
-                    end;
+                    broadcast_presence_change(UserId, offline, Now);
                 true when not Connected ->
                     %% Já está offline - verificar se deve remover da tabela
                     case HeartbeatAge > 3600 of
@@ -491,7 +526,7 @@ handle_cast(cleanup_disconnected_users, State) ->
                             ok
                     end;
                 false ->
-                    %% Heartbeat recente - verificar se WebSocket ainda está vivo
+                    %% Heartbeat recente OU está em background (timeout = infinity)
                     case Connected of
                         true ->
                             case WsPid of
@@ -499,10 +534,9 @@ handle_cast(cleanup_disconnected_users, State) ->
                                     %% Sem WebSocket
                                     case IsBackground of
                                         true ->
-                                            %% ✅ Estava em background - NÃO marcar como offline
-                                            %% Apenas garantir que está marcado como background
-                                            %% IMPORTANTE: Atualizar last_seen para o momento atual
-                                            io:format("🧹 Cleanup: Usuário ~p sem WebSocket (background) - mantendo sessão ativa~n", [UserId]),
+                                            %% ✅ Background sem WebSocket - NÃO marcar como offline
+                                            %% Heartbeat para é normal em background, manter como background
+                                            io:format("🧹 Cleanup: Usuário ~p sem WebSocket (background) - mantendo como background~n", [UserId]),
                                             ets:insert(user_presence, #user_presence{
                                                 user_id = UserId,
                                                 ws_pid = undefined,
@@ -513,17 +547,9 @@ handle_cast(cleanup_disconnected_users, State) ->
                                             %% ✅ Atualizar last_seen sem fazer broadcast
                                             save_last_seen(UserId, Now);
                                         false ->
-                                            %% Estava em foreground - marcar como offline
-                                            io:format("🧹 Cleanup: Usuário ~p sem WebSocket - marcando offline~n", [UserId]),
-                                            ets:insert(user_presence, #user_presence{
-                                                user_id = UserId,
-                                                ws_pid = undefined,
-                                                last_heartbeat = Now,
-                                                is_connected = false,
-                                                is_background = false
-                                            }),
-                                            save_last_seen(UserId, Now),
-                                            broadcast_presence_change(UserId, offline, Now)
+                                            %% Foreground sem WebSocket - só marca offline se timeout passou
+                                            %% (já tratado acima, não chega aqui se timeout passou)
+                                            ok
                                     end;
                                 Pid when is_pid(Pid) ->
                                     case is_process_alive(Pid) of
@@ -531,10 +557,9 @@ handle_cast(cleanup_disconnected_users, State) ->
                                             %% WebSocket morreu
                                             case IsBackground of
                                                 true ->
-                                                    %% ✅ Estava em background - NÃO marcar como offline
-                                                    %% Apenas limpar WebSocket mas manter sessão ativa para FCM
-                                                    %% IMPORTANTE: Atualizar last_seen para o momento atual
-                                                    io:format("🧹 Cleanup: Usuário ~p - WebSocket morto (background) - mantendo sessão ativa~n", [UserId]),
+                                                    %% ✅ Background com WebSocket morto - NÃO marcar como offline
+                                                    %% Manter como background (FCM ainda funciona)
+                                                    io:format("🧹 Cleanup: Usuário ~p - WebSocket morto (background) - mantendo como background~n", [UserId]),
                                                     ets:insert(user_presence, #user_presence{
                                                         user_id = UserId,
                                                         ws_pid = undefined,
@@ -545,8 +570,8 @@ handle_cast(cleanup_disconnected_users, State) ->
                                                     %% ✅ Atualizar last_seen sem fazer broadcast
                                                     save_last_seen(UserId, Now);
                                                 false ->
-                                                    %% Estava em foreground - marcar como offline
-                                                    io:format("🧹 Cleanup: Usuário ~p - WebSocket morto, marcando offline~n", [UserId]),
+                                                    %% Foreground com WebSocket morto - marcar como offline
+                                                    io:format("🧹 Cleanup: Usuário ~p - WebSocket morto (foreground), marcando offline~n", [UserId]),
                                                     ets:insert(user_presence, #user_presence{
                                                         user_id = UserId,
                                                         ws_pid = undefined,
@@ -576,9 +601,9 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(cleanup, State) ->
-    %% ✅ EXECUTAR CLEANUP e reprogramar (a cada 3 segundos para detecção rápida de 6s)
+    %% ✅ EXECUTAR CLEANUP e reprogramar (a cada 30 segundos - timeout é 120s agora)
     gen_server:cast(?MODULE, cleanup_disconnected_users),
-    erlang:send_after(3000, self(), cleanup),
+    erlang:send_after(30000, self(), cleanup),
     {noreply, State};
 
 handle_info(_Info, State) ->

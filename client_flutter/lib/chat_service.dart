@@ -13,6 +13,7 @@ import 'chat_model.dart';
 import 'contacts_helper.dart';
 import 'models/pending_message.dart';
 import 'services/pending_messages_storage.dart';
+import 'services/message_sync_service.dart'; // ✅ Para sincronizar mensagens pendentes após reconexão
 import 'fcm_service.dart'; // ✅ Para enviar ACK de delivered
 
 class ChatService {
@@ -301,6 +302,10 @@ class ChatService {
 
           // ✅ Notificar reconexão para atualizar presença
           _connectionStatusController.add(true);
+
+          // ✅ Sincronizar mensagens pendentes após reconexão
+          // Apenas sincronizar se houver mensagens pendentes (evitar chamadas desnecessárias)
+          MessageSyncService.syncPendingMessages();
           break;
         case 'message':
           _messageController.add(message);
@@ -578,10 +583,13 @@ class ChatService {
             print(
               '🔍 [PRESENCE SERVICE] Adicionando ao stream: userId=$userId, status=$status, ts=$incomingTs',
             );
+            // ✅ Incluir last_seen se vier no evento
+            final lastSeen = message['last_seen'];
             _presenceController.add({
               'user_id': userId,
               'status': status,
               'timestamp': incomingTs ?? message['timestamp'],
+              'last_seen': lastSeen, // ✅ Incluir se disponível
             });
             print('📡 Presença atualizada: $userId -> $status');
           }
@@ -701,7 +709,9 @@ class ChatService {
       }
 
       _saveChatsToStorage();
-      _chatListController.add(_getSortedChatList());
+      // ✅ Otimização: Só atualizar stream se realmente mudou
+      final sortedList = _getSortedChatList();
+      _chatListController.add(sortedList);
 
       print(
         '✅ Chat atualizado: ${contactInfo['name']} (unread: ${_chatContacts[contactId]!.unreadCount}, timestamp: ${messageTimestamp ?? 'now'})',
@@ -1170,6 +1180,7 @@ class ChatService {
   }
 
   // ✅ Atualizar status de mensagem quando receber confirmação do servidor
+  // ✅ IDEMPOTENTE: Verifica se o status já é o mesmo antes de atualizar
   static Future<void> updateMessageStatusFromServer(
     String messageId,
     String newStatus, {
@@ -1179,6 +1190,14 @@ class ChatService {
     final pendingMsg = await PendingMessagesStorage.getMessageById(messageId);
 
     if (pendingMsg != null) {
+      // ✅ IDEMPOTÊNCIA: Se o status já é o mesmo, não atualizar
+      if (pendingMsg.status == newStatus) {
+        print(
+          '⏭️ Status já é $newStatus para $messageId (ignorando atualização duplicada)',
+        );
+        return;
+      }
+
       // ✅ Atualizar status no storage local
       await PendingMessagesStorage.updateMessageStatus(
         messageId,
@@ -1607,10 +1626,47 @@ class ChatService {
     toRemove.forEach(_lastMarkAsReadCall.remove);
   }
 
+  // ✅ Cache da última lista ordenada para evitar reordenações desnecessárias
+  static List<ChatContact>? _lastSortedChatList;
+  static DateTime? _lastSortTime;
+
   static List<ChatContact> _getSortedChatList() {
-    print('🔍 DEBUG: _getSortedChatList() chamado - reordenando chats...');
-    return _chatContacts.values.toList()
+    // ✅ Otimização: Só reordenar se realmente necessário
+    // Verificar se a lista mudou comparando com a última versão
+    final now = DateTime.now();
+    final shouldRecompute =
+        _lastSortedChatList == null ||
+        _lastSortTime == null ||
+        now.difference(_lastSortTime!) > const Duration(seconds: 1) ||
+        _chatContacts.length != _lastSortedChatList!.length;
+
+    if (!shouldRecompute && _lastSortedChatList != null) {
+      // ✅ Verificar se algum chat mudou (timestamp ou unread)
+      bool hasChanges = false;
+      for (final chat in _lastSortedChatList!) {
+        final currentChat = _chatContacts[chat.contactId];
+        if (currentChat == null ||
+            currentChat.lastMessageTime != chat.lastMessageTime ||
+            currentChat.unreadCount != chat.unreadCount) {
+          hasChanges = true;
+          break;
+        }
+      }
+
+      if (!hasChanges) {
+        // ✅ Nenhuma mudança relevante - retornar lista em cache
+        return _lastSortedChatList!;
+      }
+    }
+
+    // ✅ Reordenar apenas se necessário
+    final sortedList = _chatContacts.values.toList()
       ..sort((a, b) => b.lastMessageTime.compareTo(a.lastMessageTime));
+
+    _lastSortedChatList = sortedList;
+    _lastSortTime = now;
+
+    return sortedList;
   }
 
   // ✅ STORAGE METHODS
@@ -1907,6 +1963,12 @@ class ChatService {
     } catch (e) {
       print('❌ Erro ao atualizar presença: $e');
     }
+  }
+
+  // ✅ Obter status de presença em cache (recebido via eventos WebSocket)
+  // NÃO faz HTTP call - retorna apenas estado recebido via eventos
+  static String? getCachedPresenceStatus(String userId) {
+    return _userPresenceStatus[userId];
   }
 
   // ✅ GETTERS

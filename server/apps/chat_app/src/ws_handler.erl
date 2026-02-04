@@ -138,9 +138,43 @@ terminate(_Reason, _Req, #state{user_id = UserId}) ->
     %% ✅ VERIFICAR SE ESTAVA EM BACKGROUND ANTES DE MARCAR OFFLINE NO PRESENCE
     %% Se estava em background, NÃO marcar como offline - manter sessão ativa para FCM
     %% Online/Offline é apenas informativo (UI) - não afeta entrega de mensagens
+    Now = erlang:system_time(second),
+    
+    %% ✅ Verificação robusta: verificar flag de background E último heartbeat
+    %% Se heartbeat foi muito recente (< 30s) e socket está fechando, pode indicar background
+    %% (heartbeat para quando app vai para background, mas socket pode fechar antes do presence_update)
     WasInBackground = case presence_manager:is_user_in_background(UserId) of
-        {ok, true} -> true;
-        _ -> false
+        {ok, true} -> 
+            true;
+        _ -> 
+            %% ✅ Verificação adicional: verificar status atual E último heartbeat
+            case presence_manager:get_user_status(UserId) of
+                {ok, background, _LastSeen} ->
+                    %% Status é background - tratar como background
+                    true;
+                {ok, online, _LastSeen} ->
+                    %% Status é online - verificar se último heartbeat foi muito recente E estava em background
+                    %% Se heartbeat foi < 30s E flag estava setado, pode ser que estava em background
+                    case presence_manager:get_last_heartbeat(UserId) of
+                        {ok, LastHeartbeat, WasBackground} when LastHeartbeat =/= undefined ->
+                            HeartbeatAge = Now - LastHeartbeat,
+                            %% ✅ Só tratar como background se flag estava setado E heartbeat foi recente
+                            %% (indica que estava em background mas socket fechou antes do presence_update ser processado)
+                            (WasBackground =:= true) andalso (HeartbeatAge < 60);
+                        _ ->
+                            false
+                    end;
+                _ ->
+                    %% Offline ou não encontrado - verificar último heartbeat
+                    case presence_manager:get_last_heartbeat(UserId) of
+                        {ok, LastHeartbeat, WasBackground} when LastHeartbeat =/= undefined ->
+                            HeartbeatAge = Now - LastHeartbeat,
+                            %% ✅ Só tratar como background se flag estava setado E heartbeat foi recente
+                            (WasBackground =:= true) andalso (HeartbeatAge < 60);
+                        _ ->
+                            false
+                    end
+            end
     end,
     
     case WasInBackground of
@@ -148,7 +182,6 @@ terminate(_Reason, _Req, #state{user_id = UserId}) ->
             %% ✅ Estava em background - NÃO marcar como offline no presence
             %% MAS: atualizar last_seen para o momento atual (sem broadcast)
             %% Isso mantém o last_seen atualizado sem mudar status visual
-            Now = erlang:system_time(second),
             presence_manager:update_last_seen_only(UserId, Now),
             io:format("🌑 Usuário ~p estava em BACKGROUND - mantendo sessão ativa para FCM (last_seen atualizado)~n", [UserId]);
         false ->

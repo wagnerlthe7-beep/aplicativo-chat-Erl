@@ -410,121 +410,94 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   Timer? _typingHeartbeatTimer;
 
-  // Carregar status de presença do contacto
+  // ✅ REMOVIDO: HTTP call ao abrir chat
+  // Presença é atualizada APENAS via eventos WebSocket
+  // Se não houver evento recente, mostrar nada (não inferir estado)
   Future<void> _loadContactPresence() async {
-    // ✅ Se estamos offline, não tentar carregar presença
-    if (!_isConnected) {
-      if (mounted) {
-        setState(() {
-          _contactPresenceStatus = 'offline';
+    // ✅ Usar apenas estado em cache (recebido via eventos WebSocket)
+    // NÃO fazer HTTP call - isso causa inconsistência porque o servidor
+    // pode retornar "online" baseado no socket mesmo quando está em background
+    final cachedStatus = ChatService.getCachedPresenceStatus(
+      widget.remoteUserId,
+    );
+
+    if (cachedStatus != null && mounted) {
+      print('📦 Usando presença em cache: $cachedStatus');
+      setState(() {
+        _contactPresenceStatus = cachedStatus;
+        // ✅ Se estiver em background, NUNCA mostrar last_seen
+        if (cachedStatus == 'background') {
           _contactLastSeen = null;
-        });
-      }
-      return;
-    }
-
-    try {
-      print('🔍 Buscando presença para: ${widget.remoteUserId}');
-      // ✅ FORÇAR refresh ao entrar no chat para garantir status atualizado
-      final presence = await ChatService.getUserPresence(
-        widget.remoteUserId,
-        forceRefresh: true,
-      );
-      print('📊 Presença recebida: $presence');
-
-      if (presence != null && mounted) {
-        final status = presence['status'] ?? 'offline';
-        setState(() {
-          _contactPresenceStatus = status;
-          // ✅ Armazenar last_seen APENAS se não estiver em background
-          // Se estiver em background, não mostrar "Online há..." - UI deve ficar vazia
-          if (status == 'background') {
-            _contactLastSeen = null; // ✅ Limpar last_seen quando em background
-          } else {
-            final lastSeen = presence['last_seen'];
-            if (lastSeen != null) {
-              _contactLastSeen = lastSeen is int
-                  ? lastSeen
-                  : int.tryParse(lastSeen.toString());
-            } else {
-              _contactLastSeen = null;
-            }
-          }
-          // ✅ Resetar marquee quando status mudar
-          _isMarqueePaused = false;
-          _resetMarquee();
-        });
-        print(
-          '✅ Status atualizado: $_contactPresenceStatus, last_seen: $_contactLastSeen',
-        );
-      } else {
-        // Se não conseguir buscar, definir como offline
-        if (mounted) {
-          setState(() {
-            _contactPresenceStatus = 'offline';
-          });
-          print(
-            '⚠️ Não foi possível carregar presença, definindo como offline',
-          );
+        } else if (cachedStatus == 'offline') {
+          // ✅ Para offline, podemos mostrar last_seen se disponível
+          // Mas apenas se recebido via evento (não via HTTP)
+          _contactLastSeen = null; // Será atualizado via eventos
+        } else {
+          // ✅ Para online, não mostrar "Online há..." - apenas "Online"
+          _contactLastSeen = null;
         }
-      }
-    } on TimeoutException catch (_) {
-      // ✅ Timeout é esperado em modo offline - silenciar
+        _isMarqueePaused = false;
+        _resetMarquee();
+      });
+    } else {
+      // ✅ Se não houver estado em cache, mostrar nada (não inferir)
+      // Aguardar próximo evento de presença via WebSocket
       if (mounted) {
         setState(() {
-          _contactPresenceStatus = 'offline';
+          _contactPresenceStatus =
+              'offline'; // Estado padrão até receber evento
           _contactLastSeen = null;
         });
       }
-    } catch (e) {
-      print('❌ Erro ao carregar presença: $e');
-      // Em caso de erro, definir como offline
-      if (mounted) {
-        setState(() {
-          _contactPresenceStatus = 'offline';
-          _contactLastSeen = null;
-        });
-      }
+      print('⏳ Aguardando evento de presença via WebSocket...');
     }
   }
 
   // Formatar status para exibição
+  // ✅ REGRA: Presença é evento, não inferência
+  // Só mostrar o que foi recebido via eventos WebSocket
   String _getPresenceText() {
     if (_isRemoteTyping) return 'a escrever...'; // ✅ Prioridade máxima
+
+    // ✅ Online: mostrar apenas "online" (nunca "Online há X")
     if (_contactPresenceStatus == 'online') {
       return 'online';
     }
 
-    // ✅ Background: app minimizada - não mostrar nada
+    // ✅ Background: app minimizada - NÃO mostrar nada
     if (_contactPresenceStatus == 'background') {
       return '';
     }
 
-    // ✅ Quando offline, mostrar "última vez online: [tempo]"
-    if (_contactLastSeen != null) {
+    // ✅ Offline: mostrar last_seen APENAS se recebido via evento
+    // NUNCA calcular "Online há X" - isso é inferência local (ERRADO)
+    // WhatsApp mostra apenas "última vez online: [data/hora]" quando realmente offline
+    if (_contactPresenceStatus == 'offline' && _contactLastSeen != null) {
       return _formatLastSeen(_contactLastSeen!);
     }
 
-    // Se não há last_seen, não mostrar nada
+    // ✅ Se não há estado claro, não mostrar nada
     return '';
   }
 
   // ✅ Formatar last_seen de forma amigável
+  // ✅ IMPORTANTE: Só mostrar quando status é realmente "offline"
+  // NUNCA mostrar "Online há X" - isso não existe no WhatsApp
   String _formatLastSeen(int timestamp) {
     final lastSeenDate = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
     final now = DateTime.now();
     final difference = now.difference(lastSeenDate);
 
-    if (difference.inSeconds < 60) {
-      return 'Online há ${difference.inSeconds} seg';
-    } else if (difference.inMinutes < 60) {
-      return 'Online há ${difference.inMinutes} min';
-    } else if (difference.inHours < 24) {
-      return 'Online há ${difference.inHours} h';
+    // ✅ WhatsApp-style: mostrar apenas data/hora, nunca "Online há X"
+    if (difference.inDays == 0) {
+      // Hoje - mostrar hora
+      return 'última vez online: ${lastSeenDate.hour.toString().padLeft(2, '0')}:${lastSeenDate.minute.toString().padLeft(2, '0')}';
     } else if (difference.inDays == 1) {
-      return 'Online ontem às ${lastSeenDate.hour.toString().padLeft(2, '0')}:${lastSeenDate.minute.toString().padLeft(2, '0')}';
+      return 'última vez online: ontem às ${lastSeenDate.hour.toString().padLeft(2, '0')}:${lastSeenDate.minute.toString().padLeft(2, '0')}';
     } else if (difference.inDays < 7) {
-      return 'Online há ${difference.inDays} dias';
+      // Esta semana - mostrar dia da semana
+      final weekdays = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+      return 'última vez online: ${weekdays[lastSeenDate.weekday % 7]} às ${lastSeenDate.hour.toString().padLeft(2, '0')}:${lastSeenDate.minute.toString().padLeft(2, '0')}';
     } else {
       // Mais de uma semana - mostrar data completa
       final day = lastSeenDate.day.toString().padLeft(2, '0');
@@ -839,48 +812,60 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             if (mounted) {
               setState(() {
                 _contactPresenceStatus = 'offline';
+                // ✅ Usar last_seen do evento se disponível, senão null
+                final lastSeen = presence['last_seen'];
+                if (lastSeen != null) {
+                  _contactLastSeen = lastSeen is int
+                      ? lastSeen
+                      : int.tryParse(lastSeen.toString());
+                } else {
+                  _contactLastSeen =
+                      null; // ✅ Se não vier no evento, não mostrar nada
+                }
                 _isMarqueePaused = false;
                 _resetMarquee();
               });
-              print('✅ Presença aplicada (OFFLINE) imediatamente');
+              print(
+                '✅ Presença aplicada (OFFLINE) - last_seen: $_contactLastSeen',
+              );
             }
-            // ✅ Buscar last_seen quando usuário fica offline
-            _loadContactPresence();
+            // ✅ REMOVIDO: HTTP call ao receber evento offline
+            // O last_seen deve vir no próprio evento de presença
+            // Se não vier no evento, não mostrar nada (não inferir, não buscar via HTTP)
           }
         }
       });
 
-      // ✅ ESCUTAR EVENTOS DE RECONEXÃO para atualizar presença
+      // ✅ ESCUTAR EVENTOS DE RECONEXÃO
       _connectionSubscription = ChatService.connectionStatusStream.listen((
         isConnected,
       ) {
         if (isConnected && mounted) {
-          print(
-            '🔄 WebSocket reconectado - atualizando presença do contato...',
-          );
-          // Atualizar presença do contato atual quando reconectar
-          ChatService.refreshUserPresence(widget.remoteUserId);
+          print('🔄 WebSocket reconectado - aguardando eventos de presença...');
+          // ✅ REMOVIDO: refreshUserPresence() faz HTTP call
+          // Aguardar eventos WebSocket em vez de fazer HTTP call
+          // O servidor enviará eventos de presença automaticamente após reconexão
         }
       });
 
-      // BUSCAR STATUS INICIAL COM DELAY DE 2s TAMBÉM
-      Future.delayed(const Duration(seconds: 2), () {
-        if (mounted) {
-          _loadContactPresence();
-        }
-      });
+      // ✅ REMOVIDO: HTTP call com delay de 2s
+      // Usar apenas estado em cache (recebido via eventos WebSocket)
+      // Se não houver cache, mostrar nada até receber evento
+
+      // ✅ Carregar presença do cache ao abrir o chat
+      // Isso garante que se o usuário está online e continua online,
+      // o status será mostrado mesmo sem novo evento
+      _loadContactPresence();
 
       // ✅ NOVO: Listener para atualizar status em tempo real
       _startStatusUpdateListener();
     } else {
       // ✅ OFFLINE: Modo offline - sem presença, sem listeners em tempo real
       print('⚠️ Modo offline - histórico local será carregado');
-      if (mounted) {
-        setState(() {
-          _contactPresenceStatus = 'offline';
-          _contactLastSeen = null;
-        });
-      }
+      // ✅ Tentar carregar presença do cache mesmo em modo offline
+      // (pode ter cache de quando estava online)
+      // Se não houver cache, _loadContactPresence() já define como 'offline'
+      _loadContactPresence();
 
       // NOVO: Configurar listener de conexão para quando voltar
       _connectionSubscription = ChatService.connectionStatusStream.listen((
@@ -1736,73 +1721,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   void _startStatusUpdateListener() {
     _statusUpdateTimer?.cancel();
-    // ✅ Verificar mudanças de status a cada 2 segundos
-    // ✅ REMOVIDO: Polling periódico de presença - agora usamos apenas eventos via WebSocket
-    // A presença é atualizada em tempo real através de eventos do servidor
-    _statusUpdateTimer = Timer.periodic(const Duration(seconds: 2), (
-      timer,
-    ) async {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-
-      await _updatePendingMessagesStatus();
-
-      // ✅ REMOVIDO: Polling periódico de presença
-      // Presença é atualizada via eventos WebSocket em tempo real
-      // Consulta HTTP apenas ao abrir o chat (em _loadContactPresence com forceRefresh: true)
-    });
+    // ✅ REMOVIDO: Polling periódico de status de mensagens pendentes
+    // O status é atualizado automaticamente quando:
+    // - Mensagem é enviada/recebida
+    // - ACK é recebido via WebSocket
+    // - WebSocket reconecta
+    // Não há necessidade de verificar periodicamente
   }
 
-  // ✅ NOVO: Atualizar status de mensagens pending em tempo real
-  Future<void> _updatePendingMessagesStatus() async {
-    try {
-      // ✅ Buscar todas as mensagens pending deste chat
-      final pendingMessages = await PendingMessagesStorage.getPendingMessages(
-        toUserId: widget.remoteUserId,
-      );
-
-      if (pendingMessages.isEmpty) return;
-
-      // ✅ Atualizar status na UI se houver mudanças
-      bool hasChanges = false;
-      for (final pending in pendingMessages) {
-        final messageIndex = _messages.indexWhere(
-          (msg) => msg.id == pending.msgId,
-        );
-        if (messageIndex >= 0) {
-          final currentMsg = _messages[messageIndex];
-          // ✅ Se status mudou, atualizar na UI
-          if (currentMsg.status != pending.status) {
-            hasChanges = true;
-            if (mounted) {
-              setState(() {
-                _messages[messageIndex] = ChatMessage(
-                  id: currentMsg.id,
-                  text: currentMsg.text,
-                  isMe: currentMsg.isMe,
-                  timestamp: currentMsg.timestamp,
-                  status: pending.status, // ✅ Atualizar status
-                  isEdited: currentMsg.isEdited,
-                  isDeleted: currentMsg.isDeleted,
-                  replyToId: currentMsg.replyToId,
-                  replyToText: currentMsg.replyToText,
-                  replyToSenderName: currentMsg.replyToSenderName,
-                  replyToSenderId: currentMsg.replyToSenderId,
-                );
-              });
-              print(
-                '🔄 Status atualizado em tempo real: ${pending.msgId} -> ${pending.status}',
-              );
-            }
-          }
-        }
-      }
-    } catch (e) {
-      print('❌ Erro ao atualizar status em tempo real: $e');
-    }
-  }
+  // ✅ REMOVIDO: _updatePendingMessagesStatus() - polling periódico removido
+  // O status é atualizado automaticamente quando:
+  // - Mensagem é enviada/recebida
+  // - ACK é recebido via WebSocket
+  // - WebSocket reconecta
+  // Não há necessidade de verificar periodicamente
 
   // ✅ NOVO: Carregar mensagens pending do sqflite
   Future<void> _loadPendingMessagesFromStorage() async {

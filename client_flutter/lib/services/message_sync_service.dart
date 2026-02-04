@@ -8,14 +8,12 @@ import '../message_operations_service.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 
 class MessageSyncService {
-  static Timer? _syncTimer;
+  static Timer? _syncTimer; // ✅ Mantido para compatibilidade com stop()
   static StreamSubscription? _connectivitySubscription;
   static bool _isSyncing = false;
-  static const Duration _syncInterval = Duration(
-    seconds: 10,
-  ); // Sincronizar a cada 10s
 
   // ✅ Inicializar serviço de sincronização
+  // ✅ REMOVIDO: Polling periódico - sincronização apenas em eventos reais
   static Future<void> initialize() async {
     print('🚀 Iniciando MessageSyncService...');
 
@@ -31,26 +29,21 @@ class MessageSyncService {
       }
     });
 
-    // ✅ Sincronizar periodicamente
-    _startPeriodicSync();
+    // ✅ REMOVIDO: _startPeriodicSync() - não fazer polling periódico
+    // A sincronização agora acontece apenas em eventos reais:
+    // - Reconexão de WebSocket
+    // - Mudança de conectividade
+    // - Envio falhou explicitamente
+    // - App volta do background
 
-    // ✅ Sincronizar imediatamente se houver conectividade
+    // ✅ Sincronizar imediatamente se houver conectividade (apenas uma vez na inicialização)
     final connectivityResult = await Connectivity().checkConnectivity();
     if (connectivityResult != ConnectivityResult.none) {
       syncPendingMessages();
     }
   }
 
-  // ✅ Iniciar sincronização periódica
-  static void _startPeriodicSync() {
-    _syncTimer?.cancel();
-    _syncTimer = Timer.periodic(_syncInterval, (_) {
-      syncPendingMessages();
-    });
-    print(
-      '⏰ Sincronização periódica iniciada (intervalo: ${_syncInterval.inSeconds}s)',
-    );
-  }
+  // ✅ REMOVIDO: _startPeriodicSync() - polling periódico foi removido
 
   // ✅ Parar serviço de sincronização
   static void stop() {
