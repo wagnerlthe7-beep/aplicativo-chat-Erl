@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'startup_page.dart';
 import 'welcome_page.dart';
 import 'phone_input_page.dart';
@@ -72,15 +73,27 @@ void main() async {
     final storage = FlutterSecureStorage();
     final token = await storage.read(key: 'access_token');
 
-    if (token != null) {
-      print('🚀 Token encontrado! Pré-carregando chats...');
+    // ✅ VERIFICAR SE HÁ USUÁRIO LOGADO NO FIREBASE
+    // Se mudou de projeto Firebase, o token antigo não funciona
+    final firebaseUser = FirebaseAuth.instance.currentUser;
+    
+    if (token != null && firebaseUser != null) {
+      print('🚀 Token encontrado e usuário Firebase logado! Pré-carregando chats...');
       initialRoute = '/chatList';
 
       // ✅ PRÉ-AQUECIMENTO: Carregar chats locais na memória AGORA
       await ChatService.loadLocalChats();
       // Não esperar conectar no main, apenas carregar o local
     } else {
-      print('👋 Nenhum token, indo para WelcomePage');
+      // ✅ Limpar token antigo se não há usuário Firebase logado
+      if (token != null && firebaseUser == null) {
+        print('⚠️ Token encontrado mas sem usuário Firebase - limpando sessão antiga');
+        await storage.delete(key: 'access_token');
+        await storage.delete(key: 'refresh_token');
+        // Fazer logout do Firebase também (caso tenha sessão órfã)
+        await FirebaseAuth.instance.signOut();
+      }
+      print('👋 Nenhum token válido, indo para WelcomePage');
       initialRoute = '/welcome';
     }
 

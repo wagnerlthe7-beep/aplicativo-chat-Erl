@@ -17,6 +17,8 @@ erl_crash.dump
 logs
 .idea
 *.iml
+client_flutter/android/google-services.json
+client_flutter/android/*.kts
 rebar3.crashdump
 *~
 
@@ -42,3 +44,5 @@ PROXIMO_PASSO.txt
 Comandos_importantes.txt
 algumas explicacoes importantes.txt
 Structure
+FIREBASE_SETUP.md
+MESSAGES_OPERATIONS_README.md
