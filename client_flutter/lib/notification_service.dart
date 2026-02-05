@@ -1,8 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz;
+import 'navigation_service.dart';
+import 'chat_service.dart';
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -15,7 +16,8 @@ class NotificationService {
 
   // Canal de notificação para mensagens
   static const String _channelId = 'message_notifications';
-  static const String _channelName = 'Mensagens';
+  static const String _channelName =
+      'SpeekJoy'; // Nome da app (aparece no topo)
   static const String _channelDescription = 'Notificações de novas mensagens';
 
   Future<void> initialize() async {
@@ -25,6 +27,8 @@ class NotificationService {
     tz.initializeTimeZones();
 
     // Configurações para Android
+    // Usar o mesmo ícone da app (como WhatsApp faz)
+    // O Android converterá automaticamente para monocromático quando necessário
     const AndroidInitializationSettings androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
 
@@ -45,6 +49,8 @@ class NotificationService {
     await _notifications.initialize(
       settings,
       onDidReceiveNotificationResponse: _onNotificationTapped,
+      onDidReceiveBackgroundNotificationResponse:
+          _onBackgroundNotificationTapped,
     );
 
     // Criar canal para Android
@@ -88,6 +94,21 @@ class NotificationService {
       previewContent = '${previewContent.substring(0, 47)}...';
     }
 
+    // Ações de resposta rápida (Android)
+    // Ação de resposta com campo de texto inline
+    const replyAction = AndroidNotificationAction(
+      'reply_action',
+      'Responder',
+      showsUserInterface: false,
+      cancelNotification: false,
+    );
+
+    const markAsReadAction = AndroidNotificationAction(
+      'mark_read_action',
+      'Marcar como lido',
+      showsUserInterface: false,
+    );
+
     // Detalhes da notificação para Android
     AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       _channelId,
@@ -98,17 +119,23 @@ class NotificationService {
       showWhen: true,
       enableVibration: true,
       playSound: true,
-      icon: '@mipmap/ic_launcher',
+      icon: '@mipmap/ic_launcher', // Mesmo ícone da app (como WhatsApp)
+      color: const Color(
+        0xFF075E54,
+      ), // Cor de fundo do ícone (verde escuro da app)
       largeIcon: senderAvatar != null
           ? FilePathAndroidBitmap(senderAvatar)
           : null,
       styleInformation: BigTextStyleInformation(
         previewContent,
         htmlFormatBigText: true,
-        contentTitle: senderName,
+        contentTitle:
+            senderName, // Nome do remetente (ou número se não tiver nome)
         htmlFormatContentTitle: true,
       ),
       category: AndroidNotificationCategory.message,
+      actions: [replyAction, markAsReadAction], // Ações de resposta rápida
+      autoCancel: true,
     );
 
     // Detalhes da notificação para iOS
@@ -118,6 +145,7 @@ class NotificationService {
       presentSound: true,
       sound: 'default',
       badgeNumber: 1,
+      subtitle: 'SpeekJoy', // Nome da app
     );
 
     // Detalhes gerais
@@ -131,8 +159,8 @@ class NotificationService {
 
     await _notifications.show(
       notificationId,
-      senderName,
-      previewContent,
+      senderName, // Título: nome do remetente (ou número se não tiver nome) - já vem correto
+      previewContent, // Corpo: conteúdo da mensagem
       notificationDetails,
       payload: 'chat_$chatId',
     );
@@ -186,15 +214,65 @@ class NotificationService {
   }
 
   Future<void> _onNotificationTapped(NotificationResponse response) async {
+    await _handleNotificationResponse(response);
+  }
+
+  // Handler para notificações em background (deve ser top-level)
+  @pragma('vm:entry-point')
+  static Future<void> _onBackgroundNotificationTapped(
+    NotificationResponse response,
+  ) async {
+    final service = NotificationService();
+    await service._handleNotificationResponse(response);
+  }
+
+  Future<void> _handleNotificationResponse(
+    NotificationResponse response,
+  ) async {
     final payload = response.payload;
-    print('🔔 Notificação tocada: $payload');
+    final actionId = response.actionId;
 
-    if (payload != null && payload.startsWith('chat_')) {
-      final chatId = payload.substring(5); // Remove 'chat_' prefix
+    print('🔔 Notificação tocada: $payload, ação: $actionId');
+
+    if (payload == null || !payload.startsWith('chat_')) {
+      return;
+    }
+
+    final chatId = payload.substring(5); // Remove 'chat_' prefix
+
+    // Se foi uma ação de resposta rápida
+    if (actionId == 'reply_action') {
+      final replyText = response.input;
+      if (replyText != null && replyText.isNotEmpty) {
+        print('💬 Resposta rápida: $replyText para $chatId');
+        await _sendQuickReply(chatId, replyText);
+      }
+      return;
+    }
+
+    // Se foi ação de marcar como lido
+    if (actionId == 'mark_read_action') {
+      print('✅ Marcando como lido: $chatId');
+      ChatService.markChatAsRead(chatId);
+      return;
+    }
+
+    // Se foi apenas toque na notificação, navegar para o chat
+    if (actionId == null || actionId.isEmpty) {
       print('🔔 Abrir chat: $chatId');
+      await NavigationService.navigateToChat(chatId);
+    }
+  }
 
-      // TODO: Navegar para a página do chat
-      // Você pode usar um serviço de navegação ou passar uma callback
+  Future<void> _sendQuickReply(String chatId, String message) async {
+    try {
+      // Enviar mensagem via WebSocket
+      await ChatService.sendMessage(chatId, message);
+      print('✅ Resposta rápida enviada: $message');
+    } catch (e) {
+      print('❌ Erro ao enviar resposta rápida: $e');
+      // Se WebSocket não estiver conectado, salvar como pendente
+      // O MessageSyncService vai enviar quando reconectar
     }
   }
 

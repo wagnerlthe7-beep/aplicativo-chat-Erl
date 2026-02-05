@@ -124,6 +124,8 @@ handle_cast({user_online, WsPid}, State) ->
                     ok
             end
     end,
+    %% ✅ Monitorar o novo WebSocket para limpar sessão se morrer
+    erlang:monitor(process, WsPid),
     io:format("✅ User ~p is now online (WS PID: ~p)~n", [State#state.user_id, WsPid]),
     {noreply, State#state{ws_pid = WsPid, status = online, last_seen = Now}};
 
@@ -183,6 +185,17 @@ handle_call(get_status, _From, State) ->
 handle_call(get_websocket_pid, _From, State) ->
     {reply, State#state.ws_pid, State}.
 
+handle_info({'DOWN', _Ref, process, WsPid, _Reason}, State = #state{ws_pid = CurrentWsPid}) ->
+    %% ✅ WebSocket monitorado morreu - limpar sessão se ainda for o WebSocket atual
+    case CurrentWsPid of
+        WsPid ->
+            io:format("🔌 User ~p: WebSocket morreu (monitor detectado) - marcando como offline~n", [State#state.user_id]),
+            {noreply, State#state{ws_pid = undefined, status = offline}};
+        _Other ->
+            %% WebSocket diferente - já foi substituído, ignorar
+            io:format("ℹ️  User ~p: WebSocket antigo morreu (já substituído) - ignorando~n", [State#state.user_id]),
+            {noreply, State}
+    end;
 handle_info(_Info, State) ->
     {noreply, State}.
 

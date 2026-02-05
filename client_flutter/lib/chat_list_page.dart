@@ -10,6 +10,7 @@ import 'notification_service.dart';
 import 'app_theme.dart';
 import 'dart:async';
 import 'contacts_helper.dart';
+import 'contact_search_page.dart';
 
 class ChatListPage extends StatefulWidget {
   @override
@@ -291,15 +292,22 @@ class _ChatListPageState extends State<ChatListPage>
         (chat) => chat.contactId == senderId,
         orElse: () => ChatContact(
           contactId: senderId,
-          name: 'Desconhecido',
+          name: '',
           lastMessage: '',
           lastMessageTime: DateTime.now(),
           unreadCount: 0,
         ),
       );
 
+      // Usar nome se tiver, senão usar número de telefone, senão usar chatId
+      String displayName = senderChat.name.isNotEmpty
+          ? senderChat.name
+          : (senderChat.phoneNumber?.isNotEmpty == true
+                ? senderChat.phoneNumber!
+                : senderId);
+
       await NotificationService().showNewMessageNotification(
-        senderName: senderChat.name,
+        senderName: displayName,
         messageContent: messageContent,
         chatId: senderId,
       );
@@ -388,9 +396,9 @@ class _ChatListPageState extends State<ChatListPage>
   }
 
   // ✅ REMOVIDO: _startChatRefreshTimer() e _startSessionValidationTimer()
-  // 
+  //
   // 📋 ARQUITETURA EVENT-DRIVEN (modelo moderno):
-  // 
+  //
   // ✅ Chats são atualizados por:
   //   - WebSocket (mensagens em tempo real)
   //   - FCM push (quando app está em background)
@@ -402,7 +410,7 @@ class _ChatListPageState extends State<ChatListPage>
   //   - Quando token expira (JWT exp - verificado no servidor)
   //
   // ❌ NÃO fazer polling periódico (modelo antigo)
-  
+
   // ✅ NOTA: Se precisar validar sessão expirada no futuro, fazer de forma event-driven:
   // - Quando servidor retornar erro 401 via WebSocket
   // - Quando servidor retornar erro 401 via HTTP (em operações específicas)
@@ -422,33 +430,13 @@ class _ChatListPageState extends State<ChatListPage>
     }
   }
 
-  // ABRIR LISTA DE CONTATOS
-  Future<void> _openContactsList() async {
-    final contactPermission = await Permission.contacts.status;
-
-    if (!contactPermission.isGranted) {
-      final result = await Permission.contacts.request();
-      if (!result.isGranted) {
-        _showPermissionDeniedDialog();
-        return;
-      }
-    }
-
-    setState(() => _isLoading = true);
-    try {
-      final contacts = await FlutterContacts.getContacts(
-        withProperties: true,
-        withPhoto: true,
-      );
-
-      _showContactsSelectionDialog(contacts);
-    } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Erro ao carregar contatos: $e')));
-    } finally {
-      setState(() => _isLoading = false);
-    }
+  // ✅ ABRIR LISTA DE CONTATOS (OFFLINE-FIRST - abre imediatamente)
+  void _openContactsList() {
+    // ✅ Navegar imediatamente - a página carrega contatos localmente
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => ContactSearchPage()),
+    );
   }
 
   // DIÁLOGO DE SELEÇÃO DE CONTATOS (mantido igual)
@@ -909,59 +897,68 @@ class _ChatListPageState extends State<ChatListPage>
       },
       child: Scaffold(
         backgroundColor: AppTheme.surfaceColor,
-        appBar: _isSelectionMode ? _buildSelectionAppBar() : _buildNormalAppBar(),
-      body: Column(
-        children: [
-          Container(
-            color: AppTheme.surfaceColor,
-            padding: EdgeInsets.all(16),
-            child: Container(
-              decoration: BoxDecoration(
-                color: AppTheme.searchBackground,
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: TextField(
-                controller: _searchController,
-                onChanged: (value) => setState(() => _searchQuery = value),
-                decoration: InputDecoration(
-                  hintText: 'Pesquisar ou começar nova conversa',
-                  hintStyle: TextStyle(color: AppTheme.textSecondary),
-                  prefixIcon: Icon(Icons.search, color: AppTheme.textSecondary),
-                  border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
+        appBar: _isSelectionMode
+            ? _buildSelectionAppBar()
+            : _buildNormalAppBar(),
+        body: Column(
+          children: [
+            Container(
+              color: AppTheme.surfaceColor,
+              padding: EdgeInsets.all(16),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: AppTheme.searchBackground,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (value) => setState(() => _searchQuery = value),
+                  decoration: InputDecoration(
+                    hintText: 'Pesquisar ou começar nova conversa',
+                    hintStyle: TextStyle(color: AppTheme.textSecondary),
+                    prefixIcon: Icon(
+                      Icons.search,
+                      color: AppTheme.textSecondary,
+                    ),
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [_buildChatsTab(), _buildStatusTab(), _buildCallsTab()],
+            Expanded(
+              child: TabBarView(
+                controller: _tabController,
+                children: [
+                  _buildChatsTab(),
+                  _buildStatusTab(),
+                  _buildCallsTab(),
+                ],
+              ),
             ),
-          ),
-        ],
-      ),
-      floatingActionButton: _isSelectionMode
-          ? null // Ocultar botão "Nova Conversa" durante seleção
-          : FloatingActionButton(
-              onPressed: _openContactsList,
-              backgroundColor: AppTheme.appBarColor,
-              child: _isLoading
-                  ? SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          AppTheme.textOnGreen,
+          ],
+        ),
+        floatingActionButton: _isSelectionMode
+            ? null // Ocultar botão "Nova Conversa" durante seleção
+            : FloatingActionButton(
+                onPressed: _openContactsList,
+                backgroundColor: AppTheme.appBarColor,
+                child: _isLoading
+                    ? SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            AppTheme.textOnGreen,
+                          ),
                         ),
-                      ),
-                    )
-                  : Icon(Icons.chat, color: AppTheme.textOnGreen),
-            ),
+                      )
+                    : Icon(Icons.chat, color: AppTheme.textOnGreen),
+              ),
       ),
     );
   }

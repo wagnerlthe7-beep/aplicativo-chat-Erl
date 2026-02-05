@@ -13,6 +13,7 @@ import 'chat_list_page.dart';
 import 'chat_service.dart';
 import 'notification_service.dart';
 import 'fcm_service.dart';
+import 'navigation_service.dart';
 import 'services/message_sync_service.dart';
 import 'app_theme.dart';
 import 'splash_screen_wrapper.dart';
@@ -233,6 +234,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       title: 'SpeekJoy',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
+      navigatorKey: NavigationService.navigatorKey, // Para navegação a partir de notificações
       // ✅ Se home está definido, usar home (evita StartupPage)
       // Se não, usar initialRoute (para StartupPage quando necessário)
       home: widget.home,
