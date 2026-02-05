@@ -157,6 +157,12 @@ class NotificationService {
     // Gerar ID único para a notificação
     int notificationId = DateTime.now().millisecondsSinceEpoch % 100000;
 
+    // ✅ Rastrear notificação por chatId
+    if (!_chatNotifications.containsKey(chatId)) {
+      _chatNotifications[chatId] = [];
+    }
+    _chatNotifications[chatId]!.add(notificationId);
+
     await _notifications.show(
       notificationId,
       senderName, // Título: nome do remetente (ou número se não tiver nome) - já vem correto
@@ -165,7 +171,9 @@ class NotificationService {
       payload: 'chat_$chatId',
     );
 
-    print('🔔 Notificação enviada: $senderName - $previewContent');
+    print(
+      '🔔 Notificação enviada: $senderName - $previewContent (ID: $notificationId, Chat: $chatId)',
+    );
   }
 
   Future<void> showNotification({
@@ -211,6 +219,52 @@ class NotificationService {
 
   Future<void> cancelAllNotifications() async {
     await _notifications.cancelAll();
+  }
+
+  /// ✅ Cancelar todas as notificações de um chat específico
+  /// Isso é chamado quando o usuário abre o chat através de uma notificação
+  Future<void> cancelChatNotifications(String chatId) async {
+    print(
+      '🔔 [Notification] Cancelando todas as notificações do chat: $chatId',
+    );
+
+    // Buscar todas as notificações pendentes do chat
+    // Como não temos um sistema de rastreamento direto, vamos usar uma abordagem diferente:
+    // No Android, podemos usar o tag do grupo de notificações
+    // Mas a forma mais simples é cancelar todas e deixar o sistema reagrupar
+
+    // ✅ SOLUÇÃO: Usar o payload para identificar notificações do mesmo chat
+    // Como o payload é 'chat_$chatId', podemos cancelar todas as notificações
+    // que têm esse payload. Mas o flutter_local_notifications não permite buscar por payload.
+
+    // ✅ SOLUÇÃO ALTERNATIVA: Manter um Map de chatId -> List<notificationId>
+    // E cancelar todas quando o chat é aberto
+    await _cancelNotificationsByChatId(chatId);
+  }
+
+  /// Mapa para rastrear notificações por chatId
+  static final Map<String, List<int>> _chatNotifications = {};
+
+  /// Cancelar todas as notificações de um chat específico
+  Future<void> _cancelNotificationsByChatId(String chatId) async {
+    final notificationIds = _chatNotifications[chatId];
+    if (notificationIds != null && notificationIds.isNotEmpty) {
+      print(
+        '🔔 [Notification] Cancelando ${notificationIds.length} notificações do chat $chatId',
+      );
+      for (final id in notificationIds) {
+        await cancelNotification(id);
+      }
+      // Limpar a lista após cancelar
+      _chatNotifications.remove(chatId);
+      print(
+        '✅ [Notification] Todas as notificações do chat $chatId foram canceladas',
+      );
+    } else {
+      print(
+        '⚠️ [Notification] Nenhuma notificação encontrada para o chat $chatId',
+      );
+    }
   }
 
   Future<void> _onNotificationTapped(NotificationResponse response) async {

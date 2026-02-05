@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'chat_page.dart';
 import 'chat_model.dart';
 import 'chat_service.dart';
+import 'notification_service.dart';
 
 /// Serviço global de navegação para abrir chats a partir de notificações
 class NavigationService {
@@ -33,8 +34,13 @@ class NavigationService {
         ),
       );
 
-      // Marcar como lido
+      // ✅ Marcar como lido
       ChatService.markChatAsRead(chatId);
+
+      // ✅ Cancelar TODAS as notificações deste chat
+      // Quando o usuário abre o chat através de uma notificação,
+      // todas as outras notificações do mesmo chat devem ser canceladas
+      await NotificationService().cancelChatNotifications(chatId);
 
       // Navegar para o chat
       navigator.push(
