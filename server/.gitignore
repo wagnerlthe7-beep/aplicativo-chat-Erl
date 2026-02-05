@@ -39,6 +39,7 @@ build/
 
 # Ficheiros
 server/apps/chat_app/src/mysql_test.erl
+E:\aplicativo-chat\server\apps\chat_app\src\websocket_checker.erl
 passo_a_passo.txt
 PROXIMO_PASSO.txt
 Comandos_importantes.txt

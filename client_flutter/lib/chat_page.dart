@@ -2276,6 +2276,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 ? _buildEmptyState()
                 : ListView.builder(
                     controller: _scrollController,
+                    physics: const ClampingScrollPhysics(),
                     padding: const EdgeInsets.all(16),
                     itemCount: _calculateTotalItemCount(messageGroups),
                     itemBuilder: (context, index) {

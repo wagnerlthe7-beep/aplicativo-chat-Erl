@@ -152,14 +152,14 @@ send_fcm_request(ProjectId, AccessToken, Token, FromUserId, MessageId, Content, 
     end,
     
     %% Payload FCM v1 - Optimizado para entrega imediata e background
-    %% IMPORTANTE: Para acordar app em background, precisa ter tanto 'notification' quanto 'data'
+    %% ✅ IMPORTANTE: Usar apenas 'data' (sem 'notification') para evitar duplicação
+    %% O Flutter cria notificação local customizada com ícone correto
+    %% 'data' com priority=high é suficiente para acordar app em background
     Payload = #{
         <<"message">> => #{
             <<"token">> => Token,
-            <<"notification">> => #{
-                <<"title">> => Title,
-                <<"body">> => PreviewContent
-            },
+            %% ✅ REMOVIDO: notification (causava duplicação e ícone padrão/castanho)
+            %% O Flutter cria notificação local customizada via NotificationService
             <<"data">> => #{
                 <<"type">> => <<"message">>,
                 <<"message_id">> => ensure_binary(MessageId),
@@ -170,18 +170,11 @@ send_fcm_request(ProjectId, AccessToken, Token, FromUserId, MessageId, Content, 
                 <<"click_action">> => <<"FLUTTER_NOTIFICATION_CLICK">>
             },
             <<"android">> => #{
-                <<"priority">> => <<"high">>,
+                <<"priority">> => <<"high">>,  %% ✅ Priority high acorda app mesmo sem 'notification'
                 <<"ttl">> => <<"86400s">>,  %% 24 horas (não 0s para permitir entrega atrasada)
-                <<"direct_boot_ok">> => true,  %% Permite entrega antes do unlock
-                <<"notification">> => #{
-                    <<"channel_id">> => <<"message_notifications">>,
-                    <<"sound">> => <<"default">>,
-                    <<"default_sound">> => true,
-                    <<"default_vibrate_timings">> => true,
-                    <<"notification_priority">> => <<"PRIORITY_MAX">>,
-                    <<"visibility">> => <<"PUBLIC">>,  %% Mostrar mesmo com tela bloqueada
-                    <<"sticky">> => false
-                }
+                <<"direct_boot_ok">> => true  %% Permite entrega antes do unlock
+                %% ✅ REMOVIDO: notification (causava duplicação e ícone padrão/castanho)
+                %% O Flutter cria notificação local customizada via NotificationService
             },
             <<"apns">> => #{
                 <<"headers">> => #{
@@ -253,10 +246,15 @@ do_fcm_http_request(Url, AccessToken, Payload, Token) ->
             {error, not_found};
         {ok, {{_, StatusCode, _}, _, ResponseBody}} ->
             io:format("❌ [FCM v1] Erro HTTP ~p: ~s~n", [StatusCode, ResponseBody]),
-            %% Verificar se é erro de token inválido
+            %% Verificar se é erro de token inválido ou SenderId mismatch
             case jsx:decode(list_to_binary(ResponseBody), [return_maps]) of
                 #{<<"error">> := #{<<"details">> := Details}} ->
                     check_token_errors(Details, Token);
+                #{<<"error">> := #{<<"code">> := 403, <<"message">> := <<"SenderId mismatch", _/binary>>}} ->
+                    %% Erro 403: SenderId mismatch - token foi gerado para outro projeto Firebase
+                    io:format("⚠️ [FCM] SenderId mismatch - token inválido (projeto Firebase diferente)~n"),
+                    handle_invalid_token(Token),
+                    {error, sender_id_mismatch};
                 _ ->
                     ok
             end,
@@ -271,6 +269,10 @@ check_token_errors([], _Token) -> ok;
 check_token_errors([#{<<"errorCode">> := <<"UNREGISTERED">>} | _], Token) ->
     handle_invalid_token(Token);
 check_token_errors([#{<<"errorCode">> := <<"INVALID_ARGUMENT">>} | _], Token) ->
+    handle_invalid_token(Token);
+check_token_errors([#{<<"errorCode">> := <<"SENDER_ID_MISMATCH">>} | _], Token) ->
+    %% Erro específico: token foi gerado para outro projeto Firebase
+    io:format("⚠️ [FCM] SenderId mismatch detectado nos detalhes~n"),
     handle_invalid_token(Token);
 check_token_errors([_ | Rest], Token) ->
     check_token_errors(Rest, Token).
