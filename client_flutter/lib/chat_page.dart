@@ -127,6 +127,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     // Marcar como lido ao abrir o chat
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _markAsReadOnOpen();
+      // ✅ Cancelar todas as notificações deste chat ao abrir
+      _cancelChatNotifications();
     });
   }
 
@@ -566,6 +568,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   // MELHORADO: Marcar como lido com verificação
+  /// Cancelar todas as notificações deste chat
+  void _cancelChatNotifications() async {
+    try {
+      await NotificationService().cancelChatNotifications(widget.remoteUserId);
+      print('✅ [ChatPage] Notificações do chat ${widget.remoteUserId} canceladas');
+    } catch (e) {
+      print('❌ [ChatPage] Erro ao cancelar notificações: $e');
+    }
+  }
+
   void _markChatAsRead() {
     if (_hasMarkedAsRead) {
       print('⏳ Chat já foi marcado como lido nesta sessão');

@@ -1238,19 +1238,25 @@ class _ChatListPageState extends State<ChatListPage>
   }
 
   // Novo método auxiliar para abrir chat do item
-  void _startNewChatFromItem(ChatContact chat) {
+  void _startNewChatFromItem(ChatContact chat) async {
     print('👆 Clicado no chat: ${chat.name} (Unread: ${chat.unreadCount})');
 
-    // ✅ RESTAURADO: MARCAR COMO LIDO ANTES DE ABRIR
+    // ✅ MARCAR COMO LIDO ANTES DE ABRIR
     ChatService.markChatAsRead(chat.contactId);
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) =>
-            ChatPage(contact: chat, remoteUserId: chat.contactId),
-      ),
-    );
+    // ✅ Cancelar TODAS as notificações deste chat
+    // Quando o usuário abre o chat, todas as notificações do mesmo chat devem ser canceladas
+    await NotificationService().cancelChatNotifications(chat.contactId);
+
+    if (mounted) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) =>
+              ChatPage(contact: chat, remoteUserId: chat.contactId),
+        ),
+      );
+    }
   }
 
   // ✅ ENVIAR CONVITE VIA SMS
