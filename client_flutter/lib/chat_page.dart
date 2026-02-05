@@ -83,153 +83,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Timer? _markAsReadTimer;
   bool _isAppInBackground = false; // Nova variável para controlar background
 
-  // Controles para áudio e emojis
+  // Controles para áudio
   bool _isRecording = false;
-  bool _showEmojiPicker = false;
 
   // Controles para edição e seleção de mensagens
   String? _selectedMessageId;
   String? _editingMessageId;
   TextEditingController _editController = TextEditingController();
-
-  // Lista de emojis comuns
-  static const List<String> _commonEmojis = [
-    '😀',
-    '😃',
-    '😄',
-    '😁',
-    '😅',
-    '😂',
-    '🤣',
-    '😊',
-    '😇',
-    '🙂',
-    '🙃',
-    '😉',
-    '😌',
-    '😍',
-    '🥰',
-    '😘',
-    '😗',
-    '😙',
-    '😚',
-    '😋',
-    '😛',
-    '😜',
-    '🤪',
-    '😝',
-    '🤑',
-    '🤗',
-    '🤭',
-    '🤫',
-    '🤥',
-    '😶',
-    '😐',
-    '😑',
-    '😬',
-    '🙄',
-    '😯',
-    '😦',
-    '😧',
-    '😮',
-    '😲',
-    '🥱',
-    '😴',
-    '🤤',
-    '😪',
-    '😵',
-    '🤐',
-    '🥴',
-    '🤢',
-    '🤮',
-    '🤧',
-    '😷',
-    '🤒',
-    '🤕',
-    '🤡',
-    '👍',
-    '👎',
-    '👌',
-    '✌️',
-    '🤞',
-    '🤟',
-    '🤘',
-    '🤙',
-    '👈',
-    '👉',
-    '👆',
-    '🖕',
-    '👇',
-    '☝️',
-    '✋',
-    '🤚',
-    '🖐',
-    '🖖',
-    '👋',
-    '💪',
-    '🦾',
-    '🦿',
-    '🦶',
-    '🦵',
-    '🦴',
-    '🦷',
-    '❤️',
-    '🧡',
-    '💛',
-    '💚',
-    '💙',
-    '💜',
-    '🖤',
-    '🤍',
-    '🤎',
-    '💔',
-    '❣️',
-    '💕',
-    '💞',
-    '💓',
-    '💗',
-    '💖',
-    '💘',
-    '💝',
-    '🎉',
-    '🎊',
-    '🎈',
-    '🎁',
-    '🎀',
-    '🎗',
-    '🎟',
-    '🎫',
-    '🎖',
-    '🏆',
-    '🥇',
-    '🥈',
-    '🥉',
-    '⚽',
-    '🏀',
-    '🏈',
-    '⚾',
-    '🎾',
-    '🎱',
-    '🏐',
-    '🏓',
-    '🥏',
-    '🥅',
-    '🎳',
-    '🏏',
-    '🎯',
-    '🎪',
-    '🎨',
-    '🖌',
-    '🖍',
-    '📝',
-    '✏️',
-    '✒️',
-    '🖊',
-    '🖋',
-    '📎',
-    '📌',
-    '📍',
-  ];
 
   // Status de presença do contato
   String _contactPresenceStatus = 'offline'; // 'online', 'offline'
@@ -2542,33 +2402,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
-  // 🎤 CONTROLES DE ÁUDIO E EMOJIS
-  void _toggleEmojiPicker() {
-    setState(() {
-      _showEmojiPicker = !_showEmojiPicker;
-    });
-  }
-
-  void _insertEmoji(String emoji) {
-    final text = _messageController.text;
-    final cursorPosition = _messageController.selection.baseOffset;
-
-    // Inserir emoji na posição do cursor
-    final newText =
-        text.substring(0, cursorPosition) +
-        emoji +
-        text.substring(cursorPosition);
-    _messageController.value = TextEditingValue(
-      text: newText,
-      selection: TextSelection.collapsed(offset: cursorPosition + emoji.length),
-    );
-
-    // Manter emoji picker aberto após inserir
-    // setState(() {
-    //   _showEmojiPicker = false;
-    // });
-  }
-
+  // 🎤 CONTROLES DE ÁUDIO
   void _toggleVoiceRecording() {
     setState(() {
       _isRecording = !_isRecording;
@@ -3160,63 +2994,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Widget _buildMessageInput() {
     return Column(
       children: [
-        // Emoji Picker (mostra quando ativado)
-        if (_showEmojiPicker)
-          Container(
-            height: 250,
-            padding: EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: AppTheme.surfaceColor,
-              border: Border(top: BorderSide(color: AppTheme.dividerColor)),
-            ),
-            child: Column(
-              children: [
-                // Header do emoji picker
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Emojis',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    IconButton(
-                      icon: Icon(Icons.close),
-                      onPressed: _toggleEmojiPicker,
-                    ),
-                  ],
-                ),
-                Divider(height: 1),
-                // Grid de emojis simples
-                Expanded(
-                  child: GridView.builder(
-                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 8,
-                      childAspectRatio: 1.0,
-                    ),
-                    itemCount: _commonEmojis.length,
-                    itemBuilder: (context, index) {
-                      return GestureDetector(
-                        onTap: () {
-                          _insertEmoji(_commonEmojis[index]);
-                        },
-                        child: Container(
-                          alignment: Alignment.center,
-                          child: Text(
-                            _commonEmojis[index],
-                            style: TextStyle(fontSize: 24),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-
         // Reply Preview (mostra quando respondendo)
         if (_selectedMessageId != null)
           Container(
@@ -3305,47 +3082,35 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               ),
               Expanded(
                 child: Container(
+                  constraints: BoxConstraints(maxWidth: double.infinity),
                   decoration: BoxDecoration(
                     color: AppTheme.inputBackground,
                     borderRadius: BorderRadius.circular(25),
                     border: Border.all(color: AppTheme.inputBorder),
                   ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          keyboardType: TextInputType.multiline,
-                          maxLines: 6,
-                          minLines: 1,
-                          textInputAction: TextInputAction.newline,
-                          controller: _messageController,
-                          decoration: InputDecoration(
-                            hintText: _editingMessageId != null
-                                ? 'Editando mensagem...'
-                                : (_selectedMessageId != null
-                                      ? 'Sua resposta...'
-                                      : 'Digite uma mensagem...'),
-                            hintStyle: TextStyle(color: AppTheme.textLight),
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 12,
-                            ),
-                          ),
-                          onChanged: (value) {
-                            // Atualizar UI quando usuário digita
-                            setState(() {});
-                          },
-                        ),
+                  child: TextField(
+                    keyboardType: TextInputType.multiline,
+                    maxLines: 6,
+                    minLines: 1,
+                    textInputAction: TextInputAction.newline,
+                    controller: _messageController,
+                    decoration: InputDecoration(
+                      hintText: _editingMessageId != null
+                          ? 'Editando mensagem...'
+                          : (_selectedMessageId != null
+                                ? 'Sua resposta...'
+                                : 'Mensagem'),
+                      hintStyle: TextStyle(color: AppTheme.textLight),
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
                       ),
-                      IconButton(
-                        icon: Icon(
-                          Icons.emoji_emotions_outlined,
-                          color: AppTheme.textSecondary,
-                        ),
-                        onPressed: _toggleEmojiPicker,
-                      ),
-                    ],
+                    ),
+                    onChanged: (value) {
+                      // Atualizar UI quando usuário digita
+                      setState(() {});
+                    },
                   ),
                 ),
               ),
