@@ -11,14 +11,13 @@ _vendor
 .erlang.cookie
 ebin
 log
-config/
 erl_crash.dump
 .rebar
 logs
 .idea
 *.iml
 client_flutter/android/google-services.json
-client_flutter/android/*.kts
+*.kts
 rebar3.crashdump
 *~
 
@@ -33,13 +32,28 @@ yarn-error.log*
 # Build
 dist/
 build/
+config/*.json
+config/*.kts
+config/*.env
 
-# Config local
+# Config local e credenciais
 .env
+*.env
+.env.local
+.env.*.local
+config/*.env
+config/*.json
+config/firebase-service-account.json
+firebase-service-account.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
 
-# Ficheiros
+# Ficheiros com credenciais ou informações sensíveis
 server/apps/chat_app/src/mysql_test.erl
-E:\aplicativo-chat\server\apps\chat_app\src\websocket_checker.erl
+server/apps/chat_app/src/websocket_checker.erl
 passo_a_passo.txt
 PROXIMO_PASSO.txt
 Comandos_importantes.txt
@@ -47,3 +61,17 @@ algumas explicacoes importantes.txt
 Structure
 FIREBASE_SETUP.md
 MESSAGES_OPERATIONS_README.md
+
+# Arquivos de banco de dados locais
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Arquivos temporários e cache
+*.tmp
+*.temp
+*.cache
+.cache/
+tmp/
+temp/

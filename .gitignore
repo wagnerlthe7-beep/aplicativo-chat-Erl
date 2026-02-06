@@ -1,0 +1,88 @@
+# ============================================
+# ARQUIVOS SENSÍVEIS - NUNCA COMMITAR
+# ============================================
+
+# Arquivos de ambiente e credenciais
+.env
+.env.local
+.env.*.local
+*.env
+.envrc
+
+# Credenciais Firebase
+**/google-services.json
+**/GoogleService-Info.plist
+**/firebase-service-account.json
+**/service-account*.json
+
+# Chaves e certificados
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.cer
+
+# Arquivos com senhas e tokens hardcoded
+Comandos_importantes.txt
+passo_a_passo.txt
+PROXIMO_PASSO.txt
+algumas explicacoes importantes.txt
+*secrets*
+*credentials*
+*password*
+
+# Arquivos de banco de dados locais
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Arquivos temporários e cache
+*.tmp
+*.temp
+*.cache
+.cache/
+tmp/
+temp/
+
+# Logs (podem conter informações sensíveis)
+*.log
+logs/
+*.log.*
+
+# Arquivos de backup
+*.bak
+*.backup
+*~
+
+# Arquivos do sistema operacional
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-*
+
+# Build e dependências
+build/
+dist/
+node_modules/
+_build/
+deps/
+*.beam
+*.o
+
